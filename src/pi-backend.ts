@@ -1,9 +1,12 @@
 import {
   type AgentSession,
   createAgentSession,
+  DefaultResourceLoader,
+  getAgentDir,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentBackend, AgentRequest } from "./agent.ts";
+import { workspacePolicy } from "./workspace-policy.ts";
 
 const TOOLS = ["read", "grep", "find", "ls", "edit", "write"];
 
@@ -40,13 +43,25 @@ export class PiBackend implements AgentBackend {
     const existing = this.sessions.get(conversationId);
     if (existing) return existing;
 
-    const created = createAgentSession({
-      cwd: this.workspace,
-      sessionManager: SessionManager.inMemory(this.workspace),
-      tools: TOOLS,
-    }).then(({ session }) => session);
+    const created = this.createSession();
     this.sessions.set(conversationId, created);
     created.catch(() => this.sessions.delete(conversationId));
     return created;
+  }
+
+  private async createSession(): Promise<AgentSession> {
+    const resourceLoader = new DefaultResourceLoader({
+      cwd: this.workspace,
+      agentDir: getAgentDir(),
+      extensionFactories: [workspacePolicy(this.workspace)],
+    });
+    await resourceLoader.reload();
+    const { session } = await createAgentSession({
+      cwd: this.workspace,
+      resourceLoader,
+      sessionManager: SessionManager.inMemory(this.workspace),
+      tools: TOOLS,
+    });
+    return session;
   }
 }
