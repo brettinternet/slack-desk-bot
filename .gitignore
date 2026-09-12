@@ -1,4 +1,25 @@
-node_modules/
+# Environment
 .env
-.DS_Store
+.env.local
+.env.*.local
+
+# Dependencies and output
+node_modules/
 coverage/
+
+# Project tools
+/Taskfile.yaml
+/Taskfile.yml
+mise.local.toml
+mise.*.local.toml
+/.worktrees/
+
+# Agent-local configuration
+.claude/settings.local.json
+.opencode/
+AGENTS.local.md
+CLAUDE.local.md
+GEMINI.local.md
+
+# System
+.DS_Store

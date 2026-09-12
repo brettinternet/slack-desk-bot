@@ -33,12 +33,13 @@ export class SlackAgent {
 
     this.app.event("message", async ({ event, client }) => {
       if (
-        event.channel_type !== "im"
-        || !isSupportedDirectMessage(event.subtype)
-        || !("user" in event)
-        || !event.user
-      ) return;
-      const text = "text" in event ? event.text ?? "" : "";
+        event.channel_type !== "im" ||
+        !isSupportedDirectMessage(event.subtype) ||
+        !("user" in event) ||
+        !event.user
+      )
+        return;
+      const text = "text" in event ? (event.text ?? "") : "";
       await this.respond(client, event.channel, event.ts, undefined, text);
     });
   }

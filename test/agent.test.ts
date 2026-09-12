@@ -3,7 +3,9 @@ import { type AgentBackend, QueuedAgentBackend } from "../src/agent.ts";
 
 function deferred() {
   let resolve!: (value: string) => void;
-  const promise = new Promise<string>((done) => { resolve = done; });
+  const promise = new Promise<string>((done) => {
+    resolve = done;
+  });
   return { promise, resolve };
 }
 
@@ -43,10 +45,12 @@ describe("QueuedAgentBackend", () => {
     };
     const queued = new QueuedAgentBackend(backend);
 
-    expect(await Promise.all([
-      queued.run({ conversationId: "one", prompt: "a" }),
-      queued.run({ conversationId: "two", prompt: "b" }),
-    ])).toEqual(["one", "two"]);
+    expect(
+      await Promise.all([
+        queued.run({ conversationId: "one", prompt: "a" }),
+        queued.run({ conversationId: "two", prompt: "b" }),
+      ]),
+    ).toEqual(["one", "two"]);
     expect(calls).toEqual(["one", "two"]);
   });
 });

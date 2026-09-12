@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json
+version: 1
+processes:
+  agent:
+    argv: [bun, run, start]
+    ready:
+      match: "Slack agent connected"
+      timeout: 30s
+    restart: on-failure

@@ -1,0 +1,20 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+
+[hooks]
+enter = [
+  { shell = "bash", script = "command -v hum >/dev/null && source <(hum completion bash)" },
+  { shell = "zsh", script = "command -v hum >/dev/null && source <(hum completion zsh)" },
+  { shell = "fish", script = "type -q hum; and hum completion fish | source" },
+]
+
+[tools]
+bun = "latest"
+prettier = "latest"
+gitleaks = "latest"
+lefthook = "latest"
+task = "latest"
+"github:brettinternet/hum" = { version = "latest", minimum_release_age = "0" }
+
+[settings]
+disable_backends = ["asdf"]
+npm.bun = true

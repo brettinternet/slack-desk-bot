@@ -32,16 +32,16 @@ pi
 # Run /login in Pi
 ```
 
-Then configure and start the service:
+Then install the project tools, configure the service, and start it under Hum:
 
 ```sh
-bun install
+task init
 cp .env.example .env
 # Fill in tokens and an absolute SLACK_AGENT_CWD path.
-bun start
+hum up
 ```
 
-Bun loads `.env` automatically. The machine must remain awake and connected to Slack.
+`hum status`, `hum logs agent`, and `hum down` inspect and control the service. Bun loads `.env` automatically. The machine must remain awake and connected to Slack.
 
 ## Security
 
@@ -57,7 +57,12 @@ Keep adapters narrow: translate a conversation ID and prompt into one text respo
 
 ## Development
 
+The toolchain is declared in [`mise.toml`](mise.toml). `task init` installs Mise-managed tools, Bun dependencies, and Git hooks.
+
 ```sh
-bun run check
-bun test
+task check
+task test
+task fix
 ```
+
+Hum exposes project processes to supported coding agents through [`.mcp.json`](.mcp.json).

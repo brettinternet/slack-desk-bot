@@ -1,0 +1,39 @@
+---
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+includes:
+  setup: .taskfiles/setup.yaml
+
+tasks:
+  default:
+    silent: true
+    cmd: task -l
+
+  init:
+    desc: Install dependencies and set up the repository
+    deps:
+      - task: setup:init
+
+  start:
+    desc: Start the Slack agent
+    cmd: bun run start
+
+  check:
+    desc: Run type and formatting checks
+    cmds:
+      - bun run check
+      - mise exec prettier -- prettier --check --ignore-unknown .
+
+  check:staged:
+    desc: Run checks only for staged files
+    aliases: [check-staged]
+    cmd: mise exec lefthook -- lefthook run pre-commit
+
+  fix:
+    desc: Format project files
+    cmd: mise exec prettier -- prettier --write --ignore-unknown .
+
+  test:
+    desc: Run tests
+    cmd: bun test

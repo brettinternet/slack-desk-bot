@@ -16,7 +16,9 @@ export class QueuedAgentBackend implements AgentBackend {
   async run(request: AgentRequest): Promise<string> {
     const previous = this.tails.get(request.conversationId) ?? Promise.resolve();
     let release!: () => void;
-    const current = new Promise<void>((resolve) => { release = resolve; });
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const tail = previous.catch(() => {}).then(() => current);
     this.tails.set(request.conversationId, tail);
 
@@ -25,7 +27,8 @@ export class QueuedAgentBackend implements AgentBackend {
       return await this.backend.run(request);
     } finally {
       release();
-      if (this.tails.get(request.conversationId) === tail) this.tails.delete(request.conversationId);
+      if (this.tails.get(request.conversationId) === tail)
+        this.tails.delete(request.conversationId);
     }
   }
 

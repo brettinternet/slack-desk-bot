@@ -20,8 +20,8 @@ export function createResponseCollector() {
       if (event.type === "message_start" && event.message.role === "assistant") {
         currentMessage = [];
       } else if (
-        event.type === "message_update"
-        && event.assistantMessageEvent.type === "text_delta"
+        event.type === "message_update" &&
+        event.assistantMessageEvent.type === "text_delta"
       ) {
         currentMessage?.push(event.assistantMessageEvent.delta);
       } else if (event.type === "message_end" && event.message.role === "assistant") {

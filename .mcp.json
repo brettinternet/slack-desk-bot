@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "hum": {
+      "command": "hum",
+      "args": ["mcp"]
+    }
+  }
+}
