@@ -23,6 +23,15 @@ describe("workspace policy", () => {
     expect(isPathInWorkspace("/etc/passwd", workspace)).toBe(false);
   });
 
+  test("normalizes paths the same way Pi's tools do before checking them", () => {
+    for (const path of ["~", "~/.ssh/id_rsa", "@~/.ssh/id_rsa", "file:///etc/passwd"]) {
+      expect(isPathInWorkspace(path, workspace), path).toBe(false);
+    }
+    expect(isPathInWorkspace(`file://${resolve(workspace, "package.json")}`, workspace)).toBe(true);
+    expect(isPathInWorkspace("@package.json", workspace)).toBe(true);
+    expect(isSensitiveWorkspacePath("secrets\u00A0dir/.env", workspace)).toBe(true);
+  });
+
   test("blocks documented sensitive paths and allows near-matches", () => {
     const sensitivePaths = [
       ".env",
@@ -32,6 +41,8 @@ describe("workspace policy", () => {
       "certificates/client.pem",
       "identity.p12",
       ".ssh/config",
+      ".git/config",
+      ".git/hooks/pre-commit",
       ".aws/credentials",
       ".config/gcloud/application_default_credentials.json",
       ".docker/config.json",
@@ -52,6 +63,8 @@ describe("workspace policy", () => {
       "server.key.test.ts",
       "id_ed25519.pub",
       "credentials.ts",
+      ".gitignore",
+      ".github/workflows/ci.yaml",
     ]) {
       expect(isSensitiveWorkspacePath(path, workspace), path).toBe(false);
     }

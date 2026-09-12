@@ -1,5 +1,7 @@
 import { lstatSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 
 const PATH_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write"]);
@@ -7,8 +9,22 @@ const ALLOWED_ENV_TEMPLATES = new Set([".env.example", ".env.sample", ".env.temp
 const PRIVATE_KEY_NAMES = new Set(["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"]);
 const SENSITIVE_FILES = new Set([".netrc", ".npmrc", ".pypirc"]);
 
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+/** Mirror Pi's tool path normalization so the policy judges the path the tool will actually open. */
 function toolPath(path: string): string {
-  return path.startsWith("@") ? path.slice(1) : path;
+  let normalized = path.replace(UNICODE_SPACES, " ");
+  if (normalized.startsWith("@")) normalized = normalized.slice(1);
+  if (normalized === "~") return homedir();
+  if (normalized.startsWith("~/")) return join(homedir(), normalized.slice(2));
+  if (/^file:\/\//.test(normalized)) {
+    try {
+      return fileURLToPath(normalized);
+    } catch {
+      return normalized;
+    }
+  }
+  return normalized;
 }
 
 function isSensitiveRelativePath(path: string): boolean {
@@ -19,7 +35,7 @@ function isSensitiveRelativePath(path: string): boolean {
   const name = parts.at(-1);
   if (!name) return false;
 
-  if (parts.includes(".ssh")) return true;
+  if (parts.includes(".ssh") || parts.includes(".git")) return true;
   if (name === "credentials" && parts.includes(".aws")) return true;
   if (name === "application_default_credentials.json" && parts.includes("gcloud")) return true;
   if (name === "config.json" && parts.includes(".docker")) return true;
