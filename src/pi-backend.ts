@@ -9,6 +9,7 @@ import {
   getAgentDir,
   type SessionInfo,
   SessionManager,
+  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type {
   AgentAttachment,
@@ -73,9 +74,17 @@ export function preparePiPrompt(prompt: string, attachments: readonly AgentAttac
   };
 }
 
+export class AgentResponseError extends Error {
+  constructor() {
+    super("The agent's final response ended with a provider error");
+    this.name = "AgentResponseError";
+  }
+}
+
 export function createResponseCollector(observer?: AgentRunObserver) {
   const output: string[] = [];
   let currentMessage: string[] | undefined;
+  let failed = false;
 
   return {
     handle(event: AgentSessionEvent): void {
@@ -89,13 +98,14 @@ export function createResponseCollector(observer?: AgentRunObserver) {
       ) {
         currentMessage?.push(event.assistantMessageEvent.delta);
       } else if (event.type === "message_end" && event.message.role === "assistant") {
-        if (event.message.stopReason !== "error" && currentMessage?.length) {
-          output.push(currentMessage.join(""));
-        }
+        failed = event.message.stopReason === "error";
+        if (!failed && currentMessage?.length) output.push(currentMessage.join(""));
         currentMessage = undefined;
       }
     },
+    /** Returns the collected text, or throws when the final assistant turn failed. */
     text(): string {
+      if (failed) throw new AgentResponseError();
       return output.join("\n\n").trim();
     },
   };
@@ -106,13 +116,23 @@ export function defaultSessionDirectory(workspace: string): string {
   return join(getAgentDir(), "slack-agent", "sessions", workspaceKey);
 }
 
-export function createPiResourceLoader(workspace: string, instructions?: string) {
-  return new DefaultResourceLoader({
+/**
+ * Loads Pi resources for the workspace with the project marked untrusted, so `.pi/` settings,
+ * extensions, skills, prompts, and `SYSTEM.md` inside `SLACK_AGENT_CWD` never run as service code.
+ * User-level (`~/.pi/agent`) resources still load. The returned settings manager must be passed to
+ * `createAgentSession` so the session honors the same trust state.
+ */
+export function createPiResources(workspace: string, instructions?: string) {
+  const agentDir = getAgentDir();
+  const settingsManager = SettingsManager.create(workspace, agentDir, { projectTrusted: false });
+  const resourceLoader = new DefaultResourceLoader({
     cwd: workspace,
-    agentDir: getAgentDir(),
+    agentDir,
+    settingsManager,
     appendSystemPrompt: instructions ? [instructions] : [],
     extensionFactories: [workspacePolicy(workspace)],
   });
+  return { settingsManager, resourceLoader };
 }
 
 export class PiBackend implements AgentBackend {
@@ -229,11 +249,15 @@ export class PiBackend implements AgentBackend {
   private async createSession(sessionManager: SessionManager): Promise<AgentSession> {
     if (this.options.sessionFactory) return this.options.sessionFactory(sessionManager);
 
-    const resourceLoader = createPiResourceLoader(this.workspace, this.options.instructions);
+    const { settingsManager, resourceLoader } = createPiResources(
+      this.workspace,
+      this.options.instructions,
+    );
     await resourceLoader.reload();
     const { session } = await createAgentSession({
       cwd: this.workspace,
       resourceLoader,
+      settingsManager,
       sessionManager,
       tools: toolsForMode(this.options.mode ?? "read-only"),
     });

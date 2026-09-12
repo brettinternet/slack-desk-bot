@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type AgentSession,
   type AgentSessionEvent,
@@ -6,7 +10,8 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import {
-  createPiResourceLoader,
+  AgentResponseError,
+  createPiResources,
   createResponseCollector,
   PiBackend,
   preparePiPrompt,
@@ -70,10 +75,36 @@ describe("Pi configuration", () => {
   });
 
   test("appends Slack-specific instructions to the system prompt", async () => {
-    const loader = createPiResourceLoader(process.cwd(), "Keep Slack replies brief.");
-    await loader.reload();
+    const { resourceLoader } = createPiResources(process.cwd(), "Keep Slack replies brief.");
+    await resourceLoader.reload();
 
-    expect(loader.getAppendSystemPrompt()).toContain("Keep Slack replies brief.");
+    expect(resourceLoader.getAppendSystemPrompt()).toContain("Keep Slack replies brief.");
+  });
+
+  test("never loads extensions or system prompts from the target workspace", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "slack-agent-trust-"));
+    const marker = `__slack_agent_untrusted_${randomUUID().replaceAll("-", "")}`;
+    const extensionPath = join(workspace, ".pi", "extensions", "project.ts");
+    mkdirSync(join(workspace, ".pi", "extensions"), { recursive: true });
+    writeFileSync(
+      extensionPath,
+      `export default function () { globalThis[${JSON.stringify(marker)}] = true; }`,
+    );
+    writeFileSync(join(workspace, ".pi", "SYSTEM.md"), "Project-controlled system prompt");
+
+    try {
+      const { settingsManager, resourceLoader } = createPiResources(workspace);
+      await resourceLoader.reload();
+
+      expect(settingsManager.isProjectTrusted()).toBe(false);
+      expect((globalThis as Record<string, unknown>)[marker]).toBeUndefined();
+      expect(
+        resourceLoader.getExtensions().extensions.map((extension) => extension.path),
+      ).not.toContain(extensionPath);
+      expect(resourceLoader.getSystemPrompt()).not.toBe("Project-controlled system prompt");
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });
 
@@ -174,6 +205,29 @@ describe("Pi response collection", () => {
     );
 
     expect(collector.text()).toBe("complete");
+  });
+
+  test("reports a failure instead of silently returning earlier text when the final turn errors", () => {
+    const collector = createResponseCollector();
+    collector.handle(event({ type: "message_start", message: { role: "assistant" } }));
+    collector.handle(
+      event({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: "Looking into it" },
+      }),
+    );
+    collector.handle(
+      event({ type: "message_end", message: { role: "assistant", stopReason: "toolUse" } }),
+    );
+    collector.handle(event({ type: "message_start", message: { role: "assistant" } }));
+    collector.handle(
+      event({
+        type: "message_end",
+        message: { role: "assistant", stopReason: "error", errorMessage: "rate limited" },
+      }),
+    );
+
+    expect(() => collector.text()).toThrow(AgentResponseError);
   });
 });
 
