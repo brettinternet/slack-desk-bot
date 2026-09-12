@@ -9,6 +9,7 @@ export interface Config {
   slackAppToken: string;
   workspace: string;
   allowedUserIds: Set<string>;
+  operatorUserIds: Set<string>;
   agentMode: AgentMode;
   instructions?: string;
   queueLimits: QueueLimits;
@@ -90,11 +91,22 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
       .map((value) => value.trim())
       .filter(Boolean),
   );
+  const operatorUserIds = new Set(
+    (optional(environment, "SLACK_OPERATOR_USER_IDS") ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
   const agentMode = environment.SLACK_AGENT_MODE?.trim() || "read-only";
   const configuredSessionDir = environment.SLACK_AGENT_SESSION_DIR?.trim();
 
   if (allowedUserIds.size === 0) {
     throw new Error("SLACK_ALLOWED_USER_IDS must contain at least one user ID");
+  }
+  for (const operatorUserId of operatorUserIds) {
+    if (!allowedUserIds.has(operatorUserId)) {
+      throw new Error("SLACK_OPERATOR_USER_IDS must contain only allowed user IDs");
+    }
   }
   if (agentMode !== "read-only" && agentMode !== "read-write") {
     throw new Error("SLACK_AGENT_MODE must be read-only or read-write");
@@ -120,6 +132,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
     slackAppToken,
     workspace,
     allowedUserIds,
+    operatorUserIds,
     agentMode,
     instructions: loadInstructions(environment),
     queueLimits: {

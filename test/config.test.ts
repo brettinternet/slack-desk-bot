@@ -17,6 +17,7 @@ describe("loadConfig", () => {
       slackAppToken: "xapp-test",
       workspace: process.cwd(),
       allowedUserIds: new Set(["U0123", "U0456"]),
+      operatorUserIds: new Set(),
       agentMode: "read-only",
       instructions: undefined,
       queueLimits: {
@@ -41,6 +42,7 @@ describe("loadConfig", () => {
     const config = loadConfig({
       ...valid,
       SLACK_ALLOWED_USER_IDS: " U0123, U0123, U0789 ",
+      SLACK_OPERATOR_USER_IDS: " U0789, U0789 ",
       SLACK_AGENT_MODE: "read-write",
       SLACK_AGENT_SESSION_DIR: "/tmp/slack-agent-sessions",
       SLACK_AGENT_MAX_ACTIVE_SESSIONS: "8",
@@ -52,6 +54,7 @@ describe("loadConfig", () => {
     });
 
     expect(config.allowedUserIds).toEqual(new Set(["U0123", "U0789"]));
+    expect(config.operatorUserIds).toEqual(new Set(["U0789"]));
     expect(config.agentMode).toBe("read-write");
     expect(config).toMatchObject({
       sessionDir: "/tmp/slack-agent-sessions",
@@ -65,6 +68,12 @@ describe("loadConfig", () => {
         rateLimitBurst: 4,
       },
     });
+  });
+
+  test("rejects operator IDs outside the allowlist", () => {
+    expect(() => loadConfig({ ...valid, SLACK_OPERATOR_USER_IDS: "U_NOT_ALLOWED" })).toThrow(
+      "SLACK_OPERATOR_USER_IDS must contain only allowed user IDs",
+    );
   });
 
   test("retains configured conversation concurrency in read-only mode", () => {

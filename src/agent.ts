@@ -49,7 +49,7 @@ export interface CancellableAgentBackend extends AgentBackend {
     observer?: AgentRunObserver,
     admission?: AgentAdmission,
   ): Promise<string>;
-  cancelActive(conversationId: string, requesterId: string): boolean;
+  cancelActive(conversationId: string, requesterId: string, cancelAnyRequester?: boolean): boolean;
   handleCommand(
     conversationId: string,
     requesterId: string,
@@ -237,9 +237,13 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
     );
   }
 
-  cancelActive(conversationId: string, requesterId: string): boolean {
+  cancelActive(conversationId: string, requesterId: string, cancelAnyRequester = false): boolean {
     const job = this.conversations.get(conversationId)?.active;
-    if (!job || job.request.requesterId !== requesterId || job.controller.signal.aborted)
+    if (
+      !job ||
+      (!cancelAnyRequester && job.request.requesterId !== requesterId) ||
+      job.controller.signal.aborted
+    )
       return false;
 
     const error = new AgentCancelledError();

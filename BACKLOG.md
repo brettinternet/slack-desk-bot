@@ -13,16 +13,7 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 
 ## Active items
 
-### SDB-024: Add `!cancel` for another user's request (operator override)
-
-**Why:** `cancelActive` only cancels the requester's own job. In a shared channel thread another allowlisted user cannot stop a runaway or mistaken request; the operator must restart the service.
-
-**Scope:**
-
-- Add an optional `SLACK_OPERATOR_USER_IDS` subset of the allowlist whose `!cancel` cancels any active job in the conversation.
-- Report who cancelled in the reply and log.
-
-**Done:** Queue tests for owner vs. operator vs. ordinary user cancellation; README updated.
+_None._
 
 ## Later considerations
 

@@ -28,6 +28,7 @@ interface SlackAgentOptions {
   botToken: string;
   appToken: string;
   allowedUserIds: ReadonlySet<string>;
+  operatorUserIds?: ReadonlySet<string>;
   agent: CancellableAgentBackend;
   fetch?: typeof fetch;
   log?: LogWriter;
@@ -439,6 +440,7 @@ export class SlackAgent {
     let executionOutcome: "success" | "cancelled" | "error" = "error";
     let delivery: DeliveryResult = { outcome: "failure", publishedMessages: 0 };
     let finalOutput: string | undefined;
+    let cancelledBy: string | undefined;
     let feedbackTimer: ReturnType<typeof setInterval> | undefined;
 
     await this.bestEffortSlackOperation(
@@ -497,7 +499,18 @@ export class SlackAgent {
       } else {
         const agentCommand =
           attachments.length === 0 && command?.kind === "agent" ? command.command : undefined;
-        if (agentCommand) {
+        if (agentCommand === "cancel") {
+          observer.onStarted();
+          const cancelled = this.options.agent.cancelActive(
+            id,
+            requesterId,
+            this.options.operatorUserIds?.has(requesterId),
+          );
+          if (cancelled) cancelledBy = requesterId;
+          finalOutput = cancelled
+            ? `<@${requesterId}> cancelled the active request.`
+            : "There is no active request to cancel.";
+        } else if (agentCommand) {
           finalOutput = admission
             ? await this.options.agent.handleCommand(
                 id,
@@ -574,6 +587,7 @@ export class SlackAgent {
       execution_outcome: executionOutcome,
       delivery_outcome: delivery.outcome,
       published_messages: delivery.publishedMessages,
+      ...(cancelledBy ? { cancelled_by: cancelledBy } : {}),
     });
   }
 

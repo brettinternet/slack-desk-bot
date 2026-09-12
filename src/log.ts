@@ -8,6 +8,7 @@ export interface RequestLog {
   execution_outcome: "success" | "cancelled" | "error";
   delivery_outcome: "success" | "partial" | "failure";
   published_messages: number;
+  cancelled_by?: string;
 }
 
 export type LogWriter = (fields: RequestLog) => void;

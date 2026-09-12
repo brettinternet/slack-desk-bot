@@ -19,6 +19,7 @@ function config(): Config {
     slackAppToken: "xapp-test",
     workspace: process.cwd(),
     allowedUserIds: new Set(["U_TEST"]),
+    operatorUserIds: new Set(),
     agentMode: "read-only",
     instructions: undefined,
     queueLimits: {

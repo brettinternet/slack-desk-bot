@@ -1208,7 +1208,8 @@ describe("SlackAgent transport", () => {
     ).toHaveLength(1);
   });
 
-  test("publishes one terminal status when a running request is cancelled", async () => {
+  test("lets an operator cancel another user's request and reports who cancelled", async () => {
+    const records: RequestLog[] = [];
     const rawBackend: AgentBackend = {
       run: ({ signal }) =>
         new Promise((_resolve, reject) => {
@@ -1220,8 +1221,10 @@ describe("SlackAgent transport", () => {
     new SlackAgent({
       botToken: "xoxb-test",
       appToken: "xapp-test",
-      allowedUserIds: new Set(["U_ALLOWED"]),
+      allowedUserIds: new Set(["U_ALLOWED", "U_OPERATOR"]),
+      operatorUserIds: new Set(["U_OPERATOR"]),
       agent: new QueuedAgentBackend(rawBackend, queueLimits()),
+      log: (record) => records.push(record),
     });
     const slack = client();
     let statusCount = 0;
@@ -1237,7 +1240,7 @@ describe("SlackAgent transport", () => {
     const cancelling = mention({
       body: { event_id: "E_CANCEL_COMMAND" },
       event: {
-        user: "U_ALLOWED",
+        user: "U_OPERATOR",
         text: "!cancel",
         channel: "C1",
         ts: "12",
@@ -1257,6 +1260,18 @@ describe("SlackAgent transport", () => {
         ([message]) => message.ts === "status-1" && message.text === "Working…",
       ),
     ).toBe(true);
+    expect(slack.chat.update).toHaveBeenCalledWith({
+      channel: "C1",
+      ts: "status-2",
+      text: "<@U_OPERATOR> cancelled the active request.",
+    });
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        request_id: "E_CANCEL_COMMAND",
+        user: "U_OPERATOR",
+        cancelled_by: "U_OPERATOR",
+      }),
+    );
   });
 
   test("keeps the working reaction until the backend settles", async () => {

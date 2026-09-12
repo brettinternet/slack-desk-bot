@@ -355,7 +355,7 @@ describe("QueuedAgentBackend", () => {
     queued.dispose();
   });
 
-  test("cancels an active request without removing queued work", async () => {
+  test("lets only the owner cancel an active request by default without removing queued work", async () => {
     const active = deferred();
     const backend: AgentBackend = {
       run: async ({ prompt }) => (prompt === "active" ? active.promise : prompt),
@@ -372,6 +372,23 @@ describe("QueuedAgentBackend", () => {
 
     active.resolve("stopped");
     expect(await second).toBe("queued");
+    queued.dispose();
+  });
+
+  test("lets an operator cancel another user's active request", async () => {
+    const active = deferred();
+    const backend: AgentBackend = {
+      run: async () => active.promise,
+      dispose: () => {},
+    };
+    const queued = new QueuedAgentBackend(backend, limits());
+
+    const running = queued.run(request("thread", "active", "owner"));
+    expect(queued.cancelActive("thread", "ordinary-user")).toBe(false);
+    expect(queued.cancelActive("thread", "operator", true)).toBe(true);
+    await expect(running).rejects.toBeInstanceOf(AgentCancelledError);
+
+    active.resolve("stopped");
     queued.dispose();
   });
 

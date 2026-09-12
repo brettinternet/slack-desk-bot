@@ -76,6 +76,7 @@ export async function startApplication(
         botToken: config.slackBotToken,
         appToken: config.slackAppToken,
         allowedUserIds: config.allowedUserIds,
+        operatorUserIds: config.operatorUserIds,
         agent,
         health,
       }))
