@@ -32,6 +32,7 @@ export interface AgentRunObserver {
 }
 
 export interface AgentBackend {
+  hasConversation?(conversationId: string): Promise<boolean>;
   run(request: AgentRequest, observer?: AgentRunObserver): Promise<string>;
   sessionCommand?(conversationId: string, command: SessionCommand): Promise<string>;
   dispose(): void;
@@ -182,6 +183,10 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
     this.admissions.set(admission, state);
     this.pendingByRequester.set(requesterId, pending + 1);
     return admission;
+  }
+
+  hasConversation(conversationId: string): Promise<boolean> {
+    return this.backend.hasConversation?.(conversationId) ?? Promise.resolve(false);
   }
 
   run(

@@ -13,18 +13,6 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 
 ## Active items
 
-### SDB-021: Restore channel thread ownership from persisted sessions
-
-**Why:** Thread ownership is in memory, so every service restart forces users to re-mention the bot in existing threads. Sessions are already persisted per `channel:thread_ts`, so the data to rebuild ownership exists.
-
-**Scope:**
-
-- On the first mention-free reply in an unowned channel thread, check whether a persisted session named `slack-agent:<channel>:<thread_ts>` exists and, if so, claim the thread.
-- Keep the check off the Slack event hot path by caching negative results per conversation with a short TTL.
-- Keep `AgentBackend` free of Slack knowledge: expose `hasConversation(conversationId)` on the queue/backend interface rather than a Slack-specific hook.
-
-**Done:** Test: mention → restart → mention-free reply in the same thread runs the agent; reply in an unrelated thread is still ignored. README restart note updated.
-
 ### SDB-022: Report model, context, and cost in `!status`
 
 **Why:** `!status` shows message counts only. Operators cannot see which model a conversation is using, how close the context is to compaction, or accumulated cost, which are the questions asked when a reply looks wrong or slow.

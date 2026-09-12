@@ -44,6 +44,7 @@ export class SlackAuthenticationError extends Error {
 }
 
 const MAX_CONCURRENT_RESPONSES = 8;
+const MISSING_CONVERSATION_TTL_MS = 60_000;
 
 interface DeliveryResult {
   outcome: "success" | "partial" | "failure";
@@ -93,6 +94,7 @@ export class SlackAgent {
   private readonly app: App;
   private readonly events = new EventDeduplicator();
   private readonly denials = new EventDeduplicator();
+  private readonly missingConversations = new Map<string, number>();
   private readonly ownedChannelThreads = new Set<string>();
   private readonly receiver: SocketModeReceiver;
   private botUserId = "";
@@ -156,11 +158,11 @@ export class SlackAgent {
       )
         return;
       const threadTs = "thread_ts" in event ? event.thread_ts : undefined;
-      if (
-        !directMessage &&
-        (!threadTs || !this.ownedChannelThreads.has(conversationId(event.channel, threadTs)))
-      )
-        return;
+      if (!directMessage) {
+        if (!threadTs) return;
+        const id = conversationId(event.channel, threadTs);
+        if (!(await this.ownsChannelThread(id))) return;
+      }
       if (!this.options.allowedUserIds.has(event.user)) {
         await this.deny(client, event.channel, threadTs, event.user);
         return;
@@ -207,6 +209,24 @@ export class SlackAgent {
     this.options.health?.markBackendDisposed();
     this.options.agent.dispose();
     await this.app.stop();
+  }
+
+  private async ownsChannelThread(id: string): Promise<boolean> {
+    if (this.ownedChannelThreads.has(id)) return true;
+
+    const now = Date.now();
+    for (const [conversationId, expiresAt] of this.missingConversations) {
+      if (expiresAt <= now) this.missingConversations.delete(conversationId);
+    }
+    if (this.missingConversations.has(id)) return false;
+
+    if (!(await this.options.agent.hasConversation?.(id))) {
+      this.missingConversations.set(id, now + MISSING_CONVERSATION_TTL_MS);
+      return false;
+    }
+
+    this.ownedChannelThreads.add(id);
+    return true;
   }
 
   private async slackOperation<T>(operation: Promise<T>): Promise<T> {

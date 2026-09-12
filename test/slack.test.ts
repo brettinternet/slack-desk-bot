@@ -94,8 +94,12 @@ function client(): SlackClient {
   };
 }
 
-function backend(run: ReturnType<typeof mock>): CancellableAgentBackend {
+function backend(
+  run: ReturnType<typeof mock>,
+  hasConversation: (conversationId: string) => Promise<boolean> = async () => false,
+): CancellableAgentBackend {
   return {
+    hasConversation,
     run,
     handleCommand: async () => "command complete",
     cancelActive: () => false,
@@ -103,12 +107,15 @@ function backend(run: ReturnType<typeof mock>): CancellableAgentBackend {
   };
 }
 
-function createAgent(run: ReturnType<typeof mock>): void {
+function createAgent(
+  run: ReturnType<typeof mock>,
+  hasConversation?: (conversationId: string) => Promise<boolean>,
+): void {
   new SlackAgent({
     botToken: "xoxb-test",
     appToken: "xapp-test",
     allowedUserIds: new Set(["U_ALLOWED"]),
-    agent: backend(run),
+    agent: backend(run, hasConversation),
   });
 }
 
@@ -744,8 +751,12 @@ describe("SlackAgent transport", () => {
     });
   });
 
-  test("requires a new mention to restore channel-thread ownership after restart", async () => {
-    const firstRun = mock(async () => "first response");
+  test("restores channel-thread ownership from a persisted conversation after restart", async () => {
+    const persisted = new Set<string>();
+    const firstRun = mock(async ({ conversationId }: { conversationId: string }) => {
+      persisted.add(conversationId);
+      return "first response";
+    });
     createAgent(firstRun);
     const slack = client();
     await app.handlers.get("app_mention")!({
@@ -755,8 +766,8 @@ describe("SlackAgent transport", () => {
     });
 
     const restartedRun = mock(async () => "restarted response");
-    createAgent(restartedRun);
-    const restartedMention = app.handlers.get("app_mention")!;
+    const hasConversation = mock(async (id: string) => persisted.has(id));
+    createAgent(restartedRun, hasConversation);
     const restartedMessage = app.handlers.get("message")!;
     const reply = {
       channel_type: "channel",
@@ -767,28 +778,27 @@ describe("SlackAgent transport", () => {
       thread_ts: "20",
     };
     await restartedMessage({
-      body: { event_id: "E_IGNORED_AFTER_RESTART" },
+      body: { event_id: "E_ACCEPTED_AFTER_RESTART" },
       event: reply,
       client: slack,
     });
-    expect(restartedRun).not.toHaveBeenCalled();
+    for (const [eventId, ts] of [
+      ["E_UNRELATED_AFTER_RESTART", "30"],
+      ["E_UNRELATED_CACHED", "31"],
+    ]) {
+      await restartedMessage({
+        body: { event_id: eventId },
+        event: { ...reply, ts, thread_ts: "29" },
+        client: slack,
+      });
+    }
 
-    await restartedMention({
-      body: { event_id: "E_REJOIN_AFTER_RESTART" },
-      event: { ...reply, text: "<@U_BOT> rejoin" },
-      client: slack,
-    });
-    await restartedMessage({
-      body: { event_id: "E_ACCEPTED_AFTER_RESTART" },
-      event: { ...reply, ts: "22" },
-      client: slack,
-    });
-
-    expect(restartedRun).toHaveBeenCalledTimes(2);
-    expect(restartedRun).toHaveBeenLastCalledWith(
+    expect(restartedRun).toHaveBeenCalledTimes(1);
+    expect(restartedRun).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: "C1:20", prompt: "follow up" }),
       expect.any(Object),
     );
+    expect(hasConversation.mock.calls).toEqual([["C1:20"], ["C1:29"]]);
   });
 
   test("deduplicates app mentions delivered through channel message subscriptions", async () => {

@@ -244,6 +244,8 @@ describe("Pi session management", () => {
       },
     });
 
+    expect(await backend.hasConversation("thread")).toBe(true);
+    expect(await backend.hasConversation("unrelated")).toBe(false);
     await backend.run({ conversationId: "thread", requesterId: "user", prompt: "continue" });
     expect(openedPath).toBe("/tmp/persisted-slack-session.jsonl");
     expect(controls.names).toEqual([]);

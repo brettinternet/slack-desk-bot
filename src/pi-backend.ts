@@ -156,6 +156,10 @@ export class PiBackend implements AgentBackend {
     this.cleanupTimer.unref();
   }
 
+  async hasConversation(conversationId: string): Promise<boolean> {
+    return this.sessions.has(conversationId) || Boolean(await this.findSession(conversationId));
+  }
+
   async run(
     { conversationId, prompt, attachments, signal }: AgentRequest,
     observer?: AgentRunObserver,

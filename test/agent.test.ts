@@ -43,6 +43,7 @@ describe("QueuedAgentBackend", () => {
     const first = deferred();
     const calls: string[] = [];
     const backend: AgentBackend = {
+      hasConversation: async (conversationId) => conversationId === "thread",
       run: async ({ prompt }) => {
         calls.push(prompt);
         if (prompt === "first") return first.promise;
@@ -53,6 +54,7 @@ describe("QueuedAgentBackend", () => {
     };
     const queued = new QueuedAgentBackend(backend, limits());
 
+    expect(await queued.hasConversation("thread")).toBe(true);
     const firstRun = queued.run(request("thread", "first"));
     const secondRun = queued.run(request("thread", "second"));
     await Bun.sleep(0);

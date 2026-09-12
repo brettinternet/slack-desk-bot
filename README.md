@@ -31,7 +31,7 @@ mise exec task -- task init
 - Publishes at most three Slack-safe messages (10,500 characters total) per agent response and marks truncated output.
 - Emits prompt-free JSON request logs with request, user, conversation, duration, tool count, execution outcome, and Slack delivery outcome fields.
 
-Use `!help` to see Slack examples and all supported commands. `!status`, `!reset`, and `!cancel` inspect a conversation's session, start a fresh session while retaining its previous transcript, or stop its active request. Plain `cancel` also cancels an active request. Commands are case-insensitive exact messages; an unsupported message beginning with `!` points back to `!help` instead of invoking the agent. In a channel, an allowlisted user must mention the bot to start a conversation. Further allowlisted human replies in that thread do not need a mention. Thread ownership is intentionally kept in memory rather than inferred from persisted agent sessions, so after a service restart mention the bot once in the thread before continuing. Root channel messages and replies in unrelated threads are ignored.
+Use `!help` to see Slack examples and all supported commands. `!status`, `!reset`, and `!cancel` inspect a conversation's session, start a fresh session while retaining its previous transcript, or stop its active request. Plain `cancel` also cancels an active request. Commands are case-insensitive exact messages; an unsupported message beginning with `!` points back to `!help` instead of invoking the agent. In a channel, an allowlisted user must mention the bot to start a conversation. Further allowlisted human replies in that thread do not need a mention, including after a service restart when the conversation has a persisted session. Root channel messages and replies in unrelated threads are ignored.
 
 ## Resource limits
 
@@ -171,7 +171,7 @@ Set only one of these settings. The file is read when the service starts, so res
 
 ## Security
 
-`SLACK_ALLOWED_USER_IDS` is a required comma-separated allowlist of Slack member IDs. Requests from all other users are rejected before Pi runs; the rejection reply is sent at most once per user and conversation every ten minutes so repeated messages cannot generate Slack API traffic. The app receives public and private channel message events so it can accept natural follow-ups, but it ignores channel roots and threads that an allowlisted mention has not claimed during the current service process. Find a member ID in Slack from **Profile → More → Copy member ID**.
+`SLACK_ALLOWED_USER_IDS` is a required comma-separated allowlist of Slack member IDs. Requests from all other users are rejected before Pi runs; the rejection reply is sent at most once per user and conversation every ten minutes so repeated messages cannot generate Slack API traffic. The app receives public and private channel message events so it can accept natural follow-ups, but it ignores channel roots and threads that an allowlisted mention has not claimed and that have no persisted SlackDeskBot session. Find a member ID in Slack from **Profile → More → Copy member ID**.
 
 The agent starts in read-only mode. Set `SLACK_AGENT_MODE=read-write` to explicitly enable `edit` and `write` for allowlisted users. Read-write mode processes only one conversation at a time because every conversation shares `SLACK_AGENT_CWD`; queued conversations resume when the active run settles. Use a dedicated checkout, review changes before committing, and do not point `SLACK_AGENT_CWD` at a directory containing unrelated or sensitive files.
 
