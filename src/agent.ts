@@ -25,8 +25,12 @@ export interface AgentRequest {
 export type AgentCommand = "reset" | "status" | "cancel";
 export type SessionCommand = Exclude<AgentCommand, "cancel">;
 
+export interface AgentRunObserver {
+  onToolUse(): void;
+}
+
 export interface AgentBackend {
-  run(request: AgentRequest): Promise<string>;
+  run(request: AgentRequest, observer?: AgentRunObserver): Promise<string>;
   sessionCommand?(conversationId: string, command: SessionCommand): Promise<string>;
   dispose(): void;
 }
@@ -128,8 +132,8 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
     private readonly limits: QueueLimits,
   ) {}
 
-  run(request: AgentRequest): Promise<string> {
-    return this.enqueue(request, (signal) => this.backend.run({ ...request, signal }));
+  run(request: AgentRequest, observer?: AgentRunObserver): Promise<string> {
+    return this.enqueue(request, (signal) => this.backend.run({ ...request, signal }, observer));
   }
 
   handleCommand(

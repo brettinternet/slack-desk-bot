@@ -100,6 +100,18 @@ describe("Pi attachment input", () => {
 });
 
 describe("Pi response collection", () => {
+  test("counts each started tool execution", () => {
+    let toolCount = 0;
+    const collector = createResponseCollector({ onToolUse: () => toolCount++ });
+
+    collector.handle(event({ type: "tool_execution_start" }));
+    collector.handle(event({ type: "tool_execution_update" }));
+    collector.handle(event({ type: "tool_execution_end" }));
+    collector.handle(event({ type: "tool_execution_start" }));
+
+    expect(toolCount).toBe(2);
+  });
+
   test("keeps completed assistant messages and separates turns", () => {
     const collector = createResponseCollector();
     collector.handle(event({ type: "message_start", message: { role: "assistant" } }));

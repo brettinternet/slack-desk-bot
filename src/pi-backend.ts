@@ -10,7 +10,13 @@ import {
   type SessionInfo,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentAttachment, AgentBackend, AgentRequest, SessionCommand } from "./agent.ts";
+import type {
+  AgentAttachment,
+  AgentBackend,
+  AgentRequest,
+  AgentRunObserver,
+  SessionCommand,
+} from "./agent.ts";
 import type { AgentMode } from "./config.ts";
 import { workspacePolicy } from "./workspace-policy.ts";
 
@@ -67,13 +73,15 @@ export function preparePiPrompt(prompt: string, attachments: readonly AgentAttac
   };
 }
 
-export function createResponseCollector() {
+export function createResponseCollector(observer?: AgentRunObserver) {
   const output: string[] = [];
   let currentMessage: string[] | undefined;
 
   return {
     handle(event: AgentSessionEvent): void {
-      if (event.type === "message_start" && event.message.role === "assistant") {
+      if (event.type === "tool_execution_start") {
+        observer?.onToolUse();
+      } else if (event.type === "message_start" && event.message.role === "assistant") {
         currentMessage = [];
       } else if (
         event.type === "message_update" &&
@@ -125,7 +133,10 @@ export class PiBackend implements AgentBackend {
     this.cleanupTimer.unref();
   }
 
-  async run({ conversationId, prompt, attachments, signal }: AgentRequest): Promise<string> {
+  async run(
+    { conversationId, prompt, attachments, signal }: AgentRequest,
+    observer?: AgentRunObserver,
+  ): Promise<string> {
     const entry = this.cachedSessionFor(conversationId);
     entry.activeRuns++;
     entry.lastUsedAt = this.now();
@@ -134,7 +145,7 @@ export class PiBackend implements AgentBackend {
       const session = await entry.ready;
       if (signal?.aborted) throw signal.reason;
 
-      const collector = createResponseCollector();
+      const collector = createResponseCollector(observer);
       const unsubscribe = session.subscribe(collector.handle);
       let abortPromise: Promise<void> | undefined;
       const abort = () => {

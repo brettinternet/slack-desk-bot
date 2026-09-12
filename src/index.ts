@@ -1,5 +1,6 @@
 import { QueuedAgentBackend } from "./agent.ts";
 import { loadConfig } from "./config.ts";
+import { startHealthServer } from "./health.ts";
 import { PiBackend } from "./pi-backend.ts";
 import { SlackAgent } from "./slack.ts";
 
@@ -21,10 +22,14 @@ const agent = new SlackAgent({
   ),
 });
 
+let healthServer: ReturnType<typeof startHealthServer> | undefined;
+
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
+    healthServer?.stop(true);
     void agent.stop().finally(() => process.exit());
   });
 }
 
 await agent.start();
+healthServer = startHealthServer(config.healthPort);

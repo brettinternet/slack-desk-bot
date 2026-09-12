@@ -15,6 +15,7 @@ export interface Config {
   sessionDir?: string;
   maxActiveSessions: number;
   sessionIdleMs: number;
+  healthPort: number;
 }
 
 const DEFAULTS = {
@@ -28,6 +29,7 @@ const DEFAULTS = {
   rateLimitRefillMs: 60_000,
   maxActiveSessions: 32,
   sessionIdleMs: 3_600_000,
+  healthPort: 3_210,
 } as const;
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
@@ -47,6 +49,12 @@ function positiveInteger(environment: NodeJS.ProcessEnv, name: string, fallback:
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive integer`);
   }
+  return value;
+}
+
+function port(environment: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const value = positiveInteger(environment, name, fallback);
+  if (value > 65_535) throw new Error(`${name} must be a valid TCP port`);
   return value;
 }
 
@@ -152,5 +160,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
       "SLACK_AGENT_SESSION_IDLE_MS",
       DEFAULTS.sessionIdleMs,
     ),
+    healthPort: port(environment, "SLACK_AGENT_HEALTH_PORT", DEFAULTS.healthPort),
   };
 }

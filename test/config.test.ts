@@ -31,6 +31,7 @@ describe("loadConfig", () => {
       sessionDir: undefined,
       maxActiveSessions: 32,
       sessionIdleMs: 3_600_000,
+      healthPort: 3_210,
     });
   });
 
@@ -45,6 +46,7 @@ describe("loadConfig", () => {
       SLACK_AGENT_TIMEOUT_MS: "100",
       SLACK_AGENT_MAX_CONCURRENT_CONVERSATIONS: "7",
       SLACK_AGENT_RATE_LIMIT_BURST: "4",
+      SLACK_AGENT_HEALTH_PORT: "4321",
     });
 
     expect(config.allowedUserIds).toEqual(new Set(["U0123", "U0789"]));
@@ -53,6 +55,7 @@ describe("loadConfig", () => {
       sessionDir: "/tmp/slack-agent-sessions",
       maxActiveSessions: 8,
       sessionIdleMs: 300_000,
+      healthPort: 4_321,
       queueLimits: {
         timeoutMs: 100,
         maxConcurrentConversations: 7,
@@ -103,6 +106,12 @@ describe("loadConfig", () => {
     );
     expect(() => loadConfig({ ...valid, SLACK_AGENT_TIMEOUT_MS: "0" })).toThrow(
       "SLACK_AGENT_TIMEOUT_MS must be a positive integer",
+    );
+    expect(() => loadConfig({ ...valid, SLACK_AGENT_HEALTH_PORT: "0" })).toThrow(
+      "SLACK_AGENT_HEALTH_PORT must be a positive integer",
+    );
+    expect(() => loadConfig({ ...valid, SLACK_AGENT_HEALTH_PORT: "65536" })).toThrow(
+      "SLACK_AGENT_HEALTH_PORT must be a valid TCP port",
     );
   });
 });

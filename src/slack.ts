@@ -2,6 +2,7 @@ import { App, LogLevel } from "@slack/bolt";
 import { AgentCancelledError, type CancellableAgentBackend } from "./agent.ts";
 import { EventDeduplicator } from "./event-deduplicator.ts";
 import { ingestSlackFiles } from "./slack-files.ts";
+import { type LogWriter, writeStructuredLog } from "./log.ts";
 import {
   conversationId,
   isSupportedDirectMessage,
@@ -16,6 +17,7 @@ interface SlackAgentOptions {
   allowedUserIds: ReadonlySet<string>;
   agent: CancellableAgentBackend;
   fetch?: typeof fetch;
+  log?: LogWriter;
 }
 
 interface SlackFileReference {
@@ -56,7 +58,16 @@ export class SlackAgent {
         !this.acceptEvent(body.event_id, event.channel, event.ts, event.client_msg_id)
       )
         return;
-      await this.respond(client, event.channel, event.ts, threadTs, event.user, prompt, files);
+      await this.respond(
+        client,
+        body.event_id,
+        event.channel,
+        event.ts,
+        threadTs,
+        event.user,
+        prompt,
+        files,
+      );
     });
 
     this.app.event("message", async ({ body, event, client }) => {
@@ -79,7 +90,16 @@ export class SlackAgent {
         !this.acceptEvent(body.event_id, event.channel, event.ts, clientMessageId)
       )
         return;
-      await this.respond(client, event.channel, event.ts, undefined, event.user, text, files);
+      await this.respond(
+        client,
+        body.event_id,
+        event.channel,
+        event.ts,
+        undefined,
+        event.user,
+        text,
+        files,
+      );
     });
   }
 
@@ -123,6 +143,7 @@ export class SlackAgent {
 
   private async respond(
     client: App["client"],
+    requestId: string,
     channel: string,
     messageTs: string,
     threadTs: string | undefined,
@@ -131,6 +152,9 @@ export class SlackAgent {
     files: readonly SlackFileReference[],
   ): Promise<void> {
     const id = conversationId(channel, threadTs);
+    const startedAt = performance.now();
+    let toolCount = 0;
+    let outcome: "success" | "cancelled" | "error" = "error";
 
     await client.reactions.add({ channel, timestamp: messageTs, name: "eyes" }).catch(() => {});
     const status = await client.chat
@@ -150,6 +174,7 @@ export class SlackAgent {
       }
       if (!prompt && attachments.length === 0) {
         if (statusTs) await client.chat.delete({ channel, ts: statusTs }).catch(() => {});
+        outcome = "success";
         return;
       }
 
@@ -160,19 +185,24 @@ export class SlackAgent {
           : undefined;
       const output = command
         ? await this.options.agent.handleCommand(id, requesterId, command)
-        : await this.options.agent.run({
-            conversationId: id,
-            requesterId,
-            prompt,
-            ...(attachments.length > 0 ? { attachments } : {}),
-          });
+        : await this.options.agent.run(
+            {
+              conversationId: id,
+              requesterId,
+              prompt,
+              ...(attachments.length > 0 ? { attachments } : {}),
+            },
+            { onToolUse: () => toolCount++ },
+          );
       await this.publishResult(client, channel, threadTs, statusTs, output);
+      outcome = "success";
       await client.reactions
         .add({ channel, timestamp: messageTs, name: "white_check_mark" })
         .catch(() => {});
     } catch (error) {
       const cancelled = error instanceof AgentCancelledError;
-      if (!cancelled) console.error("Agent request failed", error);
+      outcome = cancelled ? "cancelled" : "error";
+      if (!cancelled) console.error("Agent request failed", { requestId, error });
       const message = cancelled
         ? "Request cancelled."
         : `Agent request failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -182,6 +212,15 @@ export class SlackAgent {
       await client.reactions
         .remove({ channel, timestamp: messageTs, name: "eyes" })
         .catch(() => {});
+      (this.options.log ?? writeStructuredLog)({
+        event: "agent_request_completed",
+        request_id: requestId,
+        user: requesterId,
+        conversation: id,
+        duration_ms: Math.round(performance.now() - startedAt),
+        tool_count: toolCount,
+        outcome,
+      });
     }
   }
 

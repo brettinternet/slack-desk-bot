@@ -15,6 +15,7 @@ Your desktop coding agent, available in Slack. Slack transport and conversation 
 - Allows `read`, `grep`, `find`, and `ls` by default; `edit` and `write` require explicit read-write mode. Shell execution is unavailable.
 - Rejects tool paths outside `SLACK_AGENT_CWD`, including paths reached through existing symlinks.
 - Splits long responses into Slack-safe messages.
+- Emits prompt-free JSON request logs with request, user, conversation, duration, tool count, and outcome fields.
 
 Use `!status`, `!reset`, or `!cancel` as an exact message to inspect a conversation's session, start a fresh session while retaining its previous transcript, or stop its active request. Plain `cancel` also cancels an active request. In channels, mention the bot with the command as usual.
 
@@ -56,7 +57,7 @@ cp .env.example .env
 hum up
 ```
 
-`hum status`, `hum logs agent`, and `hum down` inspect and control the service. Bun loads `.env` automatically. The machine must remain awake and connected to Slack.
+`hum status`, `hum logs agent`, and `hum down` inspect and control the service. Hum verifies startup through `http://127.0.0.1:3210/healthz` instead of matching process output; set `SLACK_AGENT_HEALTH_PORT` to change the port. Bun loads `.env` automatically. The machine must remain awake and connected to Slack.
 
 ### Slack interaction instructions
 

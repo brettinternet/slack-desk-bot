@@ -4,6 +4,7 @@ processes:
   agent:
     argv: [bun, run, start]
     ready:
-      match: "SlackDeskBot connected"
+      exec: [bun, src/healthcheck.ts]
+      interval: 1s
       timeout: 30s
     restart: on-failure

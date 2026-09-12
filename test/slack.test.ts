@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { CancellableAgentBackend } from "../src/agent.ts";
+import type { AgentRunObserver, CancellableAgentBackend } from "../src/agent.ts";
+import type { RequestLog } from "../src/log.ts";
 
 interface SlackEventHandler {
   (input: {
@@ -176,11 +177,14 @@ describe("SlackAgent transport", () => {
       client: slack,
     });
 
-    expect(run).toHaveBeenCalledWith({
-      conversationId: "C1:1",
-      requesterId: "U_ALLOWED",
-      prompt: "request",
-    });
+    expect(run).toHaveBeenCalledWith(
+      {
+        conversationId: "C1:1",
+        requesterId: "U_ALLOWED",
+        prompt: "request",
+      },
+      { onToolUse: expect.any(Function) },
+    );
     expect(slack.chat.postMessage).toHaveBeenCalledWith({
       channel: "C1",
       thread_ts: "1",
@@ -201,6 +205,45 @@ describe("SlackAgent transport", () => {
       timestamp: "1",
       name: "eyes",
     });
+  });
+
+  test("logs request metadata and tool count without prompt contents", async () => {
+    const records: RequestLog[] = [];
+    const run = mock(async (_request: unknown, observer?: AgentRunObserver) => {
+      observer?.onToolUse();
+      observer?.onToolUse();
+      return "response";
+    });
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(run),
+      log: (record) => records.push(record),
+    });
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_LOGGED" },
+      event: {
+        user: "U_ALLOWED",
+        text: "secret prompt contents",
+        channel: "C1",
+        ts: "1",
+      },
+      client: client(),
+    });
+
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      event: "agent_request_completed",
+      request_id: "E_LOGGED",
+      user: "U_ALLOWED",
+      conversation: "C1:1",
+      tool_count: 2,
+      outcome: "success",
+    });
+    expect(records[0]!.duration_ms).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(records[0])).not.toContain("secret prompt contents");
   });
 
   test("routes existing threads and direct messages to stable conversations", async () => {
@@ -232,16 +275,22 @@ describe("SlackAgent transport", () => {
     });
 
     expect(run).toHaveBeenCalledTimes(2);
-    expect(run).toHaveBeenCalledWith({
-      conversationId: "C1:1",
-      requesterId: "U_ALLOWED",
-      prompt: "thread request",
-    });
-    expect(run).toHaveBeenCalledWith({
-      conversationId: "dm:D1",
-      requesterId: "U_ALLOWED",
-      prompt: "dm request",
-    });
+    expect(run).toHaveBeenCalledWith(
+      {
+        conversationId: "C1:1",
+        requesterId: "U_ALLOWED",
+        prompt: "thread request",
+      },
+      { onToolUse: expect.any(Function) },
+    );
+    expect(run).toHaveBeenCalledWith(
+      {
+        conversationId: "dm:D1",
+        requesterId: "U_ALLOWED",
+        prompt: "dm request",
+      },
+      { onToolUse: expect.any(Function) },
+    );
     expect(slack.chat.postMessage.mock.calls[0]?.[0]).toEqual({
       channel: "C1",
       thread_ts: "1",
@@ -276,7 +325,9 @@ describe("SlackAgent transport", () => {
   });
 
   test("reports failures and clears the working reaction", async () => {
-    const run = mock(async () => {
+    const records: RequestLog[] = [];
+    const run = mock(async (_request: unknown, observer?: AgentRunObserver) => {
+      observer?.onToolUse();
       throw new Error("backend unavailable");
     });
     new SlackAgent({
@@ -284,6 +335,7 @@ describe("SlackAgent transport", () => {
       appToken: "xapp-test",
       allowedUserIds: new Set(["U_ALLOWED"]),
       agent: backend(run),
+      log: (record) => records.push(record),
     });
     const slack = client();
 
@@ -307,6 +359,12 @@ describe("SlackAgent transport", () => {
       channel: "C1",
       timestamp: "2",
       name: "eyes",
+    });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      request_id: "E_FAILURE",
+      tool_count: 1,
+      outcome: "error",
     });
   });
 
@@ -433,18 +491,21 @@ describe("SlackAgent transport", () => {
       client: slack,
     });
 
-    expect(run).toHaveBeenCalledWith({
-      conversationId: "dm:D1",
-      requesterId: "U_ALLOWED",
-      prompt: "",
-      attachments: [
-        {
-          kind: "image",
-          name: "image.png",
-          mediaType: "image/png",
-          data: Buffer.from(png).toString("base64"),
-        },
-      ],
-    });
+    expect(run).toHaveBeenCalledWith(
+      {
+        conversationId: "dm:D1",
+        requesterId: "U_ALLOWED",
+        prompt: "",
+        attachments: [
+          {
+            kind: "image",
+            name: "image.png",
+            mediaType: "image/png",
+            data: Buffer.from(png).toString("base64"),
+          },
+        ],
+      },
+      { onToolUse: expect.any(Function) },
+    );
   });
 });
