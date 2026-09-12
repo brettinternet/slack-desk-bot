@@ -1,5 +1,6 @@
 import { App, LogLevel } from "@slack/bolt";
 import type { AgentBackend } from "./agent.ts";
+import { EventDeduplicator } from "./event-deduplicator.ts";
 import {
   conversationId,
   isSupportedDirectMessage,
@@ -15,6 +16,7 @@ interface SlackAgentOptions {
 
 export class SlackAgent {
   private readonly app: App;
+  private readonly events = new EventDeduplicator();
   private botUserId = "";
 
   constructor(private readonly options: SlackAgentOptions) {
@@ -25,13 +27,15 @@ export class SlackAgent {
       logLevel: LogLevel.INFO,
     });
 
-    this.app.event("app_mention", async ({ event, client }) => {
+    this.app.event("app_mention", async ({ body, event, client }) => {
       if (!event.user || event.bot_id) return;
       const prompt = stripBotMention(event.text, this.botUserId);
+      if (!prompt || !this.acceptEvent(body.event_id, event.channel, event.ts, event.client_msg_id))
+        return;
       await this.respond(client, event.channel, event.ts, event.thread_ts ?? event.ts, prompt);
     });
 
-    this.app.event("message", async ({ event, client }) => {
+    this.app.event("message", async ({ body, event, client }) => {
       if (
         event.channel_type !== "im" ||
         !isSupportedDirectMessage(event.subtype) ||
@@ -40,6 +44,9 @@ export class SlackAgent {
       )
         return;
       const text = "text" in event ? (event.text ?? "") : "";
+      const clientMessageId = "client_msg_id" in event ? event.client_msg_id : undefined;
+      if (!text || !this.acceptEvent(body.event_id, event.channel, event.ts, clientMessageId))
+        return;
       await this.respond(client, event.channel, event.ts, undefined, text);
     });
   }
@@ -55,6 +62,18 @@ export class SlackAgent {
   async stop(): Promise<void> {
     this.options.agent.dispose();
     await this.app.stop();
+  }
+
+  private acceptEvent(
+    eventId: string,
+    channel: string,
+    messageTs: string,
+    clientMessageId?: string,
+  ): boolean {
+    return this.events.accept([
+      `event:${eventId}`,
+      `message:${channel}:${clientMessageId ?? messageTs}`,
+    ]);
   }
 
   private async respond(
