@@ -11,6 +11,11 @@ import { workspacePolicy } from "./workspace-policy.ts";
 
 const TOOLS = ["read", "grep", "find", "ls", "edit", "write"];
 
+interface SessionEntry {
+  session: Promise<AgentSession>;
+  idleTimer?: ReturnType<typeof setTimeout>;
+}
+
 export function createResponseCollector() {
   const output: string[] = [];
   let currentMessage: string[] | undefined;
@@ -38,38 +43,74 @@ export function createResponseCollector() {
 }
 
 export class PiBackend implements AgentBackend {
-  private readonly sessions = new Map<string, Promise<AgentSession>>();
+  private readonly sessions = new Map<string, SessionEntry>();
 
-  constructor(private readonly workspace: string) {}
+  constructor(
+    private readonly workspace: string,
+    private readonly sessionIdleMs: number,
+  ) {}
 
-  async run({ conversationId, prompt }: AgentRequest): Promise<string> {
+  async run({ conversationId, prompt, signal }: AgentRequest): Promise<string> {
     const session = await this.sessionFor(conversationId);
+    if (signal?.aborted) throw signal.reason;
+
     const collector = createResponseCollector();
     const unsubscribe = session.subscribe(collector.handle);
+    let abortPromise: Promise<void> | undefined;
+    const abort = () => {
+      abortPromise ??= session.abort();
+    };
+    signal?.addEventListener("abort", abort, { once: true });
 
     try {
       await session.prompt(prompt);
+      if (signal?.aborted) throw signal.reason;
       return collector.text();
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      throw error;
     } finally {
+      signal?.removeEventListener("abort", abort);
+      if (abortPromise) await abortPromise;
       unsubscribe();
+      this.scheduleSessionDisposal(conversationId);
     }
   }
 
   dispose(): void {
-    for (const session of this.sessions.values()) {
-      void session.then((value) => value.dispose());
+    for (const entry of this.sessions.values()) {
+      if (entry.idleTimer) clearTimeout(entry.idleTimer);
+      void entry.session.then((session) => session.dispose());
     }
     this.sessions.clear();
   }
 
   private sessionFor(conversationId: string): Promise<AgentSession> {
     const existing = this.sessions.get(conversationId);
-    if (existing) return existing;
+    if (existing) {
+      if (existing.idleTimer) {
+        clearTimeout(existing.idleTimer);
+        existing.idleTimer = undefined;
+      }
+      return existing.session;
+    }
 
-    const created = this.createSession();
-    this.sessions.set(conversationId, created);
-    created.catch(() => this.sessions.delete(conversationId));
-    return created;
+    const entry: SessionEntry = { session: this.createSession() };
+    this.sessions.set(conversationId, entry);
+    entry.session.catch(() => {
+      if (this.sessions.get(conversationId) === entry) this.sessions.delete(conversationId);
+    });
+    return entry.session;
+  }
+
+  private scheduleSessionDisposal(conversationId: string): void {
+    const entry = this.sessions.get(conversationId);
+    if (!entry) return;
+    entry.idleTimer = setTimeout(() => {
+      if (this.sessions.get(conversationId) !== entry) return;
+      this.sessions.delete(conversationId);
+      void entry.session.then((session) => session.dispose());
+    }, this.sessionIdleMs);
   }
 
   private async createSession(): Promise<AgentSession> {
