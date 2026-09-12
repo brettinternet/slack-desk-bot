@@ -10,8 +10,12 @@ interface SlackEventHandler {
 }
 
 interface SlackClient {
-  chat: { postMessage: ReturnType<typeof mock> };
-  reactions: { add: ReturnType<typeof mock> };
+  chat: {
+    postMessage: ReturnType<typeof mock>;
+    update: ReturnType<typeof mock>;
+    delete: ReturnType<typeof mock>;
+  };
+  reactions: { add: ReturnType<typeof mock>; remove: ReturnType<typeof mock> };
   files: { info: ReturnType<typeof mock> };
 }
 
@@ -38,8 +42,12 @@ const { SlackAgent } = await import("../src/slack.ts");
 
 function client(): SlackClient {
   return {
-    chat: { postMessage: mock(async () => {}) },
-    reactions: { add: mock(async () => {}) },
+    chat: {
+      postMessage: mock(async () => ({ ts: "status-ts" })),
+      update: mock(async () => ({})),
+      delete: mock(async () => ({})),
+    },
+    reactions: { add: mock(async () => ({})), remove: mock(async () => ({})) },
     files: { info: mock(async () => ({ ok: true })) },
   };
 }
@@ -103,7 +111,57 @@ describe("Slack authorization", () => {
     expect(slack.chat.postMessage).toHaveBeenCalledWith({
       channel: "C1",
       thread_ts: "1",
+      text: "Working…",
+    });
+    expect(slack.chat.update).toHaveBeenCalledWith({
+      channel: "C1",
+      ts: "status-ts",
       text: "response",
+    });
+    expect(slack.reactions.add).toHaveBeenCalledWith({
+      channel: "C1",
+      timestamp: "1",
+      name: "white_check_mark",
+    });
+    expect(slack.reactions.remove).toHaveBeenCalledWith({
+      channel: "C1",
+      timestamp: "1",
+      name: "eyes",
+    });
+  });
+
+  test("reports failures and clears the working reaction", async () => {
+    const run = mock(async () => {
+      throw new Error("backend unavailable");
+    });
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(run),
+    });
+    const slack = client();
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_FAILURE" },
+      event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "2" },
+      client: slack,
+    });
+
+    expect(slack.chat.update).toHaveBeenCalledWith({
+      channel: "C1",
+      ts: "status-ts",
+      text: "Agent request failed: backend unavailable",
+    });
+    expect(slack.reactions.add).toHaveBeenCalledWith({
+      channel: "C1",
+      timestamp: "2",
+      name: "x",
+    });
+    expect(slack.reactions.remove).toHaveBeenCalledWith({
+      channel: "C1",
+      timestamp: "2",
+      name: "eyes",
     });
   });
 

@@ -133,6 +133,11 @@ export class SlackAgent {
     const id = conversationId(channel, threadTs);
 
     await client.reactions.add({ channel, timestamp: messageTs, name: "eyes" }).catch(() => {});
+    const status = await client.chat
+      .postMessage({ channel, thread_ts: threadTs, text: "Working…" })
+      .catch(() => undefined);
+    const statusTs = status?.ts;
+
     try {
       const { attachments, warnings } = await ingestSlackFiles(
         client,
@@ -143,7 +148,10 @@ export class SlackAgent {
       for (const warning of warnings) {
         await client.chat.postMessage({ channel, thread_ts: threadTs, text: warning });
       }
-      if (!prompt && attachments.length === 0) return;
+      if (!prompt && attachments.length === 0) {
+        if (statusTs) await client.chat.delete({ channel, ts: statusTs }).catch(() => {});
+        return;
+      }
 
       const command =
         attachments.length === 0
@@ -158,18 +166,45 @@ export class SlackAgent {
             prompt,
             ...(attachments.length > 0 ? { attachments } : {}),
           });
-      for (const text of splitSlackMessage(output)) {
-        await client.chat.postMessage({ channel, thread_ts: threadTs, text });
-      }
+      await this.publishResult(client, channel, threadTs, statusTs, output);
+      await client.reactions
+        .add({ channel, timestamp: messageTs, name: "white_check_mark" })
+        .catch(() => {});
     } catch (error) {
-      if (error instanceof AgentCancelledError) return;
-      const message = error instanceof Error ? error.message : String(error);
-      console.error("Agent request failed", error);
-      await client.chat.postMessage({
-        channel,
-        thread_ts: threadTs,
-        text: `Agent request failed: ${message}`,
-      });
+      const cancelled = error instanceof AgentCancelledError;
+      if (!cancelled) console.error("Agent request failed", error);
+      const message = cancelled
+        ? "Request cancelled."
+        : `Agent request failed: ${error instanceof Error ? error.message : String(error)}`;
+      await this.publishResult(client, channel, threadTs, statusTs, message);
+      await client.reactions.add({ channel, timestamp: messageTs, name: "x" }).catch(() => {});
+    } finally {
+      await client.reactions
+        .remove({ channel, timestamp: messageTs, name: "eyes" })
+        .catch(() => {});
+    }
+  }
+
+  private async publishResult(
+    client: App["client"],
+    channel: string,
+    threadTs: string | undefined,
+    statusTs: string | undefined,
+    output: string,
+  ): Promise<void> {
+    const [first, ...rest] = splitSlackMessage(output);
+    let updated = false;
+    if (statusTs) {
+      updated = await client.chat
+        .update({ channel, ts: statusTs, text: first })
+        .then(() => true)
+        .catch(() => false);
+    }
+    if (!updated) {
+      await client.chat.postMessage({ channel, thread_ts: threadTs, text: first });
+    }
+    for (const text of rest) {
+      await client.chat.postMessage({ channel, thread_ts: threadTs, text });
     }
   }
 }
