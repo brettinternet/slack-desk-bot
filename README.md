@@ -5,14 +5,17 @@ Run coding agents from Slack. Slack transport and conversation routing depend on
 ## Behavior
 
 - Responds to app mentions in channels and messages in the app's DM.
-- Keeps one agent session per Slack channel thread and one per DM channel.
+- Keeps one persisted agent session per Slack channel thread and one per DM channel.
+- Restores conversation history after service restarts.
 - Serializes messages within a conversation while allowing separate conversations to run concurrently.
 - Uses Pi's configured model, credentials, instructions, skills, and extensions.
 - Allows `read`, `grep`, `find`, `ls`, `edit`, and `write`; shell execution is unavailable.
 - Rejects tool paths outside `SLACK_AGENT_CWD`, including paths reached through existing symlinks.
 - Splits long responses into Slack-safe messages.
 
-Sessions are currently in memory and reset when the service restarts.
+Use `!status`, `!reset`, or `!cancel` as an exact message to inspect a conversation's session, start a fresh session while retaining its previous transcript, or stop its active request. In channels, mention the bot with the command as usual.
+
+Live sessions are disposed after 30 idle minutes and limited to 32 least-recently-used entries by default. Their persisted history is reopened on the next message. Configure these limits with `SLACK_AGENT_SESSION_IDLE_MINUTES` and `SLACK_AGENT_MAX_ACTIVE_SESSIONS`; `SLACK_AGENT_SESSION_DIR` optionally selects an absolute storage directory.
 
 ## Slack setup
 
@@ -48,6 +51,8 @@ hum up
 Every workspace member can request edits in the configured repository under the permissions of the local service account. Use a dedicated checkout, review changes before committing, and do not point `SLACK_AGENT_CWD` at a directory containing unrelated or sensitive files.
 
 The path policy limits Pi's selected filesystem tools, but locally installed Pi extensions run as trusted code. Only load extensions you trust on the service machine.
+
+Session JSONL files are designed for one service process. Running multiple instances against the same session directory requires conversation affinity and external locking.
 
 ## Adding another agent
 

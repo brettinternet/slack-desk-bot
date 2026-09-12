@@ -3,8 +3,11 @@ export interface AgentRequest {
   prompt: string;
 }
 
+export type AgentCommand = "reset" | "status" | "cancel";
+
 export interface AgentBackend {
-  run(request: AgentRequest): Promise<string>;
+  run(request: AgentRequest): Promise<string | undefined>;
+  command(conversationId: string, command: AgentCommand): Promise<string>;
   dispose(): void;
 }
 
@@ -13,26 +16,36 @@ export class QueuedAgentBackend implements AgentBackend {
 
   constructor(private readonly backend: AgentBackend) {}
 
-  async run(request: AgentRequest): Promise<string> {
-    const previous = this.tails.get(request.conversationId) ?? Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const tail = previous.catch(() => {}).then(() => current);
-    this.tails.set(request.conversationId, tail);
+  run(request: AgentRequest): Promise<string | undefined> {
+    return this.enqueue(request.conversationId, () => this.backend.run(request));
+  }
 
-    await previous.catch(() => {});
-    try {
-      return await this.backend.run(request);
-    } finally {
-      release();
-      if (this.tails.get(request.conversationId) === tail)
-        this.tails.delete(request.conversationId);
+  command(conversationId: string, command: AgentCommand): Promise<string> {
+    if (command === "cancel" || command === "status") {
+      return this.backend.command(conversationId, command);
     }
+    return this.enqueue(conversationId, () => this.backend.command(conversationId, command));
   }
 
   dispose(): void {
     this.backend.dispose();
+  }
+
+  private async enqueue<T>(conversationId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.tails.get(conversationId);
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = (previous ?? Promise.resolve()).catch(() => {}).then(() => current);
+    this.tails.set(conversationId, tail);
+
+    if (previous) await previous.catch(() => {});
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.tails.get(conversationId) === tail) this.tails.delete(conversationId);
+    }
   }
 }

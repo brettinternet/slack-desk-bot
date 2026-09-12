@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   conversationId,
   isSupportedDirectMessage,
+  parseAgentCommand,
   splitSlackMessage,
   stripBotMention,
 } from "../src/messages.ts";
@@ -16,6 +17,12 @@ describe("Slack message helpers", () => {
     expect(isSupportedDirectMessage("file_share")).toBe(true);
     expect(isSupportedDirectMessage("bot_message")).toBe(false);
     expect(isSupportedDirectMessage("message_changed")).toBe(false);
+  });
+
+  test("recognizes only exact management commands", () => {
+    expect(parseAgentCommand(" !STATUS ")).toBe("status");
+    expect(parseAgentCommand("!reset please")).toBeUndefined();
+    expect(parseAgentCommand("reset")).toBeUndefined();
   });
 
   test("maps channel threads and DMs to stable conversations", () => {

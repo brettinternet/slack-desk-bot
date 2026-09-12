@@ -7,7 +7,13 @@ const config = loadConfig();
 const agent = new SlackAgent({
   botToken: config.slackBotToken,
   appToken: config.slackAppToken,
-  agent: new QueuedAgentBackend(new PiBackend(config.workspace)),
+  agent: new QueuedAgentBackend(
+    new PiBackend(config.workspace, {
+      sessionDir: config.sessionDir,
+      maxActiveSessions: config.maxActiveSessions,
+      sessionIdleMs: config.sessionIdleMs,
+    }),
+  ),
 });
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

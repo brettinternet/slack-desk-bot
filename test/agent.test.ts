@@ -19,6 +19,7 @@ describe("QueuedAgentBackend", () => {
         if (prompt === "first") return first.promise;
         return prompt;
       },
+      command: async (_, command) => command,
       dispose: () => {},
     };
     const queued = new QueuedAgentBackend(backend);
@@ -41,6 +42,7 @@ describe("QueuedAgentBackend", () => {
         calls.push(conversationId);
         return conversationId;
       },
+      command: async (_, command) => command,
       dispose: () => {},
     };
     const queued = new QueuedAgentBackend(backend);
@@ -52,5 +54,32 @@ describe("QueuedAgentBackend", () => {
       ]),
     ).toEqual(["one", "two"]);
     expect(calls).toEqual(["one", "two"]);
+  });
+
+  test("queues reset but lets cancel bypass a running request", async () => {
+    const first = deferred();
+    const calls: string[] = [];
+    const backend: AgentBackend = {
+      run: async () => {
+        calls.push("run");
+        return first.promise;
+      },
+      command: async (_, command) => {
+        calls.push(command);
+        return command;
+      },
+      dispose: () => {},
+    };
+    const queued = new QueuedAgentBackend(backend);
+
+    const running = queued.run({ conversationId: "thread", prompt: "work" });
+    const reset = queued.command("thread", "reset");
+    expect(await queued.command("thread", "cancel")).toBe("cancel");
+    expect(calls).toEqual(["run", "cancel"]);
+
+    first.resolve("done");
+    await running;
+    expect(await reset).toBe("reset");
+    expect(calls).toEqual(["run", "cancel", "reset"]);
   });
 });

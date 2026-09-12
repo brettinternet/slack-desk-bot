@@ -1,15 +1,41 @@
+import { createHash } from "node:crypto";
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   type AgentSession,
   type AgentSessionEvent,
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
+  type SessionInfo,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentBackend, AgentRequest } from "./agent.ts";
+import type { AgentBackend, AgentCommand, AgentRequest } from "./agent.ts";
 import { workspacePolicy } from "./workspace-policy.ts";
 
 const TOOLS = ["read", "grep", "find", "ls", "edit", "write"];
+const SESSION_NAME_PREFIX = "slack-agent:";
+const DEFAULT_MAX_ACTIVE_SESSIONS = 32;
+const DEFAULT_SESSION_IDLE_MS = 30 * 60 * 1_000;
+const CLEANUP_INTERVAL_MS = 60_000;
+
+interface CachedSession {
+  ready: Promise<AgentSession>;
+  session?: AgentSession;
+  lastUsedAt: number;
+  activeRuns: number;
+  cancelled: boolean;
+}
+
+export interface PiBackendOptions {
+  sessionDir?: string;
+  maxActiveSessions?: number;
+  sessionIdleMs?: number;
+  now?: () => number;
+  sessionFactory?: (sessionManager: SessionManager) => Promise<AgentSession>;
+  sessionLister?: () => Promise<SessionInfo[]>;
+  freshSessionManagerFactory?: () => SessionManager;
+}
 
 export function createResponseCollector() {
   const output: string[] = [];
@@ -38,41 +64,117 @@ export function createResponseCollector() {
 }
 
 export class PiBackend implements AgentBackend {
-  private readonly sessions = new Map<string, Promise<AgentSession>>();
+  private readonly sessions = new Map<string, CachedSession>();
+  private readonly sessionDir: string;
+  private readonly maxActiveSessions: number;
+  private readonly sessionIdleMs: number;
+  private readonly now: () => number;
+  private readonly cleanupTimer: ReturnType<typeof setInterval>;
+  private disposed = false;
 
-  constructor(private readonly workspace: string) {}
+  constructor(
+    private readonly workspace: string,
+    private readonly options: PiBackendOptions = {},
+  ) {
+    const workspaceKey = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
+    this.sessionDir =
+      options.sessionDir ?? join(getAgentDir(), "slack-agent", "sessions", workspaceKey);
+    this.maxActiveSessions = options.maxActiveSessions ?? DEFAULT_MAX_ACTIVE_SESSIONS;
+    this.sessionIdleMs = options.sessionIdleMs ?? DEFAULT_SESSION_IDLE_MS;
+    this.now = options.now ?? Date.now;
+    this.cleanupTimer = setInterval(() => this.sweep(), CLEANUP_INTERVAL_MS);
+    this.cleanupTimer.unref();
+  }
 
-  async run({ conversationId, prompt }: AgentRequest): Promise<string> {
-    const session = await this.sessionFor(conversationId);
-    const collector = createResponseCollector();
-    const unsubscribe = session.subscribe(collector.handle);
+  async run({ conversationId, prompt }: AgentRequest): Promise<string | undefined> {
+    const entry = this.cachedSessionFor(conversationId);
+    entry.activeRuns++;
+    entry.cancelled = false;
+    entry.lastUsedAt = this.now();
 
     try {
-      await session.prompt(prompt);
-      return collector.text();
+      const session = await entry.ready;
+      const collector = createResponseCollector();
+      const unsubscribe = session.subscribe(collector.handle);
+      try {
+        try {
+          await session.prompt(prompt);
+        } catch (error) {
+          if (entry.cancelled) return undefined;
+          throw error;
+        }
+        return entry.cancelled ? undefined : collector.text();
+      } finally {
+        unsubscribe();
+      }
     } finally {
-      unsubscribe();
+      entry.activeRuns--;
+      entry.lastUsedAt = this.now();
+      this.sweep();
+    }
+  }
+
+  command(conversationId: string, command: AgentCommand): Promise<string> {
+    switch (command) {
+      case "status":
+        return this.status(conversationId);
+      case "reset":
+        return this.reset(conversationId);
+      case "cancel":
+        return this.cancel(conversationId);
     }
   }
 
   dispose(): void {
-    for (const session of this.sessions.values()) {
-      void session.then((value) => value.dispose());
+    this.disposed = true;
+    clearInterval(this.cleanupTimer);
+    for (const entry of this.sessions.values()) {
+      void entry.ready.then((session) => session.dispose()).catch(() => {});
     }
     this.sessions.clear();
   }
 
-  private sessionFor(conversationId: string): Promise<AgentSession> {
+  private cachedSessionFor(conversationId: string): CachedSession {
+    if (this.disposed) throw new Error("Pi backend is disposed");
     const existing = this.sessions.get(conversationId);
     if (existing) return existing;
 
-    const created = this.createSession();
-    this.sessions.set(conversationId, created);
-    created.catch(() => this.sessions.delete(conversationId));
-    return created;
+    const entry: CachedSession = {
+      ready: Promise.resolve(undefined as never),
+      lastUsedAt: this.now(),
+      activeRuns: 0,
+      cancelled: false,
+    };
+    entry.ready = this.restoreOrCreateSession(conversationId).then((session) => {
+      entry.session = session;
+      return session;
+    });
+    this.sessions.set(conversationId, entry);
+    entry.ready.catch(() => {
+      if (this.sessions.get(conversationId) === entry) this.sessions.delete(conversationId);
+    });
+    return entry;
   }
 
-  private async createSession(): Promise<AgentSession> {
+  private async restoreOrCreateSession(conversationId: string): Promise<AgentSession> {
+    const persisted = await this.findSession(conversationId);
+    const manager = persisted
+      ? SessionManager.open(persisted.path, this.sessionDir, this.workspace)
+      : this.createPersistentManager();
+    const session = await this.createSession(manager);
+    if (!persisted) session.setSessionName(this.sessionName(conversationId));
+    return session;
+  }
+
+  private async createFreshSession(conversationId: string): Promise<AgentSession> {
+    const session = await this.createSession(this.createPersistentManager());
+    session.setSessionName(this.sessionName(conversationId));
+    return session;
+  }
+
+  private async createSession(sessionManager: SessionManager): Promise<AgentSession> {
+    if (this.options.sessionFactory) return this.options.sessionFactory(sessionManager);
+
     const resourceLoader = new DefaultResourceLoader({
       cwd: this.workspace,
       agentDir: getAgentDir(),
@@ -82,9 +184,125 @@ export class PiBackend implements AgentBackend {
     const { session } = await createAgentSession({
       cwd: this.workspace,
       resourceLoader,
-      sessionManager: SessionManager.inMemory(this.workspace),
+      sessionManager,
       tools: TOOLS,
     });
     return session;
+  }
+
+  private async listSessions(): Promise<SessionInfo[]> {
+    return this.options.sessionLister
+      ? this.options.sessionLister()
+      : SessionManager.list(this.workspace, this.sessionDir);
+  }
+
+  private async findSession(conversationId: string): Promise<SessionInfo | undefined> {
+    const name = this.sessionName(conversationId);
+    return (await this.listSessions())
+      .filter((session) => session.name === name)
+      .sort((left, right) => right.modified.getTime() - left.modified.getTime())[0];
+  }
+
+  private async status(conversationId: string): Promise<string> {
+    const cached = this.sessions.get(conversationId);
+    if (cached) {
+      const session = await cached.ready;
+      const stats = session.getSessionStats();
+      return [
+        `Session: ${stats.sessionId.slice(0, 8)}`,
+        `State: ${cached.activeRuns > 0 ? "running" : "idle"}`,
+        `Messages: ${stats.totalMessages}`,
+        `Last active: ${new Date(cached.lastUsedAt).toISOString()}`,
+        `Persisted: ${stats.sessionFile && existsSync(stats.sessionFile) ? "yes" : "no"}`,
+      ].join("\n");
+    }
+
+    const persisted = await this.findSession(conversationId);
+    if (!persisted) return "No session exists for this conversation.";
+    return [
+      `Session: ${persisted.id.slice(0, 8)}`,
+      "State: inactive",
+      `Messages: ${persisted.messageCount}`,
+      `Last active: ${persisted.modified.toISOString()}`,
+      "Persisted: yes",
+    ].join("\n");
+  }
+
+  private async reset(conversationId: string): Promise<string> {
+    const cached = this.sessions.get(conversationId);
+    if (cached?.activeRuns) return "Cannot reset while a request is running. Cancel it first.";
+
+    const previousInfo = cached ? undefined : await this.findSession(conversationId);
+    const previous = cached ? await cached.ready : undefined;
+    const fresh = await this.createFreshSession(conversationId);
+    const archiveName = `${this.sessionName(conversationId)}:reset:${this.now()}`;
+
+    if (previous) {
+      previous.setSessionName(archiveName);
+      previous.dispose();
+    } else if (previousInfo) {
+      SessionManager.open(previousInfo.path, this.sessionDir, this.workspace).appendSessionInfo(
+        archiveName,
+      );
+    }
+
+    const entry: CachedSession = {
+      ready: Promise.resolve(fresh),
+      session: fresh,
+      lastUsedAt: this.now(),
+      activeRuns: 0,
+      cancelled: false,
+    };
+    this.sessions.set(conversationId, entry);
+    this.sweep();
+    return `Session reset. Previous history was retained; new session: ${fresh.sessionId.slice(0, 8)}.`;
+  }
+
+  private async cancel(conversationId: string): Promise<string> {
+    const cached = this.sessions.get(conversationId);
+    if (!cached || cached.activeRuns === 0) return "No active request to cancel.";
+    cached.cancelled = true;
+    const session = await cached.ready;
+    await session.abort();
+    return "Active request cancelled.";
+  }
+
+  private sweep(): void {
+    const now = this.now();
+    for (const [conversationId, entry] of this.sessions) {
+      if (entry.activeRuns === 0 && now - entry.lastUsedAt >= this.sessionIdleMs) {
+        this.evict(conversationId, entry);
+      }
+    }
+
+    if (this.sessions.size <= this.maxActiveSessions) return;
+    const candidates = [...this.sessions.entries()]
+      .filter(([, entry]) => entry.activeRuns === 0)
+      .sort(([, left], [, right]) => left.lastUsedAt - right.lastUsedAt);
+    for (const [conversationId, entry] of candidates) {
+      if (this.sessions.size <= this.maxActiveSessions) break;
+      this.evict(conversationId, entry);
+    }
+  }
+
+  private evict(conversationId: string, entry: CachedSession): void {
+    if (this.sessions.get(conversationId) !== entry) return;
+    this.sessions.delete(conversationId);
+    void entry.ready.then((session) => session.dispose()).catch(() => {});
+  }
+
+  private createPersistentManager(): SessionManager {
+    if (this.options.freshSessionManagerFactory) {
+      return this.options.freshSessionManagerFactory();
+    }
+    const pending = SessionManager.create(this.workspace, this.sessionDir);
+    const sessionFile = pending.getSessionFile();
+    if (!sessionFile) throw new Error("Persistent session has no file path");
+    writeFileSync(sessionFile, "", { flag: "wx" });
+    return SessionManager.open(sessionFile, this.sessionDir, this.workspace);
+  }
+
+  private sessionName(conversationId: string): string {
+    return `${SESSION_NAME_PREFIX}${conversationId}`;
   }
 }

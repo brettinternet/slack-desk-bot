@@ -3,6 +3,7 @@ import type { AgentBackend } from "./agent.ts";
 import {
   conversationId,
   isSupportedDirectMessage,
+  parseAgentCommand,
   splitSlackMessage,
   stripBotMention,
 } from "./messages.ts";
@@ -68,10 +69,12 @@ export class SlackAgent {
 
     await client.reactions.add({ channel, timestamp: messageTs, name: "eyes" }).catch(() => {});
     try {
-      const output = await this.options.agent.run({
-        conversationId: conversationId(channel, threadTs),
-        prompt,
-      });
+      const id = conversationId(channel, threadTs);
+      const command = parseAgentCommand(prompt);
+      const output = command
+        ? await this.options.agent.command(id, command)
+        : await this.options.agent.run({ conversationId: id, prompt });
+      if (output === undefined) return;
       for (const text of splitSlackMessage(output)) {
         await client.chat.postMessage({ channel, thread_ts: threadTs, text });
       }
