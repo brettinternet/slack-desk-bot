@@ -7,12 +7,20 @@ Run coding agents from Slack. Slack transport and conversation routing depend on
 - Responds to app mentions in channels and messages in the app's DM.
 - Keeps one agent session per Slack channel thread and one per DM channel.
 - Serializes messages within a conversation while allowing separate conversations to run concurrently.
+- Bounds runtime, queue depth, concurrent conversations, and per-user request volume.
+- Cancels the active request when a user sends `cancel` in its DM or channel thread.
 - Uses Pi's configured model, credentials, instructions, skills, and extensions.
 - Allows `read`, `grep`, `find`, `ls`, `edit`, and `write`; shell execution is unavailable.
 - Rejects tool paths outside `SLACK_AGENT_CWD`, including paths reached through existing symlinks.
 - Splits long responses into Slack-safe messages.
 
-Sessions are currently in memory and reset when the service restarts.
+Sessions are kept in memory, evicted after an idle timeout, and reset when the service restarts.
+
+## Resource limits
+
+The defaults allow three concurrent conversations, two queued requests per conversation, twenty queued requests globally, and three active or queued requests per user. Each user may submit a burst of three requests, replenishing at one request per minute. Agent runs time out after five minutes and queued requests expire after ten minutes.
+
+The optional `SLACK_AGENT_*` settings in [`.env.example`](.env.example) override these limits. Cancellation requests bypass admission and rate limits.
 
 ## Slack setup
 

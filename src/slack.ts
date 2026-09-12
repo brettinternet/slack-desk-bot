@@ -1,5 +1,5 @@
 import { App, LogLevel } from "@slack/bolt";
-import type { AgentBackend } from "./agent.ts";
+import { AgentCancelledError, type CancellableAgentBackend } from "./agent.ts";
 import {
   conversationId,
   isSupportedDirectMessage,
@@ -10,7 +10,7 @@ import {
 interface SlackAgentOptions {
   botToken: string;
   appToken: string;
-  agent: AgentBackend;
+  agent: CancellableAgentBackend;
 }
 
 export class SlackAgent {
@@ -28,7 +28,14 @@ export class SlackAgent {
     this.app.event("app_mention", async ({ event, client }) => {
       if (!event.user || event.bot_id) return;
       const prompt = stripBotMention(event.text, this.botUserId);
-      await this.respond(client, event.channel, event.ts, event.thread_ts ?? event.ts, prompt);
+      await this.respond(
+        client,
+        event.channel,
+        event.ts,
+        event.thread_ts ?? event.ts,
+        event.user,
+        prompt,
+      );
     });
 
     this.app.event("message", async ({ event, client }) => {
@@ -40,7 +47,7 @@ export class SlackAgent {
       )
         return;
       const text = "text" in event ? (event.text ?? "") : "";
-      await this.respond(client, event.channel, event.ts, undefined, text);
+      await this.respond(client, event.channel, event.ts, undefined, event.user, text);
     });
   }
 
@@ -62,20 +69,34 @@ export class SlackAgent {
     channel: string,
     messageTs: string,
     threadTs: string | undefined,
+    requesterId: string,
     prompt: string,
   ): Promise<void> {
     if (!prompt) return;
 
+    const id = conversationId(channel, threadTs);
+    if (prompt.trim().toLowerCase() === "cancel") {
+      const cancelled = this.options.agent.cancelActive(id, requesterId);
+      await client.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text: cancelled ? "Cancelled the active request." : "There is no active request to cancel.",
+      });
+      return;
+    }
+
     await client.reactions.add({ channel, timestamp: messageTs, name: "eyes" }).catch(() => {});
     try {
       const output = await this.options.agent.run({
-        conversationId: conversationId(channel, threadTs),
+        conversationId: id,
+        requesterId,
         prompt,
       });
       for (const text of splitSlackMessage(output)) {
         await client.chat.postMessage({ channel, thread_ts: threadTs, text });
       }
     } catch (error) {
+      if (error instanceof AgentCancelledError) return;
       const message = error instanceof Error ? error.message : String(error);
       console.error("Agent request failed", error);
       await client.chat.postMessage({
