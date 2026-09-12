@@ -35,10 +35,30 @@ interface SlackClient {
 
 let app: MockSlackApp;
 
+class MockSocketModeClient {
+  private readonly listeners = new Map<string, Array<() => void>>();
+
+  on(event: string, listener: () => void): void {
+    this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener]);
+  }
+
+  emit(event: string): void {
+    for (const listener of this.listeners.get(event) ?? []) listener();
+  }
+}
+
+class MockSocketModeReceiver {
+  readonly client = new MockSocketModeClient();
+
+  constructor(_options: { appToken: string }) {}
+}
+
 class MockSlackApp {
   readonly handlers = new Map<string, SlackEventHandler>();
+  readonly receiver: MockSocketModeReceiver;
 
-  constructor() {
+  constructor(options: { receiver: MockSocketModeReceiver }) {
+    this.receiver = options.receiver;
     app = this;
   }
 
@@ -50,9 +70,11 @@ class MockSlackApp {
 mock.module("@slack/bolt", () => ({
   App: MockSlackApp,
   LogLevel: { INFO: "info" },
+  SocketModeReceiver: MockSocketModeReceiver,
 }));
 
 const { SlackAgent, userFacingAgentError } = await import("../src/slack.ts");
+const { HealthState } = await import("../src/health.ts");
 
 function client(): SlackClient {
   return {
@@ -107,6 +129,89 @@ function queueLimits(overrides: Partial<QueueLimits> = {}): QueueLimits {
 }
 
 describe("SlackAgent transport", () => {
+  test("tracks Socket Mode connection lifecycle transitions", () => {
+    const health = new HealthState();
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+      health,
+    });
+
+    app.receiver.client.emit("connected");
+    expect(
+      health.snapshot({
+        active: 0,
+        queued: 0,
+        limits: { max_concurrent: 1, max_queued: 1 },
+        saturated: false,
+        backend_available: true,
+      }).slack.connection,
+    ).toBe("connected");
+    app.receiver.client.emit("reconnecting");
+    expect(
+      health.snapshot({
+        active: 0,
+        queued: 0,
+        limits: { max_concurrent: 1, max_queued: 1 },
+        saturated: false,
+        backend_available: true,
+      }).status,
+    ).toBe("degraded");
+    app.receiver.client.emit("disconnected");
+    expect(
+      health.snapshot({
+        active: 0,
+        queued: 0,
+        limits: { max_concurrent: 1, max_queued: 1 },
+        saturated: false,
+        backend_available: true,
+      }).status,
+    ).toBe("unhealthy");
+  });
+
+  test("degrades readiness after three result delivery failures", async () => {
+    const health = new HealthState();
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+      health,
+    });
+    app.receiver.client.emit("connected");
+    const slack = client();
+    slack.chat.update.mockImplementation(async () => {
+      throw new Error("update unavailable");
+    });
+    slack.chat.postMessage.mockImplementation(async (message: { text: string }) => {
+      if (message.text === "Queued…") return { ts: "status-ts" };
+      throw new Error("post unavailable");
+    });
+
+    for (const eventId of ["E_DELIVERY_1", "E_DELIVERY_2", "E_DELIVERY_3"]) {
+      await app.handlers.get("app_mention")!({
+        body: { event_id: eventId },
+        event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: eventId },
+        client: slack,
+      });
+    }
+
+    expect(
+      health.snapshot({
+        active: 0,
+        queued: 0,
+        limits: { max_concurrent: 1, max_queued: 1 },
+        saturated: false,
+        backend_available: true,
+      }),
+    ).toMatchObject({
+      status: "degraded",
+      slack: { consecutive_delivery_failures: 3 },
+    });
+  });
+
   test("filters unsupported and empty events", async () => {
     const run = mock(async () => "response");
     createAgent(run);

@@ -65,6 +65,37 @@ describe("QueuedAgentBackend", () => {
     queued.dispose();
   });
 
+  test("reports sanitized active, queued, limit, and disposal state", async () => {
+    const active = deferred();
+    const backend: AgentBackend = {
+      run: async () => active.promise,
+      dispose: () => {},
+    };
+    const queued = new QueuedAgentBackend(
+      backend,
+      limits({ maxConcurrentConversations: 1, maxGlobalQueue: 2 }),
+    );
+
+    const first = queued.run(request("one", "first"));
+    const second = queued.run(request("two", "second"));
+    const third = queued.run(request("three", "third"));
+    await Bun.sleep(0);
+    expect(queued.snapshot()).toEqual({
+      active: 1,
+      queued: 2,
+      limits: { max_concurrent: 1, max_queued: 2 },
+      saturated: true,
+      backend_available: true,
+    });
+
+    queued.dispose();
+    expect(queued.snapshot().backend_available).toBe(false);
+    active.resolve("done");
+    await expect(first).rejects.toThrow("disposed");
+    await expect(second).rejects.toThrow("disposed");
+    await expect(third).rejects.toThrow("disposed");
+  });
+
   test("reports immediate and queued lifecycle transitions", async () => {
     const first = deferred();
     const events: string[] = [];

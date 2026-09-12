@@ -1,6 +1,6 @@
 import { QueuedAgentBackend } from "./agent.ts";
 import { loadConfig } from "./config.ts";
-import { startHealthServer } from "./health.ts";
+import { HealthState, startHealthServer } from "./health.ts";
 import { PiBackend } from "./pi-backend.ts";
 import { SlackAgent } from "./slack.ts";
 
@@ -12,20 +12,23 @@ if (config.queueLimits.maxConcurrentConversations !== config.configuredMaxConcur
       `(configured: ${config.configuredMaxConcurrentConversations}) to protect the shared checkout.`,
   );
 }
+const health = new HealthState();
+const queuedAgent = new QueuedAgentBackend(
+  new PiBackend(config.workspace, {
+    mode: config.agentMode,
+    instructions: config.instructions,
+    sessionDir: config.sessionDir,
+    maxActiveSessions: config.maxActiveSessions,
+    sessionIdleMs: config.sessionIdleMs,
+  }),
+  config.queueLimits,
+);
 const agent = new SlackAgent({
   botToken: config.slackBotToken,
   appToken: config.slackAppToken,
   allowedUserIds: config.allowedUserIds,
-  agent: new QueuedAgentBackend(
-    new PiBackend(config.workspace, {
-      mode: config.agentMode,
-      instructions: config.instructions,
-      sessionDir: config.sessionDir,
-      maxActiveSessions: config.maxActiveSessions,
-      sessionIdleMs: config.sessionIdleMs,
-    }),
-    config.queueLimits,
-  ),
+  agent: queuedAgent,
+  health,
 });
 
 let healthServer: ReturnType<typeof startHealthServer> | undefined;
@@ -38,4 +41,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 
 await agent.start();
-healthServer = startHealthServer(config.healthPort);
+healthServer = startHealthServer(config.healthPort, {
+  state: health,
+  queue: () => queuedAgent.snapshot(),
+});

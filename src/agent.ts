@@ -58,6 +58,17 @@ export interface QueueLimits {
   rateLimitRefillMs: number;
 }
 
+export interface QueueSnapshot {
+  active: number;
+  queued: number;
+  limits: {
+    max_concurrent: number;
+    max_queued: number;
+  };
+  saturated: boolean;
+  backend_available: boolean;
+}
+
 export class ConversationQueueFullError extends Error {
   constructor() {
     super("This conversation already has too many queued requests");
@@ -186,6 +197,19 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
     job.controller.abort(error);
     this.completeJob(job, undefined, error);
     return true;
+  }
+
+  snapshot(): QueueSnapshot {
+    return {
+      active: this.activeConversationCount,
+      queued: this.totalQueuedCount,
+      limits: {
+        max_concurrent: this.limits.maxConcurrentConversations,
+        max_queued: this.limits.maxGlobalQueue,
+      },
+      saturated: this.totalQueuedCount >= this.limits.maxGlobalQueue,
+      backend_available: !this.disposed,
+    };
   }
 
   dispose(): void {

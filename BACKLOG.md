@@ -299,7 +299,7 @@ The backend-neutral run observer now reports queue admission and execution start
 ## BL-009 — Report service readiness and useful operational state
 
 **Priority:** P2
-**Status:** Ready
+**Status:** Done
 **Depends on:** BL-007
 
 ### Context
@@ -327,6 +327,10 @@ Separate liveness from readiness. Track a small sanitized snapshot: Slack connec
 - Queue saturation and last-success timestamps are available in sanitized operator diagnostics or structured logs.
 - Connection transitions and health serialization have focused tests.
 - README defines what each health state means and the first troubleshooting command to run.
+
+### Completion notes
+
+`/healthz` remains a cheap process liveness check while `/readyz` reports sanitized Slack connection, backend, queue, and delivery state. Hum now checks readiness; three consecutive result-delivery failures mark readiness degraded, while best-effort reaction failures and queue load remain non-fatal. Focused tests cover health serialization, queue snapshots, connection transitions, and delivery degradation.
 
 ---
 

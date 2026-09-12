@@ -1,4 +1,4 @@
-import { App, LogLevel } from "@slack/bolt";
+import { App, LogLevel, SocketModeReceiver } from "@slack/bolt";
 import {
   AgentCancelledError,
   AgentTimeoutError,
@@ -12,6 +12,7 @@ import {
 import { EventDeduplicator } from "./event-deduplicator.ts";
 import { ingestSlackFiles } from "./slack-files.ts";
 import { type LogWriter, writeStructuredLog } from "./log.ts";
+import { type HealthState } from "./health.ts";
 import {
   conversationId,
   HELP_MESSAGE,
@@ -30,6 +31,7 @@ interface SlackAgentOptions {
   log?: LogWriter;
   operatorError?: (message: string, context: { requestId: string; errorType: string }) => void;
   statusUpdateIntervalMs?: number;
+  health?: HealthState;
 }
 
 interface DeliveryResult {
@@ -79,13 +81,25 @@ function errorType(error: unknown): string {
 export class SlackAgent {
   private readonly app: App;
   private readonly events = new EventDeduplicator();
+  private readonly receiver: SocketModeReceiver;
   private botUserId = "";
 
   constructor(private readonly options: SlackAgentOptions) {
+    this.receiver = new SocketModeReceiver({ appToken: options.appToken });
+    this.receiver.client.on("connecting", () => options.health?.setSlackConnection("connecting"));
+    this.receiver.client.on("connected", () => options.health?.setSlackConnection("connected"));
+    this.receiver.client.on("reconnecting", () =>
+      options.health?.setSlackConnection("reconnecting"),
+    );
+    this.receiver.client.on("disconnecting", () =>
+      options.health?.setSlackConnection("disconnecting"),
+    );
+    this.receiver.client.on("disconnected", () =>
+      options.health?.setSlackConnection("disconnected"),
+    );
     this.app = new App({
       token: options.botToken,
-      appToken: options.appToken,
-      socketMode: true,
+      receiver: this.receiver,
       logLevel: LogLevel.INFO,
     });
 
@@ -149,7 +163,9 @@ export class SlackAgent {
   }
 
   async start(): Promise<void> {
-    const authentication = await this.app.client.auth.test({ token: this.options.botToken });
+    const authentication = await this.slackOperation(
+      this.app.client.auth.test({ token: this.options.botToken }),
+    );
     if (!authentication.user_id) throw new Error("Slack auth.test did not return a bot user ID");
     this.botUserId = authentication.user_id;
     await this.app.start();
@@ -157,8 +173,23 @@ export class SlackAgent {
   }
 
   async stop(): Promise<void> {
+    this.options.health?.markBackendDisposed();
     this.options.agent.dispose();
     await this.app.stop();
+  }
+
+  private async slackOperation<T>(operation: Promise<T>): Promise<T> {
+    const value = await operation;
+    this.options.health?.recordSuccessfulSlackOperation();
+    return value;
+  }
+
+  private async bestEffortSlackOperation<T>(operation: Promise<T>): Promise<T | undefined> {
+    try {
+      return await this.slackOperation(operation);
+    } catch {
+      return undefined;
+    }
   }
 
   private acceptEvent(
@@ -179,11 +210,13 @@ export class SlackAgent {
     threadTs: string | undefined,
   ): Promise<void> {
     console.warn(`Rejected unauthorized Slack request in channel ${channel}`);
-    await client.chat.postMessage({
-      channel,
-      thread_ts: threadTs,
-      text: "You are not authorized to use this agent.",
-    });
+    await this.slackOperation(
+      client.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text: "You are not authorized to use this agent.",
+      }),
+    );
   }
 
   private async respond(
@@ -198,14 +231,16 @@ export class SlackAgent {
   ): Promise<void> {
     const command = files.length === 0 ? parseSlackCommand(prompt) : undefined;
     if (command?.kind === "help" || command?.kind === "unknown") {
-      await client.chat.postMessage({
-        channel,
-        thread_ts: threadTs,
-        text:
-          command.kind === "help"
-            ? HELP_MESSAGE
-            : "Unknown command. Send `!help` to see supported commands.",
-      });
+      await this.slackOperation(
+        client.chat.postMessage({
+          channel,
+          thread_ts: threadTs,
+          text:
+            command.kind === "help"
+              ? HELP_MESSAGE
+              : "Unknown command. Send `!help` to see supported commands.",
+        }),
+      );
       return;
     }
 
@@ -218,16 +253,18 @@ export class SlackAgent {
     let finalOutput: string | undefined;
     let feedbackTimer: ReturnType<typeof setInterval> | undefined;
 
-    await client.reactions.add({ channel, timestamp: messageTs, name: "eyes" }).catch(() => {});
-    const status = await client.chat
-      .postMessage({ channel, thread_ts: threadTs, text: "Queued…" })
-      .catch(() => undefined);
+    await this.bestEffortSlackOperation(
+      client.reactions.add({ channel, timestamp: messageTs, name: "eyes" }),
+    );
+    const status = await this.bestEffortSlackOperation(
+      client.chat.postMessage({ channel, thread_ts: threadTs, text: "Queued…" }),
+    );
     const statusTs = status?.ts;
     let statusUpdates = Promise.resolve();
     const updateStatus = (text: string): void => {
       if (!statusTs) return;
       statusUpdates = statusUpdates.then(async () => {
-        await client.chat.update({ channel, ts: statusTs, text }).catch(() => {});
+        await this.bestEffortSlackOperation(client.chat.update({ channel, ts: statusTs, text }));
       });
     };
     const observer = {
@@ -257,10 +294,14 @@ export class SlackAgent {
         this.options.fetch,
       );
       for (const warning of warnings) {
-        await client.chat.postMessage({ channel, thread_ts: threadTs, text: warning });
+        await this.slackOperation(
+          client.chat.postMessage({ channel, thread_ts: threadTs, text: warning }),
+        );
       }
       if (!prompt && attachments.length === 0) {
-        if (statusTs) await client.chat.delete({ channel, ts: statusTs }).catch(() => {});
+        if (statusTs) {
+          await this.bestEffortSlackOperation(client.chat.delete({ channel, ts: statusTs }));
+        }
         executionOutcome = "success";
         delivery = { outcome: "success", publishedMessages: 0 };
       } else {
@@ -312,10 +353,18 @@ export class SlackAgent {
     }
 
     const successful = executionOutcome === "success" && delivery.outcome === "success";
-    await client.reactions
-      .add({ channel, timestamp: messageTs, name: successful ? "white_check_mark" : "x" })
-      .catch(() => {});
-    await client.reactions.remove({ channel, timestamp: messageTs, name: "eyes" }).catch(() => {});
+    if (delivery.outcome === "success") this.options.health?.recordSlackDeliverySuccess();
+    else if (finalOutput !== undefined) this.options.health?.recordSlackDeliveryFailure();
+    await this.bestEffortSlackOperation(
+      client.reactions.add({
+        channel,
+        timestamp: messageTs,
+        name: successful ? "white_check_mark" : "x",
+      }),
+    );
+    await this.bestEffortSlackOperation(
+      client.reactions.remove({ channel, timestamp: messageTs, name: "eyes" }),
+    );
     (this.options.log ?? writeStructuredLog)({
       event: "agent_request_completed",
       request_id: requestId,
@@ -341,14 +390,16 @@ export class SlackAgent {
     let updated = false;
     if (statusTs) {
       try {
-        await client.chat.update({ channel, ts: statusTs, text: first });
+        await this.slackOperation(client.chat.update({ channel, ts: statusTs, text: first }));
         updated = true;
         publishedMessages++;
       } catch {}
     }
     if (!updated) {
       try {
-        await client.chat.postMessage({ channel, thread_ts: threadTs, text: first });
+        await this.slackOperation(
+          client.chat.postMessage({ channel, thread_ts: threadTs, text: first }),
+        );
         publishedMessages++;
       } catch (error) {
         return { outcome: "failure", publishedMessages, errorType: errorType(error) };
@@ -356,7 +407,7 @@ export class SlackAgent {
     }
     for (const text of rest) {
       try {
-        await client.chat.postMessage({ channel, thread_ts: threadTs, text });
+        await this.slackOperation(client.chat.postMessage({ channel, thread_ts: threadTs, text }));
         publishedMessages++;
       } catch (error) {
         return { outcome: "partial", publishedMessages, errorType: errorType(error) };
