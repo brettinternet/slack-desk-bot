@@ -13,7 +13,7 @@
 
 ## Git and GitHub
 
-- Create agent branches as worktrees under `.worktrees/`.
+- Work in the current checkout unless the user explicitly requests a branch or worktree.
 - Use `gh` for GitHub operations.
 - Do not push or open a pull request without explicit instruction.
 
