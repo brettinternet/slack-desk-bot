@@ -10,6 +10,7 @@ import {
 interface SlackAgentOptions {
   botToken: string;
   appToken: string;
+  allowedUserIds: ReadonlySet<string>;
   agent: AgentBackend;
 }
 
@@ -27,8 +28,13 @@ export class SlackAgent {
 
     this.app.event("app_mention", async ({ event, client }) => {
       if (!event.user || event.bot_id) return;
+      const threadTs = event.thread_ts ?? event.ts;
+      if (!this.options.allowedUserIds.has(event.user)) {
+        await this.deny(client, event.channel, threadTs);
+        return;
+      }
       const prompt = stripBotMention(event.text, this.botUserId);
-      await this.respond(client, event.channel, event.ts, event.thread_ts ?? event.ts, prompt);
+      await this.respond(client, event.channel, event.ts, threadTs, prompt);
     });
 
     this.app.event("message", async ({ event, client }) => {
@@ -39,6 +45,10 @@ export class SlackAgent {
         !event.user
       )
         return;
+      if (!this.options.allowedUserIds.has(event.user)) {
+        await this.deny(client, event.channel, undefined);
+        return;
+      }
       const text = "text" in event ? (event.text ?? "") : "";
       await this.respond(client, event.channel, event.ts, undefined, text);
     });
@@ -55,6 +65,19 @@ export class SlackAgent {
   async stop(): Promise<void> {
     this.options.agent.dispose();
     await this.app.stop();
+  }
+
+  private async deny(
+    client: App["client"],
+    channel: string,
+    threadTs: string | undefined,
+  ): Promise<void> {
+    console.warn(`Rejected unauthorized Slack request in channel ${channel}`);
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: "You are not authorized to use this agent.",
+    });
   }
 
   private async respond(

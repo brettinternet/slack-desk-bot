@@ -1,10 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { createResponseCollector } from "../src/pi-backend.ts";
+import { createResponseCollector, toolsForMode } from "../src/pi-backend.ts";
 
 function event(value: object): AgentSessionEvent {
   return value as AgentSessionEvent;
 }
+
+describe("Pi tool access", () => {
+  test("defaults can exclude write tools unless explicitly enabled", () => {
+    expect(toolsForMode("read-only")).toEqual(["read", "grep", "find", "ls"]);
+    expect(toolsForMode("read-write")).toEqual(["read", "grep", "find", "ls", "edit", "write"]);
+  });
+});
 
 describe("Pi response collection", () => {
   test("keeps completed assistant messages and separates turns", () => {

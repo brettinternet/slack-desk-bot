@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 
@@ -7,14 +7,19 @@ const PATH_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write"]);
 export function isPathInWorkspace(path: string, workspace: string): boolean {
   const absolutePath = isAbsolute(path) ? path : resolve(workspace, path);
   let existingPath = absolutePath;
-  while (!existsSync(existingPath)) {
+  while (!lstatSync(existingPath, { throwIfNoEntry: false })) {
     const parent = dirname(existingPath);
     if (parent === existingPath) return false;
     existingPath = parent;
   }
 
   const canonicalWorkspace = realpathSync(workspace);
-  const canonicalExistingPath = realpathSync(existingPath);
+  let canonicalExistingPath: string;
+  try {
+    canonicalExistingPath = realpathSync(existingPath);
+  } catch {
+    return false;
+  }
   const relativePath = relative(canonicalWorkspace, canonicalExistingPath);
   return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
 }
