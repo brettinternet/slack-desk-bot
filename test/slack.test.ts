@@ -331,6 +331,13 @@ describe("SlackAgent transport", () => {
       thread_ts: "1",
       text: "You are not authorized to use this agent.",
     });
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E2" },
+      event: { user: "U_DENIED", text: "again", channel: "C1", ts: "2", thread_ts: "1" },
+      client: slack,
+    });
+    expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
   });
 
   test("handles help and unknown commands without invoking the backend", async () => {

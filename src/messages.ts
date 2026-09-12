@@ -28,11 +28,6 @@ export function parseSlackCommand(text: string): SlackCommand | undefined {
   return value.startsWith("!") ? { kind: "unknown" } : undefined;
 }
 
-export function parseAgentCommand(text: string): AgentCommand | undefined {
-  const parsed = parseSlackCommand(text);
-  return parsed?.kind === "agent" ? parsed.command : undefined;
-}
-
 export function isSupportedDirectMessage(subtype?: string): boolean {
   return subtype === undefined || subtype === "file_share";
 }
@@ -42,7 +37,7 @@ export function isSupportedChannelMessage(subtype?: string): boolean {
 }
 
 export function stripBotMention(text: string, botUserId: string): string {
-  return text.replace(new RegExp(`<@${botUserId}>`, "g"), "").trim();
+  return text.replaceAll(`<@${botUserId}>`, "").trim();
 }
 
 export function splitSlackMessage(

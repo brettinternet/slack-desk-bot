@@ -4,7 +4,6 @@ import {
   isSupportedChannelMessage,
   isSupportedDirectMessage,
   MAX_SLACK_RESPONSE_MESSAGES,
-  parseAgentCommand,
   parseSlackCommand,
   splitSlackMessage,
   stripBotMention,
@@ -26,7 +25,7 @@ describe("Slack message helpers", () => {
   });
 
   test("recognizes commands case-insensitively with surrounding whitespace", () => {
-    expect(parseAgentCommand(" !STATUS ")).toBe("status");
+    expect(parseSlackCommand(" !STATUS ")).toEqual({ kind: "agent", command: "status" });
     expect(parseSlackCommand("  !HeLp\n")).toEqual({ kind: "help" });
     expect(parseSlackCommand("cancel")).toEqual({ kind: "agent", command: "cancel" });
   });
@@ -36,7 +35,7 @@ describe("Slack message helpers", () => {
     expect(parseSlackCommand("!reset please")).toEqual({ kind: "unknown" });
     expect(parseSlackCommand("please! reset")).toBeUndefined();
     expect(parseSlackCommand("What?!")).toBeUndefined();
-    expect(parseAgentCommand("reset")).toBeUndefined();
+    expect(parseSlackCommand("reset")).toBeUndefined();
   });
 
   test("maps channel threads and DMs to stable conversations", () => {

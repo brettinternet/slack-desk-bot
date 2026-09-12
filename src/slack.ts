@@ -89,6 +89,7 @@ function errorType(error: unknown): string {
 export class SlackAgent {
   private readonly app: App;
   private readonly events = new EventDeduplicator();
+  private readonly denials = new EventDeduplicator();
   private readonly ownedChannelThreads = new Set<string>();
   private readonly receiver: SocketModeReceiver;
   private botUserId = "";
@@ -116,7 +117,7 @@ export class SlackAgent {
       if (!event.user || event.bot_id) return;
       const threadTs = event.thread_ts ?? event.ts;
       if (!this.options.allowedUserIds.has(event.user)) {
-        await this.deny(client, event.channel, threadTs);
+        await this.deny(client, event.channel, threadTs, event.user);
         return;
       }
       const prompt = stripBotMention(event.text, this.botUserId);
@@ -156,7 +157,7 @@ export class SlackAgent {
       )
         return;
       if (!this.options.allowedUserIds.has(event.user)) {
-        await this.deny(client, event.channel, threadTs);
+        await this.deny(client, event.channel, threadTs, event.user);
         return;
       }
 
@@ -229,19 +230,29 @@ export class SlackAgent {
     ]);
   }
 
+  /** Replies once per unauthorized user and conversation per dedupe window so repeated messages cannot drive Slack API traffic. */
   private async deny(
     client: App["client"],
     channel: string,
     threadTs: string | undefined,
+    userId: string,
   ): Promise<void> {
     console.warn(`Rejected unauthorized Slack request in channel ${channel}`);
-    await this.slackOperation(
+    if (!this.denials.accept([`deny:${conversationId(channel, threadTs)}:${userId}`])) return;
+    await this.bestEffortSlackOperation(
       client.chat.postMessage({
         channel,
         thread_ts: threadTs,
         text: "You are not authorized to use this agent.",
       }),
     );
+  }
+
+  private reportOperatorError(message: string, requestId: string, type: string): void {
+    (this.options.operatorError ?? ((text, context) => console.error(text, context)))(message, {
+      requestId,
+      errorType: type,
+    });
   }
 
   private async respond(
@@ -356,10 +367,7 @@ export class SlackAgent {
         error instanceof AgentTimeoutError ||
         error instanceof QueueWaitTimeoutError;
       if (!expected) {
-        (this.options.operatorError ?? ((message, context) => console.error(message, context)))(
-          "Unexpected agent request failure",
-          { requestId, errorType: errorType(error) },
-        );
+        this.reportOperatorError("Unexpected agent request failure", requestId, errorType(error));
       }
       finalOutput = userFacingAgentError(error, requestId);
     } finally {
@@ -370,9 +378,10 @@ export class SlackAgent {
     if (finalOutput !== undefined) {
       delivery = await this.publishResult(client, channel, threadTs, statusTs, finalOutput);
       if (delivery.outcome !== "success") {
-        (this.options.operatorError ?? ((message, context) => console.error(message, context)))(
+        this.reportOperatorError(
           "Slack result delivery failure",
-          { requestId, errorType: delivery.errorType ?? "UnknownDeliveryError" },
+          requestId,
+          delivery.errorType ?? "UnknownDeliveryError",
         );
       }
     }
