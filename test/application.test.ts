@@ -54,6 +54,7 @@ describe("application startup", () => {
     const agent = backend();
     const slackStop = mock(async () => {});
     const application = await startApplication(config(), {
+      piReady: async () => "Pi model test/model is available",
       createBackend: () => agent,
       createSlackAgent: ({ health }) => ({
         start: mock(async () => {
@@ -73,10 +74,28 @@ describe("application startup", () => {
     expect(slackStop).toHaveBeenCalledTimes(1);
   });
 
+  test("fails before creating runtime resources when Pi is not ready", async () => {
+    const createBackend = mock(() => backend());
+    const createSlackAgent = mock(() => ({ start: async () => {}, stop: async () => {} }));
+
+    await expect(
+      startApplication(config(), {
+        piReady: async () => {
+          throw new Error("No authenticated Pi model is available; run `pi` and /login");
+        },
+        createBackend,
+        createSlackAgent,
+      }),
+    ).rejects.toThrow("No authenticated Pi model is available; run `pi` and /login");
+    expect(createBackend).not.toHaveBeenCalled();
+    expect(createSlackAgent).not.toHaveBeenCalled();
+  });
+
   test("reports invalid Slack authentication without exposing credentials", async () => {
     const agent = backend();
     await expect(
       startApplication(config(), {
+        piReady: async () => "Pi model test/model is available",
         createBackend: () => agent,
         createSlackAgent: () => ({
           start: async () => {
@@ -105,6 +124,7 @@ describe("application startup", () => {
         startApplication(
           { ...config(), healthPort: address.port },
           {
+            piReady: async () => "Pi model test/model is available",
             createBackend: () => agent,
             createSlackAgent: () => ({ start: slackStart, stop: async () => {} }),
           },

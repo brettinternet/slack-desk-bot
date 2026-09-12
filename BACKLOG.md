@@ -13,17 +13,6 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 
 ## Active items
 
-### SDB-023: Reject requests when no Pi model is authenticated at startup
-
-**Why:** `task doctor` checks Pi readiness, but the service itself starts and reports `ready` even when no model is authenticated or the default model is unavailable. The first user request then fails with a generic error and a request ID.
-
-**Scope:**
-
-- Reuse `checkPiReadiness` during `startApplication` and fail startup with the same actionable message doctor prints.
-- Consider periodic re-checks reflected in `/readyz` as `degraded` when OAuth credentials expire, if it can be done without network calls per probe.
-
-**Done:** Application test shows startup fails with the readiness message when the check rejects; README readiness section updated.
-
 ### SDB-024: Add `!cancel` for another user's request (operator override)
 
 **Why:** `cancelActive` only cancels the requester's own job. In a shared channel thread another allowlisted user cannot stop a runaway or mistaken request; the operator must restart the service.

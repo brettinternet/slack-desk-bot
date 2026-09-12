@@ -1,5 +1,6 @@
 import { type CancellableAgentBackend, type QueueSnapshot, QueuedAgentBackend } from "./agent.ts";
 import type { Config } from "./config.ts";
+import { checkPiReadiness } from "./doctor.ts";
 import { HealthState, startHealthServer } from "./health.ts";
 import { PiBackend } from "./pi-backend.ts";
 import { SlackAgent } from "./slack.ts";
@@ -19,6 +20,7 @@ interface RuntimeBackend extends CancellableAgentBackend {
 }
 
 interface ApplicationDependencies {
+  piReady?: (workspace: string) => Promise<string>;
   createBackend?: (config: Config) => RuntimeBackend;
   createSlackAgent?: (options: {
     config: Config;
@@ -62,6 +64,8 @@ export async function startApplication(
         `(configured: ${config.configuredMaxConcurrentConversations}) to protect the shared checkout.`,
     );
   }
+
+  await (dependencies.piReady ?? checkPiReadiness)(config.workspace);
 
   const health = new HealthState();
   const agent = (dependencies.createBackend ?? defaultBackend)(config);
