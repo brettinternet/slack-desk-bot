@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
-import { loadConfig } from "../src/config.ts";
+import { type AgentBackend, QueuedAgentBackend } from "../src/agent.ts";
+import { loadConfig, type AgentMode } from "../src/config.ts";
 
 const valid = {
   SLACK_BOT_TOKEN: "xoxb-test",
@@ -28,6 +29,7 @@ describe("loadConfig", () => {
         rateLimitBurst: 3,
         rateLimitRefillMs: 60_000,
       },
+      configuredMaxConcurrentConversations: 3,
       sessionDir: undefined,
       maxActiveSessions: 32,
       sessionIdleMs: 3_600_000,
@@ -56,12 +58,61 @@ describe("loadConfig", () => {
       maxActiveSessions: 8,
       sessionIdleMs: 300_000,
       healthPort: 4_321,
+      configuredMaxConcurrentConversations: 7,
       queueLimits: {
         timeoutMs: 100,
-        maxConcurrentConversations: 7,
+        maxConcurrentConversations: 1,
         rateLimitBurst: 4,
       },
     });
+  });
+
+  test("retains configured conversation concurrency in read-only mode", () => {
+    const config = loadConfig({
+      ...valid,
+      SLACK_AGENT_MODE: "read-only",
+      SLACK_AGENT_MAX_CONCURRENT_CONVERSATIONS: "7",
+    });
+
+    expect(config.configuredMaxConcurrentConversations).toBe(7);
+    expect(config.queueLimits.maxConcurrentConversations).toBe(7);
+  });
+
+  test("applies mode-specific concurrency to scheduling", async () => {
+    for (const [mode, initiallyStarted] of [
+      ["read-only", 2],
+      ["read-write", 1],
+    ] as const satisfies readonly [AgentMode, number][]) {
+      const started: string[] = [];
+      const releases: Array<() => void> = [];
+      const backend: AgentBackend = {
+        run: ({ conversationId }) =>
+          new Promise((done) => {
+            started.push(conversationId);
+            releases.push(() => done(conversationId));
+          }),
+        dispose: () => {},
+      };
+      const config = loadConfig({
+        ...valid,
+        SLACK_AGENT_MODE: mode,
+        SLACK_AGENT_MAX_CONCURRENT_CONVERSATIONS: "2",
+      });
+      const queued = new QueuedAgentBackend(backend, config.queueLimits);
+
+      const first = queued.run({ conversationId: "one", requesterId: "one", prompt: "one" });
+      const second = queued.run({ conversationId: "two", requesterId: "two", prompt: "two" });
+      await Bun.sleep(0);
+      expect(started).toHaveLength(initiallyStarted);
+
+      releases[0]!();
+      await first;
+      await Bun.sleep(0);
+      expect(started).toEqual(["one", "two"]);
+      releases[1]!();
+      await second;
+      queued.dispose();
+    }
   });
 
   test("loads inline Slack instructions", () => {

@@ -14,7 +14,7 @@ This backlog captures the remaining safety, setup, developer-experience, and Sla
 ## BL-001 — Prevent concurrent writers in one checkout
 
 **Priority:** P0
-**Status:** Ready
+**Status:** Done
 
 ### Context
 
@@ -40,6 +40,10 @@ Do not introduce per-conversation worktrees unless the simpler policy proves ina
 - Startup behavior clearly reports the effective concurrency when it differs from configuration.
 - Tests cover both modes and prove the scheduling behavior.
 - README and `.env.example` explain the read-write concurrency constraint.
+
+### Completion notes
+
+Read-write mode now forces the effective cross-conversation concurrency to one while preserving the configured value in read-only mode. Startup reports when the configured value is overridden. Configuration and scheduling tests cover both modes; `task check` and `task test` pass.
 
 ---
 

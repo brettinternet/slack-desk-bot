@@ -12,6 +12,7 @@ export interface Config {
   agentMode: AgentMode;
   instructions?: string;
   queueLimits: QueueLimits;
+  configuredMaxConcurrentConversations: number;
   sessionDir?: string;
   maxActiveSessions: number;
   sessionIdleMs: number;
@@ -108,6 +109,12 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
     throw new Error("SLACK_AGENT_SESSION_DIR must be an absolute path");
   }
 
+  const configuredMaxConcurrentConversations = positiveInteger(
+    environment,
+    "SLACK_AGENT_MAX_CONCURRENT_CONVERSATIONS",
+    DEFAULTS.maxConcurrentConversations,
+  );
+
   return {
     slackBotToken,
     slackAppToken,
@@ -123,11 +130,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
         "SLACK_AGENT_MAX_QUEUE_PER_CONVERSATION",
         DEFAULTS.maxQueuedPerConversation,
       ),
-      maxConcurrentConversations: positiveInteger(
-        environment,
-        "SLACK_AGENT_MAX_CONCURRENT_CONVERSATIONS",
-        DEFAULTS.maxConcurrentConversations,
-      ),
+      maxConcurrentConversations:
+        agentMode === "read-write" ? 1 : configuredMaxConcurrentConversations,
       maxGlobalQueue: positiveInteger(
         environment,
         "SLACK_AGENT_MAX_GLOBAL_QUEUE",
@@ -149,6 +153,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
         DEFAULTS.rateLimitRefillMs,
       ),
     },
+    configuredMaxConcurrentConversations,
     sessionDir: configuredSessionDir ? resolve(configuredSessionDir) : undefined,
     maxActiveSessions: positiveInteger(
       environment,

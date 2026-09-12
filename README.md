@@ -8,7 +8,7 @@ Your desktop coding agent, available in Slack. Slack transport and conversation 
 - Downloads supported Slack text and image attachments and passes them directly to Pi without writing them to disk.
 - Keeps one persisted agent session per Slack channel thread and one per DM channel.
 - Restores conversation history after service restarts.
-- Serializes messages within a conversation while allowing separate conversations to run concurrently.
+- Serializes messages within a conversation. Read-only mode allows separate conversations to run concurrently; read-write mode runs only one conversation at a time to protect the shared checkout.
 - Bounds runtime, queue depth, concurrent conversations, and per-user request volume.
 - Cancels the active request when a user sends `cancel` in its DM or channel thread.
 - Uses Pi's configured model, credentials, instructions, skills, and extensions.
@@ -21,7 +21,7 @@ Use `!status`, `!reset`, or `!cancel` as an exact message to inspect a conversat
 
 ## Resource limits
 
-The defaults allow three concurrent conversations, two queued requests per conversation, twenty queued requests globally, and three active or queued requests per user. Each user may submit a burst of three requests, replenishing at one request per minute. Agent runs time out after five minutes and queued requests expire after ten minutes.
+The defaults allow three concurrent conversations in read-only mode, two queued requests per conversation, twenty queued requests globally, and three active or queued requests per user. Read-write mode always limits active conversations to one, regardless of `SLACK_AGENT_MAX_CONCURRENT_CONVERSATIONS`, so two agents cannot edit the shared checkout concurrently. Startup logs report when this safety limit overrides the configured value. Each user may submit a burst of three requests, replenishing at one request per minute. Agent runs time out after five minutes and queued requests expire after ten minutes.
 
 Each message may include up to four supported files. Text files are limited to 1 MiB, images to 5 MiB, and all files in one message to 10 MiB. Supported text types are plain text, Markdown, JSON, and XML; supported image types are PNG, JPEG, GIF, and WebP. Downloads must come directly from Slack, are checked against their declared and actual size and content type, and are kept in memory rather than exposed as filesystem paths.
 
@@ -79,7 +79,7 @@ Set only one of these settings. The file is read when the service starts, so res
 
 `SLACK_ALLOWED_USER_IDS` is a required comma-separated allowlist of Slack member IDs. Requests from all other users are rejected before Pi runs. Find a member ID in Slack from **Profile → More → Copy member ID**.
 
-The agent starts in read-only mode. Set `SLACK_AGENT_MODE=read-write` to explicitly enable `edit` and `write` for allowlisted users. Use a dedicated checkout, review changes before committing, and do not point `SLACK_AGENT_CWD` at a directory containing unrelated or sensitive files.
+The agent starts in read-only mode. Set `SLACK_AGENT_MODE=read-write` to explicitly enable `edit` and `write` for allowlisted users. Read-write mode processes only one conversation at a time because every conversation shares `SLACK_AGENT_CWD`; queued conversations resume when the active run settles. Use a dedicated checkout, review changes before committing, and do not point `SLACK_AGENT_CWD` at a directory containing unrelated or sensitive files.
 
 The path policy limits Pi's selected filesystem tools, but locally installed Pi extensions run as trusted code. Only load extensions you trust on the service machine. Slack interaction instructions are sent to the configured model, so do not put secrets in them.
 

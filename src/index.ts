@@ -6,6 +6,12 @@ import { SlackAgent } from "./slack.ts";
 
 const config = loadConfig();
 console.log(`SlackDeskBot mode: ${config.agentMode}`);
+if (config.queueLimits.maxConcurrentConversations !== config.configuredMaxConcurrentConversations) {
+  console.log(
+    `Read-write mode limits concurrent conversations to ${config.queueLimits.maxConcurrentConversations} ` +
+      `(configured: ${config.configuredMaxConcurrentConversations}) to protect the shared checkout.`,
+  );
+}
 const agent = new SlackAgent({
   botToken: config.slackBotToken,
   appToken: config.slackAppToken,
