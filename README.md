@@ -26,7 +26,8 @@ mise exec task -- task init
 - Cancels the active request when a user sends `cancel` in its DM or channel thread.
 - Uses Pi's configured model, credentials, instructions, skills, and extensions.
 - Allows `read`, `grep`, `find`, and `ls` by default; `edit` and `write` require explicit read-write mode. Shell execution is unavailable.
-- Rejects tool paths outside `SLACK_AGENT_CWD` and documented sensitive paths inside it, including paths reached through existing symlinks.
+- Rejects tool paths outside `SLACK_AGENT_CWD` and documented sensitive paths inside it, including paths reached through existing symlinks, `~`, and `file://` forms.
+- Treats `SLACK_AGENT_CWD` as an untrusted Pi project: its `.pi/` settings, extensions, skills, prompts, and system prompt files are never loaded.
 - Publishes at most three Slack-safe messages (10,500 characters total) per agent response and marks truncated output.
 - Emits prompt-free JSON request logs with request, user, conversation, duration, tool count, execution outcome, and Slack delivery outcome fields.
 
@@ -170,13 +171,13 @@ Set only one of these settings. The file is read when the service starts, so res
 
 ## Security
 
-`SLACK_ALLOWED_USER_IDS` is a required comma-separated allowlist of Slack member IDs. Requests from all other users are rejected before Pi runs. The app receives public and private channel message events so it can accept natural follow-ups, but it ignores channel roots and threads that an allowlisted mention has not claimed during the current service process. Find a member ID in Slack from **Profile → More → Copy member ID**.
+`SLACK_ALLOWED_USER_IDS` is a required comma-separated allowlist of Slack member IDs. Requests from all other users are rejected before Pi runs; the rejection reply is sent at most once per user and conversation every ten minutes so repeated messages cannot generate Slack API traffic. The app receives public and private channel message events so it can accept natural follow-ups, but it ignores channel roots and threads that an allowlisted mention has not claimed during the current service process. Find a member ID in Slack from **Profile → More → Copy member ID**.
 
 The agent starts in read-only mode. Set `SLACK_AGENT_MODE=read-write` to explicitly enable `edit` and `write` for allowlisted users. Read-write mode processes only one conversation at a time because every conversation shares `SLACK_AGENT_CWD`; queued conversations resume when the active run settles. Use a dedicated checkout, review changes before committing, and do not point `SLACK_AGENT_CWD` at a directory containing unrelated or sensitive files.
 
-The path policy blocks direct access by Pi's selected filesystem tools to `.env` files (except `.env.example`, `.env.sample`, and `.env.template`), `.ssh` contents, common private-key extensions and names, `.aws/credentials`, Google application-default credentials, Docker's `config.json`, `.netrc`, `.npmrc`, and `.pypirc`. The same rules apply in read-only and read-write modes and follow symlink targets. This is a narrow path-based safeguard, not secret detection: ordinary readable source files and model output can still disclose sensitive content, so use a dedicated checkout without secrets.
+The path policy blocks direct access by Pi's selected filesystem tools to `.env` files (except `.env.example`, `.env.sample`, and `.env.template`), `.ssh` and `.git` contents, common private-key extensions and names, `.aws/credentials`, Google application-default credentials, Docker's `config.json`, `.netrc`, `.npmrc`, and `.pypirc`. The same rules apply in read-only and read-write modes, follow symlink targets, and normalize `~`, `@`-prefixed, and `file://` paths the same way Pi's tools do. This is a narrow path-based safeguard, not secret detection: ordinary readable source files and model output can still disclose sensitive content, so use a dedicated checkout without secrets.
 
-Locally installed Pi extensions run as trusted code outside this path policy. Only load extensions you trust on the service machine. Slack interaction instructions are sent to the configured model, so do not put secrets in them.
+Pi extensions installed at the user level (`~/.pi/agent`) run as trusted code outside this path policy. Only load extensions you trust on the service machine. The target repository itself is treated as an untrusted Pi project, so a `.pi/` directory inside `SLACK_AGENT_CWD` cannot inject extensions, settings, or system prompts into the service; its `AGENTS.md` context files are still read as ordinary project instructions. Slack interaction instructions are sent to the configured model, so do not put secrets in them.
 
 Session JSONL files are designed for one service process. Running multiple instances against the same session directory requires conversation affinity and external locking.
 

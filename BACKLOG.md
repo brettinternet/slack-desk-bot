@@ -11,7 +11,64 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 - Keep prompts, file contents, tokens, and credentials out of logs.
 - Add focused tests for every behavior change and keep `task check` and `task test` passing.
 
-There are no active backlog items.
+## Active items
+
+### SDB-020: Bound Slack work per event handler
+
+**Why:** Bolt acknowledges Events API deliveries immediately and runs listeners with no concurrency limit. Admission control lives in `QueuedAgentBackend`, but before admission each accepted message already performs `reactions.add`, a `Queued…` post, and up to four `files.info` + download round trips. Many messages in a short window (or a large channel the bot is added to) can exhaust Slack's per-method rate limits and delay results for legitimate requests.
+
+**Scope:**
+
+- Move the per-user rate limit and requester pending check ahead of file ingestion and status posting, or gate ingestion behind a cheap `canAdmit()` on the backend.
+- Cap concurrent in-flight `respond()` invocations (for example, 8) and drop with a single warning log beyond that.
+- Handle Slack `ratelimited` errors from `chat.postMessage`/`chat.update` with the `Retry-After` header once before reporting delivery failure.
+
+**Done:** Tests show a burst of N unauthorized or over-limit messages results in zero `files.info`/`postMessage` calls beyond the bounded replies; integration test confirms one retry on a `ratelimited` update.
+
+### SDB-021: Restore channel thread ownership from persisted sessions
+
+**Why:** Thread ownership is in memory, so every service restart forces users to re-mention the bot in existing threads. Sessions are already persisted per `channel:thread_ts`, so the data to rebuild ownership exists.
+
+**Scope:**
+
+- On the first mention-free reply in an unowned channel thread, check whether a persisted session named `slack-agent:<channel>:<thread_ts>` exists and, if so, claim the thread.
+- Keep the check off the Slack event hot path by caching negative results per conversation with a short TTL.
+- Keep `AgentBackend` free of Slack knowledge: expose `hasConversation(conversationId)` on the queue/backend interface rather than a Slack-specific hook.
+
+**Done:** Test: mention → restart → mention-free reply in the same thread runs the agent; reply in an unrelated thread is still ignored. README restart note updated.
+
+### SDB-022: Report model, context, and cost in `!status`
+
+**Why:** `!status` shows message counts only. Operators cannot see which model a conversation is using, how close the context is to compaction, or accumulated cost, which are the questions asked when a reply looks wrong or slow.
+
+**Scope:**
+
+- Add model (`provider/id`), context usage percentage when available, and cumulative cost from `AgentSession.getSessionStats()` and `session.model` to the cached-session branch.
+- Keep persisted-only output unchanged (no live session to inspect).
+
+**Done:** Unit test with fake stats; README `!status` description updated.
+
+### SDB-023: Reject requests when no Pi model is authenticated at startup
+
+**Why:** `task doctor` checks Pi readiness, but the service itself starts and reports `ready` even when no model is authenticated or the default model is unavailable. The first user request then fails with a generic error and a request ID.
+
+**Scope:**
+
+- Reuse `checkPiReadiness` during `startApplication` and fail startup with the same actionable message doctor prints.
+- Consider periodic re-checks reflected in `/readyz` as `degraded` when OAuth credentials expire, if it can be done without network calls per probe.
+
+**Done:** Application test shows startup fails with the readiness message when the check rejects; README readiness section updated.
+
+### SDB-024: Add `!cancel` for another user's request (operator override)
+
+**Why:** `cancelActive` only cancels the requester's own job. In a shared channel thread another allowlisted user cannot stop a runaway or mistaken request; the operator must restart the service.
+
+**Scope:**
+
+- Add an optional `SLACK_OPERATOR_USER_IDS` subset of the allowlist whose `!cancel` cancels any active job in the conversation.
+- Report who cancelled in the reply and log.
+
+**Done:** Queue tests for owner vs. operator vs. ordinary user cancellation; README updated.
 
 ## Later considerations
 
@@ -22,3 +79,5 @@ These may be useful later, but are not currently justified as separate implement
 - Per-conversation worktrees if single-writer mode becomes a real throughput constraint.
 - File upload for generated artifacts.
 - Administrative session listing, deletion, and retention controls if more than one operator uses the service.
+- Content-based secret detection in tool output (currently path-based only).
+- Streaming partial responses to the status message for long-running turns.
