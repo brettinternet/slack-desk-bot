@@ -286,10 +286,16 @@ export class PiBackend implements AgentBackend {
     if (cached) {
       const session = await cached.ready;
       const stats = session.getSessionStats();
+      const model = session.model;
       return [
         `Session: ${stats.sessionId.slice(0, 8)}`,
         `State: ${cached.activeRuns > 0 ? "running" : "idle"}`,
+        `Model: ${model ? `${model.provider}/${model.id}` : "unavailable"}`,
         `Messages: ${stats.totalMessages}`,
+        ...(stats.contextUsage?.percent == null
+          ? []
+          : [`Context: ${stats.contextUsage.percent.toFixed(1)}%`]),
+        `Cost: $${stats.cost.toFixed(3)}`,
         `Last active: ${new Date(cached.lastUsedAt).toISOString()}`,
         `Persisted: ${stats.sessionFile && existsSync(stats.sessionFile) ? "yes" : "no"}`,
       ].join("\n");

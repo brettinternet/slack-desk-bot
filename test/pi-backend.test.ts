@@ -25,6 +25,8 @@ function event(value: object): AgentSessionEvent {
 interface FakeSessionControls {
   disposed: string[];
   names: string[];
+  model?: AgentSession["model"];
+  stats?: Partial<ReturnType<AgentSession["getSessionStats"]>>;
   onPrompt?: () => Promise<void>;
   onAbort?: () => Promise<void>;
 }
@@ -39,6 +41,7 @@ function fakeSession(manager: SessionManager, controls: FakeSessionControls): Ag
     abort: async () => controls.onAbort?.(),
     dispose: () => controls.disposed.push(id),
     setSessionName: (name: string) => controls.names.push(name),
+    model: controls.model,
     getSessionStats: () => ({
       sessionId: id,
       sessionFile: manager.getSessionFile(),
@@ -49,6 +52,7 @@ function fakeSession(manager: SessionManager, controls: FakeSessionControls): Ag
       totalMessages: 0,
       tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       cost: 0,
+      ...controls.stats,
     }),
   } as unknown as AgentSession;
 }
@@ -273,7 +277,51 @@ describe("Pi session management", () => {
     backend.dispose();
   });
 
-  test("status does not create a session", async () => {
+  test("reports live model, context usage, and cumulative cost", async () => {
+    const controls: FakeSessionControls = {
+      disposed: [],
+      names: [],
+      model: { provider: "anthropic", id: "claude-sonnet" } as AgentSession["model"],
+      stats: {
+        totalMessages: 7,
+        cost: 1.23456,
+        contextUsage: { tokens: 40_000, contextWindow: 100_000, percent: 40 },
+      },
+    };
+    const backend = new PiBackend(process.cwd(), {
+      sessionDir: "/tmp",
+      sessionLister: async () => [],
+      freshSessionManagerFactory: () => SessionManager.inMemory(process.cwd()),
+      sessionFactory: async (manager) => fakeSession(manager, controls),
+    });
+
+    await backend.run({ conversationId: "thread", requesterId: "user", prompt: "work" });
+
+    expect(await backend.sessionCommand("thread", "status")).toContain(
+      "State: idle\nModel: anthropic/claude-sonnet\nMessages: 7\nContext: 40.0%\nCost: $1.235",
+    );
+    backend.dispose();
+  });
+
+  test("keeps persisted-only status unchanged without creating a session", async () => {
+    let creations = 0;
+    const backend = new PiBackend(process.cwd(), {
+      sessionDir: "/tmp",
+      sessionLister: async () => [sessionInfo()],
+      sessionFactory: async (manager) => {
+        creations++;
+        return fakeSession(manager, { disposed: [], names: [] });
+      },
+    });
+
+    expect(await backend.sessionCommand("thread", "status")).toBe(
+      "Session: persiste\nState: inactive\nMessages: 4\nLast active: 2025-01-02T00:00:00.000Z\nPersisted: yes",
+    );
+    expect(creations).toBe(0);
+    backend.dispose();
+  });
+
+  test("status does not create a missing session", async () => {
     let creations = 0;
     const backend = new PiBackend(process.cwd(), {
       sessionDir: "/tmp",

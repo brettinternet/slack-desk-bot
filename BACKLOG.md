@@ -13,17 +13,6 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 
 ## Active items
 
-### SDB-022: Report model, context, and cost in `!status`
-
-**Why:** `!status` shows message counts only. Operators cannot see which model a conversation is using, how close the context is to compaction, or accumulated cost, which are the questions asked when a reply looks wrong or slow.
-
-**Scope:**
-
-- Add model (`provider/id`), context usage percentage when available, and cumulative cost from `AgentSession.getSessionStats()` and `session.model` to the cached-session branch.
-- Keep persisted-only output unchanged (no live session to inspect).
-
-**Done:** Unit test with fake stats; README `!status` description updated.
-
 ### SDB-023: Reject requests when no Pi model is authenticated at startup
 
 **Why:** `task doctor` checks Pi readiness, but the service itself starts and reports `ready` even when no model is authenticated or the default model is unavailable. The first user request then fails with a generic error and a request ID.
