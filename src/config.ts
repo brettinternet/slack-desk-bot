@@ -11,6 +11,8 @@ export interface Config {
   allowedUserIds: Set<string>;
   agentMode: AgentMode;
   queueLimits: QueueLimits;
+  sessionDir?: string;
+  maxActiveSessions: number;
   sessionIdleMs: number;
 }
 
@@ -23,6 +25,7 @@ const DEFAULTS = {
   maxPendingPerRequester: 3,
   rateLimitBurst: 3,
   rateLimitRefillMs: 60_000,
+  maxActiveSessions: 32,
   sessionIdleMs: 3_600_000,
 } as const;
 
@@ -54,6 +57,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
       .filter(Boolean),
   );
   const agentMode = environment.SLACK_AGENT_MODE?.trim() || "read-only";
+  const configuredSessionDir = environment.SLACK_AGENT_SESSION_DIR?.trim();
 
   if (allowedUserIds.size === 0) {
     throw new Error("SLACK_ALLOWED_USER_IDS must contain at least one user ID");
@@ -66,6 +70,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
   }
   if (!statSync(workspace, { throwIfNoEntry: false })?.isDirectory()) {
     throw new Error(`SLACK_AGENT_CWD is not a directory: ${workspace}`);
+  }
+  if (configuredSessionDir && !isAbsolute(configuredSessionDir)) {
+    throw new Error("SLACK_AGENT_SESSION_DIR must be an absolute path");
   }
 
   return {
@@ -108,6 +115,12 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
         DEFAULTS.rateLimitRefillMs,
       ),
     },
+    sessionDir: configuredSessionDir ? resolve(configuredSessionDir) : undefined,
+    maxActiveSessions: positiveInteger(
+      environment,
+      "SLACK_AGENT_MAX_ACTIVE_SESSIONS",
+      DEFAULTS.maxActiveSessions,
+    ),
     sessionIdleMs: positiveInteger(
       environment,
       "SLACK_AGENT_SESSION_IDLE_MS",

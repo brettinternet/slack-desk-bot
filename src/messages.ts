@@ -1,4 +1,13 @@
+import type { AgentCommand } from "./agent.ts";
+
 const SLACK_MESSAGE_LIMIT = 3_500;
+const AGENT_COMMANDS = new Set<AgentCommand>(["reset", "status", "cancel"]);
+
+export function parseAgentCommand(text: string): AgentCommand | undefined {
+  const match = /^!(reset|status|cancel)$/.exec(text.trim().toLowerCase());
+  const command = match?.[1] as AgentCommand | undefined;
+  return command && AGENT_COMMANDS.has(command) ? command : undefined;
+}
 
 export function isSupportedDirectMessage(subtype?: string): boolean {
   return subtype === undefined || subtype === "file_share";

@@ -1,11 +1,12 @@
-# slack-agent
+# slack-desk-agent
 
 Run coding agents from Slack. Slack transport and conversation routing depend on a small `AgentBackend` interface; the initial backend uses the Pi SDK.
 
 ## Behavior
 
 - Responds to app mentions in channels and messages in the app's DM.
-- Keeps one agent session per Slack channel thread and one per DM channel.
+- Keeps one persisted agent session per Slack channel thread and one per DM channel.
+- Restores conversation history after service restarts.
 - Serializes messages within a conversation while allowing separate conversations to run concurrently.
 - Bounds runtime, queue depth, concurrent conversations, and per-user request volume.
 - Cancels the active request when a user sends `cancel` in its DM or channel thread.
@@ -14,13 +15,15 @@ Run coding agents from Slack. Slack transport and conversation routing depend on
 - Rejects tool paths outside `SLACK_AGENT_CWD`, including paths reached through existing symlinks.
 - Splits long responses into Slack-safe messages.
 
-Sessions are kept in memory, evicted after an idle timeout, and reset when the service restarts.
+Use `!status`, `!reset`, or `!cancel` as an exact message to inspect a conversation's session, start a fresh session while retaining its previous transcript, or stop its active request. Plain `cancel` also cancels an active request. In channels, mention the bot with the command as usual.
 
 ## Resource limits
 
 The defaults allow three concurrent conversations, two queued requests per conversation, twenty queued requests globally, and three active or queued requests per user. Each user may submit a burst of three requests, replenishing at one request per minute. Agent runs time out after five minutes and queued requests expire after ten minutes.
 
-The optional `SLACK_AGENT_*` settings in [`.env.example`](.env.example) override these limits. Cancellation requests bypass admission and rate limits.
+Live sessions are disposed after one idle hour and limited to 32 least-recently-used entries by default. Their persisted history is reopened on the next message. `SLACK_AGENT_SESSION_DIR` optionally selects an absolute storage directory.
+
+The optional `SLACK_AGENT_*` settings in [`.env.example`](.env.example) override these limits. Cancellation and status requests bypass admission and rate limits.
 
 ## Slack setup
 
@@ -58,6 +61,8 @@ hum up
 The agent starts in read-only mode. Set `SLACK_AGENT_MODE=read-write` to explicitly enable `edit` and `write` for allowlisted users. Use a dedicated checkout, review changes before committing, and do not point `SLACK_AGENT_CWD` at a directory containing unrelated or sensitive files.
 
 The path policy limits Pi's selected filesystem tools, but locally installed Pi extensions run as trusted code. Only load extensions you trust on the service machine.
+
+Session JSONL files are designed for one service process. Running multiple instances against the same session directory requires conversation affinity and external locking.
 
 ## Adding another agent
 

@@ -4,6 +4,7 @@ import { EventDeduplicator } from "./event-deduplicator.ts";
 import {
   conversationId,
   isSupportedDirectMessage,
+  parseAgentCommand,
   splitSlackMessage,
   stripBotMention,
 } from "./messages.ts";
@@ -110,23 +111,15 @@ export class SlackAgent {
     if (!prompt) return;
 
     const id = conversationId(channel, threadTs);
-    if (prompt.trim().toLowerCase() === "cancel") {
-      const cancelled = this.options.agent.cancelActive(id, requesterId);
-      await client.chat.postMessage({
-        channel,
-        thread_ts: threadTs,
-        text: cancelled ? "Cancelled the active request." : "There is no active request to cancel.",
-      });
-      return;
-    }
+    const command =
+      parseAgentCommand(prompt) ??
+      (prompt.trim().toLowerCase() === "cancel" ? "cancel" : undefined);
 
     await client.reactions.add({ channel, timestamp: messageTs, name: "eyes" }).catch(() => {});
     try {
-      const output = await this.options.agent.run({
-        conversationId: id,
-        requesterId,
-        prompt,
-      });
+      const output = command
+        ? await this.options.agent.handleCommand(id, requesterId, command)
+        : await this.options.agent.run({ conversationId: id, requesterId, prompt });
       for (const text of splitSlackMessage(output)) {
         await client.chat.postMessage({ channel, thread_ts: threadTs, text });
       }

@@ -5,13 +5,22 @@ export interface AgentRequest {
   signal?: AbortSignal;
 }
 
+export type AgentCommand = "reset" | "status" | "cancel";
+export type SessionCommand = Exclude<AgentCommand, "cancel">;
+
 export interface AgentBackend {
   run(request: AgentRequest): Promise<string>;
+  sessionCommand?(conversationId: string, command: SessionCommand): Promise<string>;
   dispose(): void;
 }
 
 export interface CancellableAgentBackend extends AgentBackend {
   cancelActive(conversationId: string, requesterId: string): boolean;
+  handleCommand(
+    conversationId: string,
+    requesterId: string,
+    command: AgentCommand,
+  ): Promise<string>;
 }
 
 export interface QueueLimits {
@@ -69,6 +78,7 @@ export class QueueWaitTimeoutError extends Error {
 
 interface Job {
   request: AgentRequest;
+  operation: (signal: AbortSignal) => Promise<string>;
   controller: AbortController;
   resolve: (value: string) => void;
   reject: (reason: unknown) => void;
@@ -102,52 +112,27 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
   ) {}
 
   run(request: AgentRequest): Promise<string> {
-    if (this.disposed) return Promise.reject(new Error("Agent backend is disposed"));
+    return this.enqueue(request, (signal) => this.backend.run({ ...request, signal }));
+  }
 
-    const state = this.conversations.get(request.conversationId);
-    if ((state?.queue.length ?? 0) >= this.limits.maxQueuedPerConversation) {
-      return Promise.reject(new ConversationQueueFullError());
-    }
-
-    const canStartImmediately =
-      !state?.active &&
-      (state?.queue.length ?? 0) === 0 &&
-      this.activeConversationCount < this.limits.maxConcurrentConversations;
-    if (!canStartImmediately && this.totalQueuedCount >= this.limits.maxGlobalQueue) {
-      return Promise.reject(new GlobalQueueFullError());
-    }
-
-    const pending = this.pendingByRequester.get(request.requesterId) ?? 0;
-    if (pending >= this.limits.maxPendingPerRequester) {
-      return Promise.reject(new RequesterLimitError());
-    }
-    if (!this.consumeRateLimit(request.requesterId)) {
-      return Promise.reject(new RateLimitError());
-    }
-
-    const conversation = state ?? { queue: [], ready: false };
-    if (!state) this.conversations.set(request.conversationId, conversation);
-
-    const result = new Promise<string>((resolve, reject) => {
-      const job: Job = {
-        request,
-        controller: new AbortController(),
-        resolve,
-        reject,
-        completed: false,
-      };
-      job.queueTimer = setTimeout(
-        () => this.expireQueuedJob(request.conversationId, job),
-        this.limits.queueWaitMs,
+  handleCommand(
+    conversationId: string,
+    requesterId: string,
+    command: AgentCommand,
+  ): Promise<string> {
+    if (command === "cancel") {
+      return Promise.resolve(
+        this.cancelActive(conversationId, requesterId)
+          ? "Cancelled the active request."
+          : "There is no active request to cancel.",
       );
-      conversation.queue.push(job);
-    });
+    }
+    const sessionCommand = this.backend.sessionCommand;
+    if (!sessionCommand) return Promise.reject(new Error("Agent backend does not manage sessions"));
+    if (command === "status") return sessionCommand.call(this.backend, conversationId, command);
 
-    this.totalQueuedCount++;
-    this.pendingByRequester.set(request.requesterId, pending + 1);
-    this.markReady(request.conversationId, conversation);
-    this.pump();
-    return result;
+    const request = { conversationId, requesterId, prompt: `!${command}` };
+    return this.enqueue(request, () => sessionCommand.call(this.backend, conversationId, command));
   }
 
   cancelActive(conversationId: string, requesterId: string): boolean {
@@ -180,6 +165,59 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
       state.queue = [];
     }
     this.backend.dispose();
+  }
+
+  private enqueue(
+    request: AgentRequest,
+    operation: (signal: AbortSignal) => Promise<string>,
+  ): Promise<string> {
+    if (this.disposed) return Promise.reject(new Error("Agent backend is disposed"));
+
+    const state = this.conversations.get(request.conversationId);
+    if ((state?.queue.length ?? 0) >= this.limits.maxQueuedPerConversation) {
+      return Promise.reject(new ConversationQueueFullError());
+    }
+
+    const canStartImmediately =
+      !state?.active &&
+      (state?.queue.length ?? 0) === 0 &&
+      this.activeConversationCount < this.limits.maxConcurrentConversations;
+    if (!canStartImmediately && this.totalQueuedCount >= this.limits.maxGlobalQueue) {
+      return Promise.reject(new GlobalQueueFullError());
+    }
+
+    const pending = this.pendingByRequester.get(request.requesterId) ?? 0;
+    if (pending >= this.limits.maxPendingPerRequester) {
+      return Promise.reject(new RequesterLimitError());
+    }
+    if (!this.consumeRateLimit(request.requesterId)) {
+      return Promise.reject(new RateLimitError());
+    }
+
+    const conversation = state ?? { queue: [], ready: false };
+    if (!state) this.conversations.set(request.conversationId, conversation);
+
+    const result = new Promise<string>((resolve, reject) => {
+      const job: Job = {
+        request,
+        operation,
+        controller: new AbortController(),
+        resolve,
+        reject,
+        completed: false,
+      };
+      job.queueTimer = setTimeout(
+        () => this.expireQueuedJob(request.conversationId, job),
+        this.limits.queueWaitMs,
+      );
+      conversation.queue.push(job);
+    });
+
+    this.totalQueuedCount++;
+    this.pendingByRequester.set(request.requesterId, pending + 1);
+    this.markReady(request.conversationId, conversation);
+    this.pump();
+    return result;
   }
 
   private consumeRateLimit(requesterId: string): boolean {
@@ -233,10 +271,7 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
     }, this.limits.timeoutMs);
 
     try {
-      const value = await this.backend.run({
-        ...job.request,
-        signal: job.controller.signal,
-      });
+      const value = await job.operation(job.controller.signal);
       if (job.controller.signal.aborted) {
         this.completeJob(job, undefined, job.controller.signal.reason);
       } else {

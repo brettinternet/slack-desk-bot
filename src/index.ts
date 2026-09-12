@@ -10,7 +10,12 @@ const agent = new SlackAgent({
   appToken: config.slackAppToken,
   allowedUserIds: config.allowedUserIds,
   agent: new QueuedAgentBackend(
-    new PiBackend(config.workspace, config.agentMode, config.sessionIdleMs),
+    new PiBackend(config.workspace, {
+      mode: config.agentMode,
+      sessionDir: config.sessionDir,
+      maxActiveSessions: config.maxActiveSessions,
+      sessionIdleMs: config.sessionIdleMs,
+    }),
     config.queueLimits,
   ),
 });

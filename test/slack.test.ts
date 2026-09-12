@@ -43,7 +43,12 @@ function client(): SlackClient {
 }
 
 function backend(run: ReturnType<typeof mock>): CancellableAgentBackend {
-  return { run, cancelActive: () => false, dispose: () => {} };
+  return {
+    run,
+    handleCommand: async () => "command complete",
+    cancelActive: () => false,
+    dispose: () => {},
+  };
 }
 
 describe("Slack authorization", () => {
