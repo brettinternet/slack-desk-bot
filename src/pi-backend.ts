@@ -7,9 +7,14 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentBackend, AgentRequest } from "./agent.ts";
+import type { AgentMode } from "./config.ts";
 import { workspacePolicy } from "./workspace-policy.ts";
 
-const TOOLS = ["read", "grep", "find", "ls", "edit", "write"];
+const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
+
+export function toolsForMode(mode: AgentMode): string[] {
+  return mode === "read-write" ? [...READ_ONLY_TOOLS, "edit", "write"] : READ_ONLY_TOOLS;
+}
 
 interface SessionEntry {
   session: Promise<AgentSession>;
@@ -47,6 +52,7 @@ export class PiBackend implements AgentBackend {
 
   constructor(
     private readonly workspace: string,
+    private readonly mode: AgentMode,
     private readonly sessionIdleMs: number,
   ) {}
 
@@ -124,7 +130,7 @@ export class PiBackend implements AgentBackend {
       cwd: this.workspace,
       resourceLoader,
       sessionManager: SessionManager.inMemory(this.workspace),
-      tools: TOOLS,
+      tools: toolsForMode(this.mode),
     });
     return session;
   }

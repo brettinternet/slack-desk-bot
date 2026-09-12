@@ -11,6 +11,7 @@ import {
 interface SlackAgentOptions {
   botToken: string;
   appToken: string;
+  allowedUserIds: ReadonlySet<string>;
   agent: CancellableAgentBackend;
 }
 
@@ -29,17 +30,15 @@ export class SlackAgent {
 
     this.app.event("app_mention", async ({ body, event, client }) => {
       if (!event.user || event.bot_id) return;
+      const threadTs = event.thread_ts ?? event.ts;
+      if (!this.options.allowedUserIds.has(event.user)) {
+        await this.deny(client, event.channel, threadTs);
+        return;
+      }
       const prompt = stripBotMention(event.text, this.botUserId);
       if (!prompt || !this.acceptEvent(body.event_id, event.channel, event.ts, event.client_msg_id))
         return;
-      await this.respond(
-        client,
-        event.channel,
-        event.ts,
-        event.thread_ts ?? event.ts,
-        event.user,
-        prompt,
-      );
+      await this.respond(client, event.channel, event.ts, threadTs, event.user, prompt);
     });
 
     this.app.event("message", async ({ body, event, client }) => {
@@ -50,6 +49,10 @@ export class SlackAgent {
         !event.user
       )
         return;
+      if (!this.options.allowedUserIds.has(event.user)) {
+        await this.deny(client, event.channel, undefined);
+        return;
+      }
       const text = "text" in event ? (event.text ?? "") : "";
       const clientMessageId = "client_msg_id" in event ? event.client_msg_id : undefined;
       if (!text || !this.acceptEvent(body.event_id, event.channel, event.ts, clientMessageId))
@@ -81,6 +84,19 @@ export class SlackAgent {
       `event:${eventId}`,
       `message:${channel}:${clientMessageId ?? messageTs}`,
     ]);
+  }
+
+  private async deny(
+    client: App["client"],
+    channel: string,
+    threadTs: string | undefined,
+  ): Promise<void> {
+    console.warn(`Rejected unauthorized Slack request in channel ${channel}`);
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: "You are not authorized to use this agent.",
+    });
   }
 
   private async respond(

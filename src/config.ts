@@ -2,10 +2,14 @@ import { statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { QueueLimits } from "./agent.ts";
 
+export type AgentMode = "read-only" | "read-write";
+
 export interface Config {
   slackBotToken: string;
   slackAppToken: string;
   workspace: string;
+  allowedUserIds: Set<string>;
+  agentMode: AgentMode;
   queueLimits: QueueLimits;
   sessionIdleMs: number;
 }
@@ -43,7 +47,20 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
   const slackAppToken = required(environment, "SLACK_APP_TOKEN");
   const configuredWorkspace = required(environment, "SLACK_AGENT_CWD");
   const workspace = resolve(configuredWorkspace);
+  const allowedUserIds = new Set(
+    required(environment, "SLACK_ALLOWED_USER_IDS")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
+  const agentMode = environment.SLACK_AGENT_MODE?.trim() || "read-only";
 
+  if (allowedUserIds.size === 0) {
+    throw new Error("SLACK_ALLOWED_USER_IDS must contain at least one user ID");
+  }
+  if (agentMode !== "read-only" && agentMode !== "read-write") {
+    throw new Error("SLACK_AGENT_MODE must be read-only or read-write");
+  }
   if (!isAbsolute(configuredWorkspace)) {
     throw new Error("SLACK_AGENT_CWD must be an absolute path");
   }
@@ -55,6 +72,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
     slackBotToken,
     slackAppToken,
     workspace,
+    allowedUserIds,
+    agentMode,
     queueLimits: {
       timeoutMs: positiveInteger(environment, "SLACK_AGENT_TIMEOUT_MS", DEFAULTS.timeoutMs),
       queueWaitMs: positiveInteger(environment, "SLACK_AGENT_QUEUE_WAIT_MS", DEFAULTS.queueWaitMs),
