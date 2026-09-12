@@ -4,6 +4,6 @@ processes:
   agent:
     argv: [bun, run, start]
     ready:
-      match: "Slack agent connected"
+      match: "SlackDeskBot connected"
       timeout: 30s
     restart: on-failure

@@ -49,7 +49,7 @@ export class SlackAgent {
     if (!authentication.user_id) throw new Error("Slack auth.test did not return a bot user ID");
     this.botUserId = authentication.user_id;
     await this.app.start();
-    console.log("Slack agent connected");
+    console.log("SlackDeskBot connected");
   }
 
   async stop(): Promise<void> {

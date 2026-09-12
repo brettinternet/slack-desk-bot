@@ -37,10 +37,22 @@ export function createResponseCollector() {
   };
 }
 
+export function createPiResourceLoader(workspace: string, instructions?: string) {
+  return new DefaultResourceLoader({
+    cwd: workspace,
+    agentDir: getAgentDir(),
+    appendSystemPrompt: instructions ? [instructions] : [],
+    extensionFactories: [workspacePolicy(workspace)],
+  });
+}
+
 export class PiBackend implements AgentBackend {
   private readonly sessions = new Map<string, Promise<AgentSession>>();
 
-  constructor(private readonly workspace: string) {}
+  constructor(
+    private readonly workspace: string,
+    private readonly instructions?: string,
+  ) {}
 
   async run({ conversationId, prompt }: AgentRequest): Promise<string> {
     const session = await this.sessionFor(conversationId);
@@ -73,11 +85,7 @@ export class PiBackend implements AgentBackend {
   }
 
   private async createSession(): Promise<AgentSession> {
-    const resourceLoader = new DefaultResourceLoader({
-      cwd: this.workspace,
-      agentDir: getAgentDir(),
-      extensionFactories: [workspacePolicy(this.workspace)],
-    });
+    const resourceLoader = createPiResourceLoader(this.workspace, this.instructions);
     await resourceLoader.reload();
     const { session } = await createAgentSession({
       cwd: this.workspace,

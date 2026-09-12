@@ -1,0 +1,1 @@
+Keep Slack replies brief.

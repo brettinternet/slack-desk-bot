@@ -16,7 +16,7 @@ tasks:
       - task: setup:init
 
   start:
-    desc: Start the Slack agent
+    desc: Start SlackDeskBot
     cmd: bun run start
 
   check:

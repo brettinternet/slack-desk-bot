@@ -1,10 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { createResponseCollector } from "../src/pi-backend.ts";
+import { createPiResourceLoader, createResponseCollector } from "../src/pi-backend.ts";
 
 function event(value: object): AgentSessionEvent {
   return value as AgentSessionEvent;
 }
+
+describe("Pi resource loading", () => {
+  test("appends Slack-specific instructions to the system prompt", async () => {
+    const loader = createPiResourceLoader(process.cwd(), "Keep Slack replies brief.");
+    await loader.reload();
+
+    expect(loader.getAppendSystemPrompt()).toContain("Keep Slack replies brief.");
+  });
+});
 
 describe("Pi response collection", () => {
   test("keeps completed assistant messages and separates turns", () => {
