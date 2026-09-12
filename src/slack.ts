@@ -7,6 +7,7 @@ import {
   QueueWaitTimeoutError,
   RateLimitError,
   RequesterLimitError,
+  type AgentAdmission,
   type CancellableAgentBackend,
 } from "./agent.ts";
 import { EventDeduplicator } from "./event-deduplicator.ts";
@@ -41,6 +42,8 @@ export class SlackAuthenticationError extends Error {
     this.name = "SlackAuthenticationError";
   }
 }
+
+const MAX_CONCURRENT_RESPONSES = 8;
 
 interface DeliveryResult {
   outcome: "success" | "partial" | "failure";
@@ -93,6 +96,8 @@ export class SlackAgent {
   private readonly ownedChannelThreads = new Set<string>();
   private readonly receiver: SocketModeReceiver;
   private botUserId = "";
+  private activeResponses = 0;
+  private responseCapacityWarningLogged = false;
 
   constructor(private readonly options: SlackAgentOptions) {
     this.receiver = new SocketModeReceiver({ appToken: options.appToken });
@@ -128,7 +133,7 @@ export class SlackAgent {
       )
         return;
       this.ownedChannelThreads.add(conversationId(event.channel, threadTs));
-      await this.respond(
+      await this.respondWithinLimit(
         client,
         body.event_id,
         event.channel,
@@ -170,7 +175,7 @@ export class SlackAgent {
         !this.acceptEvent(body.event_id, event.channel, event.ts, clientMessageId)
       )
         return;
-      await this.respond(
+      await this.respondWithinLimit(
         client,
         body.event_id,
         event.channel,
@@ -218,6 +223,46 @@ export class SlackAgent {
     }
   }
 
+  private async chatOperation<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await this.slackOperation(operation());
+    } catch (error) {
+      const retryAfter = this.retryAfterSeconds(error);
+      if (retryAfter === undefined) throw error;
+      await new Promise((resolve) => setTimeout(resolve, retryAfter * 1_000));
+      return this.slackOperation(operation());
+    }
+  }
+
+  private async bestEffortChatOperation<T>(operation: () => Promise<T>): Promise<T | undefined> {
+    try {
+      return await this.chatOperation(operation);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private retryAfterSeconds(error: unknown): number | undefined {
+    if (typeof error !== "object" || error === null) return undefined;
+    if ("retryAfter" in error) {
+      const retryAfter = error.retryAfter;
+      if (typeof retryAfter === "number" && Number.isFinite(retryAfter) && retryAfter >= 0) {
+        return retryAfter;
+      }
+    }
+    if (!("data" in error)) return undefined;
+    const data = error.data;
+    if (typeof data !== "object" || data === null || !("error" in data)) return undefined;
+    if (data.error !== "ratelimited" || !("response_metadata" in data)) return undefined;
+    const metadata = data.response_metadata;
+    if (typeof metadata !== "object" || metadata === null || !("retryAfter" in metadata))
+      return undefined;
+    const retryAfter = metadata.retryAfter;
+    return typeof retryAfter === "number" && Number.isFinite(retryAfter) && retryAfter >= 0
+      ? retryAfter
+      : undefined;
+  }
+
   private acceptEvent(
     eventId: string,
     channel: string,
@@ -239,7 +284,7 @@ export class SlackAgent {
   ): Promise<void> {
     console.warn(`Rejected unauthorized Slack request in channel ${channel}`);
     if (!this.denials.accept([`deny:${conversationId(channel, threadTs)}:${userId}`])) return;
-    await this.bestEffortSlackOperation(
+    await this.bestEffortChatOperation(() =>
       client.chat.postMessage({
         channel,
         thread_ts: threadTs,
@@ -255,6 +300,46 @@ export class SlackAgent {
     });
   }
 
+  private async respondWithinLimit(
+    client: App["client"],
+    requestId: string,
+    channel: string,
+    messageTs: string,
+    threadTs: string | undefined,
+    requesterId: string,
+    prompt: string,
+    files: readonly SlackFileReference[],
+  ): Promise<void> {
+    if (this.activeResponses >= MAX_CONCURRENT_RESPONSES) {
+      if (!this.responseCapacityWarningLogged) {
+        console.warn(
+          `Dropped Slack request because ${MAX_CONCURRENT_RESPONSES} responses are active`,
+        );
+        this.responseCapacityWarningLogged = true;
+      }
+      return;
+    }
+
+    this.activeResponses++;
+    try {
+      await this.respond(
+        client,
+        requestId,
+        channel,
+        messageTs,
+        threadTs,
+        requesterId,
+        prompt,
+        files,
+      );
+    } finally {
+      this.activeResponses--;
+      if (this.activeResponses < MAX_CONCURRENT_RESPONSES) {
+        this.responseCapacityWarningLogged = false;
+      }
+    }
+  }
+
   private async respond(
     client: App["client"],
     requestId: string,
@@ -267,7 +352,7 @@ export class SlackAgent {
   ): Promise<void> {
     const command = files.length === 0 ? parseSlackCommand(prompt) : undefined;
     if (command?.kind === "help" || command?.kind === "unknown") {
-      await this.slackOperation(
+      await this.chatOperation(() =>
         client.chat.postMessage({
           channel,
           thread_ts: threadTs,
@@ -280,6 +365,53 @@ export class SlackAgent {
       return;
     }
 
+    let admission: AgentAdmission | undefined;
+    const agentCommand = command?.kind === "agent" ? command.command : undefined;
+    if (agentCommand !== "status" && agentCommand !== "cancel") {
+      try {
+        admission = this.options.agent.admit?.(requesterId);
+      } catch (error) {
+        await this.bestEffortChatOperation(() =>
+          client.chat.postMessage({
+            channel,
+            thread_ts: threadTs,
+            text: userFacingAgentError(error, requestId),
+          }),
+        );
+        return;
+      }
+    }
+
+    try {
+      await this.respondAdmitted(
+        client,
+        requestId,
+        channel,
+        messageTs,
+        threadTs,
+        requesterId,
+        prompt,
+        files,
+        command,
+        admission,
+      );
+    } finally {
+      admission?.release();
+    }
+  }
+
+  private async respondAdmitted(
+    client: App["client"],
+    requestId: string,
+    channel: string,
+    messageTs: string,
+    threadTs: string | undefined,
+    requesterId: string,
+    prompt: string,
+    files: readonly SlackFileReference[],
+    command: ReturnType<typeof parseSlackCommand>,
+    admission: AgentAdmission | undefined,
+  ): Promise<void> {
     const id = conversationId(channel, threadTs);
     const startedAt = performance.now();
     let runStartedAt = startedAt;
@@ -292,7 +424,7 @@ export class SlackAgent {
     await this.bestEffortSlackOperation(
       client.reactions.add({ channel, timestamp: messageTs, name: "eyes" }),
     );
-    const status = await this.bestEffortSlackOperation(
+    const status = await this.bestEffortChatOperation(() =>
       client.chat.postMessage({ channel, thread_ts: threadTs, text: "Queued…" }),
     );
     const statusTs = status?.ts;
@@ -300,7 +432,9 @@ export class SlackAgent {
     const updateStatus = (text: string): void => {
       if (!statusTs) return;
       statusUpdates = statusUpdates.then(async () => {
-        await this.bestEffortSlackOperation(client.chat.update({ channel, ts: statusTs, text }));
+        await this.bestEffortChatOperation(() =>
+          client.chat.update({ channel, ts: statusTs, text }),
+        );
       });
     };
     const observer = {
@@ -330,7 +464,7 @@ export class SlackAgent {
         this.options.fetch,
       );
       for (const warning of warnings) {
-        await this.slackOperation(
+        await this.chatOperation(() =>
           client.chat.postMessage({ channel, thread_ts: threadTs, text: warning }),
         );
       }
@@ -341,18 +475,29 @@ export class SlackAgent {
         executionOutcome = "success";
         delivery = { outcome: "success", publishedMessages: 0 };
       } else {
-        const agentCommand = attachments.length === 0 ? command?.command : undefined;
-        finalOutput = agentCommand
-          ? await this.options.agent.handleCommand(id, requesterId, agentCommand, observer)
-          : await this.options.agent.run(
-              {
-                conversationId: id,
+        const agentCommand =
+          attachments.length === 0 && command?.kind === "agent" ? command.command : undefined;
+        if (agentCommand) {
+          finalOutput = admission
+            ? await this.options.agent.handleCommand(
+                id,
                 requesterId,
-                prompt,
-                ...(attachments.length > 0 ? { attachments } : {}),
-              },
-              observer,
-            );
+                agentCommand,
+                observer,
+                admission,
+              )
+            : await this.options.agent.handleCommand(id, requesterId, agentCommand, observer);
+        } else {
+          const request = {
+            conversationId: id,
+            requesterId,
+            prompt,
+            ...(attachments.length > 0 ? { attachments } : {}),
+          };
+          finalOutput = admission
+            ? await this.options.agent.run(request, observer, admission)
+            : await this.options.agent.run(request, observer);
+        }
         executionOutcome = "success";
       }
     } catch (error) {
@@ -424,14 +569,14 @@ export class SlackAgent {
     let updated = false;
     if (statusTs) {
       try {
-        await this.slackOperation(client.chat.update({ channel, ts: statusTs, text: first }));
+        await this.chatOperation(() => client.chat.update({ channel, ts: statusTs, text: first }));
         updated = true;
         publishedMessages++;
       } catch {}
     }
     if (!updated) {
       try {
-        await this.slackOperation(
+        await this.chatOperation(() =>
           client.chat.postMessage({ channel, thread_ts: threadTs, text: first }),
         );
         publishedMessages++;
@@ -441,7 +586,9 @@ export class SlackAgent {
     }
     for (const text of rest) {
       try {
-        await this.slackOperation(client.chat.postMessage({ channel, thread_ts: threadTs, text }));
+        await this.chatOperation(() =>
+          client.chat.postMessage({ channel, thread_ts: threadTs, text }),
+        );
         publishedMessages++;
       } catch (error) {
         return { outcome: "partial", publishedMessages, errorType: errorType(error) };

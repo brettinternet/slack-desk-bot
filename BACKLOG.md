@@ -13,18 +13,6 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 
 ## Active items
 
-### SDB-020: Bound Slack work per event handler
-
-**Why:** Bolt acknowledges Events API deliveries immediately and runs listeners with no concurrency limit. Admission control lives in `QueuedAgentBackend`, but before admission each accepted message already performs `reactions.add`, a `Queued…` post, and up to four `files.info` + download round trips. Many messages in a short window (or a large channel the bot is added to) can exhaust Slack's per-method rate limits and delay results for legitimate requests.
-
-**Scope:**
-
-- Move the per-user rate limit and requester pending check ahead of file ingestion and status posting, or gate ingestion behind a cheap `canAdmit()` on the backend.
-- Cap concurrent in-flight `respond()` invocations (for example, 8) and drop with a single warning log beyond that.
-- Handle Slack `ratelimited` errors from `chat.postMessage`/`chat.update` with the `Retry-After` header once before reporting delivery failure.
-
-**Done:** Tests show a burst of N unauthorized or over-limit messages results in zero `files.info`/`postMessage` calls beyond the bounded replies; integration test confirms one retry on a `ratelimited` update.
-
 ### SDB-021: Restore channel thread ownership from persisted sessions
 
 **Why:** Thread ownership is in memory, so every service restart forces users to re-mention the bot in existing threads. Sessions are already persisted per `channel:thread_ts`, so the data to rebuild ownership exists.

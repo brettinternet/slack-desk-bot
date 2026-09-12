@@ -332,12 +332,75 @@ describe("SlackAgent transport", () => {
       text: "You are not authorized to use this agent.",
     });
 
-    await app.handlers.get("app_mention")!({
-      body: { event_id: "E2" },
-      event: { user: "U_DENIED", text: "again", channel: "C1", ts: "2", thread_ts: "1" },
-      client: slack,
-    });
+    await Promise.all(
+      Array.from({ length: 20 }, (_, index) =>
+        app.handlers.get("app_mention")!({
+          body: { event_id: `E_DENIED_${index}` },
+          event: {
+            user: "U_DENIED",
+            text: "again",
+            channel: "C1",
+            ts: String(index + 2),
+            thread_ts: "1",
+            files: [{ id: `F${index}` }],
+          },
+          client: slack,
+        }),
+      ),
+    );
     expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
+    expect(slack.files.info).not.toHaveBeenCalled();
+  });
+
+  test("bounds Slack calls for a burst beyond requester admission", async () => {
+    const held = deferred<string>();
+    const rawBackend: AgentBackend = {
+      run: async () => held.promise,
+      dispose: () => {},
+    };
+    const fetcher = mock(async () => new Response("contents")) as unknown as typeof fetch;
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: new QueuedAgentBackend(
+        rawBackend,
+        queueLimits({ maxPendingPerRequester: 1, rateLimitBurst: 20 }),
+      ),
+      fetch: fetcher,
+    });
+    const slack = client();
+    slack.files.info.mockImplementation(async ({ file }: { file: string }) => ({
+      ok: true,
+      file: {
+        id: file,
+        name: `${file}.txt`,
+        mimetype: "text/plain",
+        size: 8,
+        url_private_download: `https://files.slack.com/files-pri/T1-${file}/download/file.txt`,
+      },
+    }));
+    const mention = app.handlers.get("app_mention")!;
+
+    const handling = Array.from({ length: 20 }, (_, index) =>
+      mention({
+        body: { event_id: `E_BURST_${index}` },
+        event: {
+          user: "U_ALLOWED",
+          text: "request",
+          channel: "C1",
+          ts: String(index + 1),
+          files: [{ id: `F${index}` }],
+        },
+        client: slack,
+      }),
+    );
+    await Bun.sleep(0);
+
+    expect(slack.files.info).toHaveBeenCalledTimes(1);
+    expect(slack.chat.postMessage.mock.calls.length).toBeLessThanOrEqual(8);
+    held.resolve("response");
+    await Promise.all(handling);
   });
 
   test("handles help and unknown commands without invoking the backend", async () => {
@@ -903,6 +966,34 @@ describe("SlackAgent transport", () => {
     expect(published).toHaveLength(3);
     expect(published.every((text) => text.length <= 3_500)).toBe(true);
     expect(published[2]).toContain("Output truncated");
+  });
+
+  test("retries one ratelimited final status update", async () => {
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+    });
+    const slack = client();
+    slack.chat.update.mockImplementationOnce(async () => {
+      throw {
+        data: {
+          error: "ratelimited",
+          response_metadata: { retryAfter: 0 },
+        },
+      };
+    });
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_RATE_LIMITED_UPDATE" },
+      event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "4" },
+      client: slack,
+    });
+
+    expect(slack.chat.update).toHaveBeenCalledTimes(2);
+    expect(slack.chat.update.mock.calls[0]?.[0]).toEqual(slack.chat.update.mock.calls[1]?.[0]);
+    expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
   });
 
   test("falls back to a new message when the final status update fails", async () => {

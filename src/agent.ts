@@ -37,13 +37,24 @@ export interface AgentBackend {
   dispose(): void;
 }
 
+export interface AgentAdmission {
+  release(): void;
+}
+
 export interface CancellableAgentBackend extends AgentBackend {
+  admit?(requesterId: string): AgentAdmission;
+  run(
+    request: AgentRequest,
+    observer?: AgentRunObserver,
+    admission?: AgentAdmission,
+  ): Promise<string>;
   cancelActive(conversationId: string, requesterId: string): boolean;
   handleCommand(
     conversationId: string,
     requesterId: string,
     command: AgentCommand,
     observer?: AgentRunObserver,
+    admission?: AgentAdmission,
   ): Promise<string>;
 }
 
@@ -133,11 +144,18 @@ interface RateBucket {
   updatedAt: number;
 }
 
+interface AdmissionState {
+  requesterId: string;
+  consumed: boolean;
+  released: boolean;
+}
+
 export class QueuedAgentBackend implements CancellableAgentBackend {
   private readonly conversations = new Map<string, ConversationState>();
   private readonly readyConversations: string[] = [];
   private readonly pendingByRequester = new Map<string, number>();
   private readonly rateBuckets = new Map<string, RateBucket>();
+  private readonly admissions = new WeakMap<AgentAdmission, AdmissionState>();
   private activeConversationCount = 0;
   private totalQueuedCount = 0;
   private disposed = false;
@@ -147,11 +165,35 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
     private readonly limits: QueueLimits,
   ) {}
 
-  run(request: AgentRequest, observer?: AgentRunObserver): Promise<string> {
+  admit(requesterId: string): AgentAdmission {
+    if (this.disposed) throw new Error("Agent backend is disposed");
+    const pending = this.pendingByRequester.get(requesterId) ?? 0;
+    if (pending >= this.limits.maxPendingPerRequester) throw new RequesterLimitError();
+    if (!this.consumeRateLimit(requesterId)) throw new RateLimitError();
+
+    const state: AdmissionState = { requesterId, consumed: false, released: false };
+    const admission: AgentAdmission = {
+      release: () => {
+        if (state.released || state.consumed) return;
+        state.released = true;
+        this.decrementPending(requesterId);
+      },
+    };
+    this.admissions.set(admission, state);
+    this.pendingByRequester.set(requesterId, pending + 1);
+    return admission;
+  }
+
+  run(
+    request: AgentRequest,
+    observer?: AgentRunObserver,
+    admission?: AgentAdmission,
+  ): Promise<string> {
     return this.enqueue(
       request,
       (signal) => this.backend.run({ ...request, signal }, observer),
       observer,
+      admission,
     );
   }
 
@@ -160,6 +202,7 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
     requesterId: string,
     command: AgentCommand,
     observer?: AgentRunObserver,
+    admission?: AgentAdmission,
   ): Promise<string> {
     if (command === "cancel") {
       try {
@@ -185,6 +228,7 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
       request,
       () => sessionCommand.call(this.backend, conversationId, command),
       observer,
+      admission,
     );
   }
 
@@ -237,6 +281,7 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
     request: AgentRequest,
     operation: (signal: AbortSignal) => Promise<string>,
     observer?: AgentRunObserver,
+    admission?: AgentAdmission,
   ): Promise<string> {
     if (this.disposed) return Promise.reject(new Error("Agent backend is disposed"));
 
@@ -254,11 +299,24 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
     }
 
     const pending = this.pendingByRequester.get(request.requesterId) ?? 0;
-    if (pending >= this.limits.maxPendingPerRequester) {
-      return Promise.reject(new RequesterLimitError());
-    }
-    if (!this.consumeRateLimit(request.requesterId)) {
-      return Promise.reject(new RateLimitError());
+    if (admission) {
+      const admissionState = this.admissions.get(admission);
+      if (
+        !admissionState ||
+        admissionState.requesterId !== request.requesterId ||
+        admissionState.consumed ||
+        admissionState.released
+      ) {
+        return Promise.reject(new Error("Invalid or expired agent admission"));
+      }
+      admissionState.consumed = true;
+    } else {
+      if (pending >= this.limits.maxPendingPerRequester) {
+        return Promise.reject(new RequesterLimitError());
+      }
+      if (!this.consumeRateLimit(request.requesterId)) {
+        return Promise.reject(new RateLimitError());
+      }
     }
 
     const conversation = state ?? { queue: [], ready: false };
@@ -282,7 +340,7 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
     });
 
     this.totalQueuedCount++;
-    this.pendingByRequester.set(request.requesterId, pending + 1);
+    if (!admission) this.pendingByRequester.set(request.requesterId, pending + 1);
     try {
       observer?.onQueued?.();
     } catch {}

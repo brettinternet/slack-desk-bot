@@ -245,6 +245,43 @@ describe("QueuedAgentBackend", () => {
     queued.dispose();
   });
 
+  test("reserves requester admission before a request is enqueued", async () => {
+    const active = deferred();
+    const backend: AgentBackend = {
+      run: async () => active.promise,
+      dispose: () => {},
+    };
+    const queued = new QueuedAgentBackend(
+      backend,
+      limits({ maxPendingPerRequester: 1, rateLimitBurst: 1 }),
+    );
+
+    const admission = queued.admit("user");
+    expect(() => queued.admit("user")).toThrow(RequesterLimitError);
+    const running = queued.run(request("thread", "hold"), undefined, admission);
+    admission.release();
+    await expect(queued.run(request("other", "next"))).rejects.toBeInstanceOf(RequesterLimitError);
+
+    active.resolve("done");
+    await running;
+    admission.release();
+    await expect(queued.run(request("other", "next"))).rejects.toBeInstanceOf(RateLimitError);
+    queued.dispose();
+  });
+
+  test("releases unused requester admission", () => {
+    const queued = new QueuedAgentBackend(
+      { run: async ({ prompt }) => prompt, dispose: () => {} },
+      limits({ maxPendingPerRequester: 1 }),
+    );
+
+    const admission = queued.admit("user");
+    admission.release();
+    const replacement = queued.admit("user");
+    replacement.release();
+    queued.dispose();
+  });
+
   test("limits pending requests and request rate per requester", async () => {
     const active = deferred();
     const backend: AgentBackend = {
