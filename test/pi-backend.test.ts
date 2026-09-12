@@ -5,7 +5,12 @@ import {
   type SessionInfo,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { createResponseCollector, PiBackend, toolsForMode } from "../src/pi-backend.ts";
+import {
+  createPiResourceLoader,
+  createResponseCollector,
+  PiBackend,
+  toolsForMode,
+} from "../src/pi-backend.ts";
 
 function event(value: object): AgentSessionEvent {
   return value as AgentSessionEvent;
@@ -57,10 +62,17 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
   };
 }
 
-describe("Pi tool access", () => {
+describe("Pi configuration", () => {
   test("excludes write tools unless explicitly enabled", () => {
     expect(toolsForMode("read-only")).toEqual(["read", "grep", "find", "ls"]);
     expect(toolsForMode("read-write")).toEqual(["read", "grep", "find", "ls", "edit", "write"]);
+  });
+
+  test("appends Slack-specific instructions to the system prompt", async () => {
+    const loader = createPiResourceLoader(process.cwd(), "Keep Slack replies brief.");
+    await loader.reload();
+
+    expect(loader.getAppendSystemPrompt()).toContain("Keep Slack replies brief.");
   });
 });
 

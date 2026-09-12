@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { resolve } from "node:path";
 import { loadConfig } from "../src/config.ts";
 
 const valid = {
@@ -16,6 +17,7 @@ describe("loadConfig", () => {
       workspace: process.cwd(),
       allowedUserIds: new Set(["U0123", "U0456"]),
       agentMode: "read-only",
+      instructions: undefined,
       queueLimits: {
         timeoutMs: 300_000,
         queueWaitMs: 600_000,
@@ -57,6 +59,33 @@ describe("loadConfig", () => {
         rateLimitBurst: 4,
       },
     });
+  });
+
+  test("loads inline Slack instructions", () => {
+    expect(
+      loadConfig({ ...valid, SLACK_AGENT_INSTRUCTIONS: "  Be concise and conversational.  " })
+        .instructions,
+    ).toBe("Be concise and conversational.");
+  });
+
+  test("loads Slack instructions from an absolute file path", () => {
+    const instructionsFile = resolve(import.meta.dirname, "fixtures/slack-instructions.md");
+    expect(
+      loadConfig({ ...valid, SLACK_AGENT_INSTRUCTIONS_FILE: instructionsFile }).instructions,
+    ).toBe("Keep Slack replies brief.");
+  });
+
+  test("rejects ambiguous or relative instruction configuration", () => {
+    expect(() =>
+      loadConfig({
+        ...valid,
+        SLACK_AGENT_INSTRUCTIONS: "Be concise.",
+        SLACK_AGENT_INSTRUCTIONS_FILE: "/tmp/instructions.md",
+      }),
+    ).toThrow("Set only one");
+    expect(() =>
+      loadConfig({ ...valid, SLACK_AGENT_INSTRUCTIONS_FILE: "instructions.md" }),
+    ).toThrow("must be an absolute path");
   });
 
   test("rejects missing settings, invalid modes, paths, and limits", () => {

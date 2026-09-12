@@ -1,6 +1,6 @@
-# slack-desk-agent
+# SlackDeskBot
 
-Run coding agents from Slack. Slack transport and conversation routing depend on a small `AgentBackend` interface; the initial backend uses the Pi SDK.
+Your desktop coding agent, available in Slack. Slack transport and conversation routing depend on a small `AgentBackend` interface; the initial backend uses the Pi SDK.
 
 ## Behavior
 
@@ -27,12 +27,13 @@ The optional `SLACK_AGENT_*` settings in [`.env.example`](.env.example) override
 
 ## Slack setup
 
-1. Create a Slack app from [`slack-app-manifest.yaml`](slack-app-manifest.yaml).
-2. Under **Basic Information → App-Level Tokens**, create a token with `connections:write`.
-3. Install the app into the workspace.
-4. Copy the bot token (`xoxb-…`) and app token (`xapp-…`).
+1. Optionally personalize the app by changing both `display_information.name` and `features.bot_user.display_name` in [`slack-app-manifest.yaml`](slack-app-manifest.yaml), for example to `Brett's Desktop Bot`.
+2. Create a Slack app from the manifest.
+3. Under **Basic Information → App-Level Tokens**, create a token with `connections:write`.
+4. Install the app into the workspace.
+5. Copy the bot token (`xoxb-…`) and app token (`xapp-…`).
 
-The manifest enables Socket Mode, so local development needs no public HTTP endpoint. Only Slack user IDs configured in `SLACK_ALLOWED_USER_IDS` can invoke the app.
+The manifest defaults to `SlackDeskBot` and enables Socket Mode, so local development needs no public HTTP endpoint. The name applies to the Slack app installation, not separately to each workspace user. Only Slack user IDs configured in `SLACK_ALLOWED_USER_IDS` can invoke the app.
 
 ## Local setup
 
@@ -54,13 +55,29 @@ hum up
 
 `hum status`, `hum logs agent`, and `hum down` inspect and control the service. Bun loads `.env` automatically. The machine must remain awake and connected to Slack.
 
+### Slack interaction instructions
+
+Use one optional setting to give every Slack conversation the same bot identity, voice, and response style:
+
+```dotenv
+SLACK_AGENT_INSTRUCTIONS="Be concise, conversational, and avoid narrating tool use."
+```
+
+For longer instructions, keep them outside the target repository and configure an absolute path instead:
+
+```dotenv
+SLACK_AGENT_INSTRUCTIONS_FILE=/Users/you/.config/slack-desk-bot/instructions.md
+```
+
+Set only one of these settings. The file is read when the service starts, so restart after changing it. These instructions are added only to Pi sessions created by SlackDeskBot; the target repository's `AGENTS.md` continues to provide its normal project-specific instructions.
+
 ## Security
 
 `SLACK_ALLOWED_USER_IDS` is a required comma-separated allowlist of Slack member IDs. Requests from all other users are rejected before Pi runs. Find a member ID in Slack from **Profile → More → Copy member ID**.
 
 The agent starts in read-only mode. Set `SLACK_AGENT_MODE=read-write` to explicitly enable `edit` and `write` for allowlisted users. Use a dedicated checkout, review changes before committing, and do not point `SLACK_AGENT_CWD` at a directory containing unrelated or sensitive files.
 
-The path policy limits Pi's selected filesystem tools, but locally installed Pi extensions run as trusted code. Only load extensions you trust on the service machine.
+The path policy limits Pi's selected filesystem tools, but locally installed Pi extensions run as trusted code. Only load extensions you trust on the service machine. Slack interaction instructions are sent to the configured model, so do not put secrets in them.
 
 Session JSONL files are designed for one service process. Running multiple instances against the same session directory requires conversation affinity and external locking.
 

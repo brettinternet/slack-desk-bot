@@ -1,8 +1,8 @@
 display_information:
-  name: Local Agent
+  name: SlackDeskBot
 features:
   bot_user:
-    display_name: Local Agent
+    display_name: SlackDeskBot
     always_online: false
 oauth_config:
   scopes:

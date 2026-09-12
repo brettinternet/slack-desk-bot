@@ -4,7 +4,7 @@ import { PiBackend } from "./pi-backend.ts";
 import { SlackAgent } from "./slack.ts";
 
 const config = loadConfig();
-console.log(`Slack agent mode: ${config.agentMode}`);
+console.log(`SlackDeskBot mode: ${config.agentMode}`);
 const agent = new SlackAgent({
   botToken: config.slackBotToken,
   appToken: config.slackAppToken,
@@ -12,6 +12,7 @@ const agent = new SlackAgent({
   agent: new QueuedAgentBackend(
     new PiBackend(config.workspace, {
       mode: config.agentMode,
+      instructions: config.instructions,
       sessionDir: config.sessionDir,
       maxActiveSessions: config.maxActiveSessions,
       sessionIdleMs: config.sessionIdleMs,

@@ -33,6 +33,7 @@ interface CachedSession {
 
 export interface PiBackendOptions {
   mode?: AgentMode;
+  instructions?: string;
   sessionDir?: string;
   maxActiveSessions?: number;
   sessionIdleMs?: number;
@@ -66,6 +67,15 @@ export function createResponseCollector() {
       return output.join("\n\n").trim();
     },
   };
+}
+
+export function createPiResourceLoader(workspace: string, instructions?: string) {
+  return new DefaultResourceLoader({
+    cwd: workspace,
+    agentDir: getAgentDir(),
+    appendSystemPrompt: instructions ? [instructions] : [],
+    extensionFactories: [workspacePolicy(workspace)],
+  });
 }
 
 export class PiBackend implements AgentBackend {
@@ -180,11 +190,7 @@ export class PiBackend implements AgentBackend {
   private async createSession(sessionManager: SessionManager): Promise<AgentSession> {
     if (this.options.sessionFactory) return this.options.sessionFactory(sessionManager);
 
-    const resourceLoader = new DefaultResourceLoader({
-      cwd: this.workspace,
-      agentDir: getAgentDir(),
-      extensionFactories: [workspacePolicy(this.workspace)],
-    });
+    const resourceLoader = createPiResourceLoader(this.workspace, this.options.instructions);
     await resourceLoader.reload();
     const { session } = await createAgentSession({
       cwd: this.workspace,
