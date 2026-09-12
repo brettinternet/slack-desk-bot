@@ -1,5 +1,9 @@
 const SLACK_MESSAGE_LIMIT = 3_500;
 
+export function isSupportedDirectMessage(subtype?: string): boolean {
+  return subtype === undefined || subtype === "file_share";
+}
+
 export function stripBotMention(text: string, botUserId: string): string {
   return text.replace(new RegExp(`<@${botUserId}>`, "g"), "").trim();
 }

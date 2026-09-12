@@ -1,6 +1,11 @@
 import { App, LogLevel } from "@slack/bolt";
 import type { AgentBackend } from "./agent.ts";
-import { conversationId, splitSlackMessage, stripBotMention } from "./messages.ts";
+import {
+  conversationId,
+  isSupportedDirectMessage,
+  splitSlackMessage,
+  stripBotMention,
+} from "./messages.ts";
 
 interface SlackAgentOptions {
   botToken: string;
@@ -27,8 +32,14 @@ export class SlackAgent {
     });
 
     this.app.event("message", async ({ event, client }) => {
-      if (event.channel_type !== "im" || event.subtype !== undefined || !event.user) return;
-      await this.respond(client, event.channel, event.ts, undefined, event.text ?? "");
+      if (
+        event.channel_type !== "im"
+        || !isSupportedDirectMessage(event.subtype)
+        || !("user" in event)
+        || !event.user
+      ) return;
+      const text = "text" in event ? event.text ?? "" : "";
+      await this.respond(client, event.channel, event.ts, undefined, text);
     });
   }
 
