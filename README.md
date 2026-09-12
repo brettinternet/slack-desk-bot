@@ -41,21 +41,30 @@ The manifest defaults to `SlackDeskBot` and enables Socket Mode, so local develo
 
 ## Local setup
 
-Pi uses the model authentication already configured on the machine. If needed, authenticate in Pi first:
+Install Git and [Mise](https://mise.jdx.dev/getting-started.html), then clone this repository. Mise supplies Task, Bun, Hum, and the remaining project tools; bootstrap them before using project Task commands:
+
+```sh
+mise install
+mise exec task -- task init
+```
+
+Pi uses the model authentication already configured on the machine. If needed, authenticate and select a model first:
 
 ```sh
 pi
-# Run /login in Pi
+# Run /login in Pi, then select a model.
 ```
 
-Then install the project tools, configure the service, and start it under Hum:
+Configure and verify the service before starting it under Hum:
 
 ```sh
-task init
 cp .env.example .env
 # Fill in tokens, an absolute SLACK_AGENT_CWD path, and allowed Slack user IDs.
+task doctor
 hum up
 ```
+
+`task doctor` is non-destructive: it validates required settings and token formats, workspace and session paths, health-port availability, Slack `auth.test`, and local Pi/model authentication without starting Socket Mode, creating a Pi session, or sending an agent prompt. It prints pass/fail diagnostics and exits nonzero for blocking failures. Run it after setup or configuration changes while the service is stopped so its health port is available.
 
 `hum status`, `hum logs agent`, and `hum down` inspect and control the service. Hum verifies startup through `http://127.0.0.1:3210/healthz` instead of matching process output; set `SLACK_AGENT_HEALTH_PORT` to change the port. Bun loads `.env` automatically. The machine must remain awake and connected to Slack.
 

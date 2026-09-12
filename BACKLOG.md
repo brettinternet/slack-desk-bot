@@ -121,7 +121,7 @@ An App Home can be considered later; it is not required to close this item.
 ## BL-004 — Add a setup and configuration doctor
 
 **Priority:** P1
-**Status:** Ready
+**Status:** Done
 
 ### Context
 
@@ -151,6 +151,10 @@ Do not print token values, instructions, file contents, or other secrets.
 - The doctor does not start Socket Mode, create sessions, or mutate the target repository.
 - Tests cover representative configuration and Slack authentication failures.
 - README lists prerequisite installation, including Mise and Task bootstrap requirements, then uses the doctor as the final setup verification step.
+
+### Completion notes
+
+`task doctor` now performs non-destructive required-setting and token-format checks, production configuration parsing, workspace/session permission validation, health-port binding, Slack `auth.test`, and local Pi model/auth readiness checks. Diagnostics are sanitized, actionable, and return a nonzero status for blocking failures. Focused tests cover valid setup, missing and invalid configuration, occupied ports, Pi readiness, and Slack authentication failure.
 
 ---
 

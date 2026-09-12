@@ -101,6 +101,11 @@ export function createResponseCollector(observer?: AgentRunObserver) {
   };
 }
 
+export function defaultSessionDirectory(workspace: string): string {
+  const workspaceKey = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
+  return join(getAgentDir(), "slack-agent", "sessions", workspaceKey);
+}
+
 export function createPiResourceLoader(workspace: string, instructions?: string) {
   return new DefaultResourceLoader({
     cwd: workspace,
@@ -123,9 +128,7 @@ export class PiBackend implements AgentBackend {
     private readonly workspace: string,
     private readonly options: PiBackendOptions = {},
   ) {
-    const workspaceKey = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
-    this.sessionDir =
-      options.sessionDir ?? join(getAgentDir(), "slack-agent", "sessions", workspaceKey);
+    this.sessionDir = options.sessionDir ?? defaultSessionDirectory(workspace);
     this.maxActiveSessions = options.maxActiveSessions ?? DEFAULT_MAX_ACTIVE_SESSIONS;
     this.sessionIdleMs = options.sessionIdleMs ?? DEFAULT_SESSION_IDLE_MS;
     this.now = options.now ?? Date.now;

@@ -19,6 +19,10 @@ tasks:
     desc: Start SlackDeskBot
     cmd: bun run start
 
+  doctor:
+    desc: Validate local setup without starting the service
+    cmd: bun src/doctor-cli.ts
+
   check:
     desc: Run type and formatting checks
     cmds:
