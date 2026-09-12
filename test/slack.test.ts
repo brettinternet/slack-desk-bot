@@ -161,6 +161,54 @@ describe("SlackAgent transport", () => {
     });
   });
 
+  test("handles help and unknown commands without invoking the backend", async () => {
+    const run = mock(async () => "response");
+    createAgent(run);
+    const slack = client();
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_HELP_CHANNEL" },
+      event: { user: "U_ALLOWED", text: "!HeLp", channel: "C1", ts: "1" },
+      client: slack,
+    });
+    await app.handlers.get("message")!({
+      body: { event_id: "E_HELP_DM" },
+      event: {
+        channel_type: "im",
+        user: "U_ALLOWED",
+        text: "  !help ",
+        channel: "D1",
+        ts: "2",
+      },
+      client: slack,
+    });
+    await app.handlers.get("message")!({
+      body: { event_id: "E_UNKNOWN_DM" },
+      event: { channel_type: "im", user: "U_ALLOWED", text: "!stats", channel: "D1", ts: "3" },
+      client: slack,
+    });
+
+    expect(run).not.toHaveBeenCalled();
+    expect(slack.reactions.add).not.toHaveBeenCalled();
+    expect(slack.chat.update).not.toHaveBeenCalled();
+    expect(slack.chat.postMessage).toHaveBeenCalledTimes(3);
+    expect(slack.chat.postMessage.mock.calls[0]?.[0]).toMatchObject({
+      channel: "C1",
+      thread_ts: "1",
+      text: expect.stringContaining("!status"),
+    });
+    expect(slack.chat.postMessage.mock.calls[1]?.[0]).toMatchObject({
+      channel: "D1",
+      thread_ts: undefined,
+      text: expect.stringContaining("mention the bot"),
+    });
+    expect(slack.chat.postMessage.mock.calls[2]?.[0]).toEqual({
+      channel: "D1",
+      thread_ts: undefined,
+      text: "Unknown command. Send `!help` to see supported commands.",
+    });
+  });
+
   test("allows configured users to invoke the backend", async () => {
     const run = mock(async () => "response");
     new SlackAgent({

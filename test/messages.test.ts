@@ -3,6 +3,7 @@ import {
   conversationId,
   isSupportedDirectMessage,
   parseAgentCommand,
+  parseSlackCommand,
   splitSlackMessage,
   stripBotMention,
 } from "../src/messages.ts";
@@ -19,9 +20,17 @@ describe("Slack message helpers", () => {
     expect(isSupportedDirectMessage("message_changed")).toBe(false);
   });
 
-  test("recognizes only exact management commands", () => {
+  test("recognizes commands case-insensitively with surrounding whitespace", () => {
     expect(parseAgentCommand(" !STATUS ")).toBe("status");
-    expect(parseAgentCommand("!reset please")).toBeUndefined();
+    expect(parseSlackCommand("  !HeLp\n")).toEqual({ kind: "help" });
+    expect(parseSlackCommand("cancel")).toEqual({ kind: "agent", command: "cancel" });
+  });
+
+  test("classifies unsupported bang commands without affecting ordinary prompts", () => {
+    expect(parseSlackCommand("!stats")).toEqual({ kind: "unknown" });
+    expect(parseSlackCommand("!reset please")).toEqual({ kind: "unknown" });
+    expect(parseSlackCommand("please! reset")).toBeUndefined();
+    expect(parseSlackCommand("What?!")).toBeUndefined();
     expect(parseAgentCommand("reset")).toBeUndefined();
   });
 

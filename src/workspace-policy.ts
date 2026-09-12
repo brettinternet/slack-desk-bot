@@ -1,27 +1,134 @@
-import { lstatSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { lstatSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 
 const PATH_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write"]);
+const ALLOWED_ENV_TEMPLATES = new Set([".env.example", ".env.sample", ".env.template"]);
+const PRIVATE_KEY_NAMES = new Set(["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"]);
+const SENSITIVE_FILES = new Set([".netrc", ".npmrc", ".pypirc"]);
 
-export function isPathInWorkspace(path: string, workspace: string): boolean {
+function toolPath(path: string): string {
+  return path.startsWith("@") ? path.slice(1) : path;
+}
+
+function isSensitiveRelativePath(path: string): boolean {
+  const parts = path
+    .split(sep)
+    .filter(Boolean)
+    .map((part) => part.toLowerCase());
+  const name = parts.at(-1);
+  if (!name) return false;
+
+  if (parts.includes(".ssh")) return true;
+  if (name === "credentials" && parts.includes(".aws")) return true;
+  if (name === "application_default_credentials.json" && parts.includes("gcloud")) return true;
+  if (name === "config.json" && parts.includes(".docker")) return true;
+  if (SENSITIVE_FILES.has(name) || PRIVATE_KEY_NAMES.has(name)) return true;
+  if (name === ".env" || (name.startsWith(".env.") && !ALLOWED_ENV_TEMPLATES.has(name))) {
+    return true;
+  }
+  return /\.(?:key|pem|p12|pfx)$/.test(name);
+}
+
+function canonicalTarget(path: string, workspace: string): string | undefined {
   const absolutePath = isAbsolute(path) ? path : resolve(workspace, path);
   let existingPath = absolutePath;
   while (!lstatSync(existingPath, { throwIfNoEntry: false })) {
     const parent = dirname(existingPath);
-    if (parent === existingPath) return false;
+    if (parent === existingPath) return undefined;
     existingPath = parent;
   }
 
-  const canonicalWorkspace = realpathSync(workspace);
-  let canonicalExistingPath: string;
   try {
-    canonicalExistingPath = realpathSync(existingPath);
+    return resolve(realpathSync(existingPath), relative(existingPath, absolutePath));
   } catch {
-    return false;
+    return undefined;
   }
-  const relativePath = relative(canonicalWorkspace, canonicalExistingPath);
+}
+
+export function isPathInWorkspace(path: string, workspace: string): boolean {
+  const canonicalPath = canonicalTarget(toolPath(path), workspace);
+  if (!canonicalPath) return false;
+  const relativePath = relative(realpathSync(workspace), canonicalPath);
   return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
+}
+
+export function isSensitiveWorkspacePath(path: string, workspace: string): boolean {
+  const normalizedPath = toolPath(path);
+  const absolutePath = isAbsolute(normalizedPath)
+    ? normalizedPath
+    : resolve(workspace, normalizedPath);
+  const canonicalWorkspace = realpathSync(workspace);
+  const requestedRelativePath = relative(canonicalWorkspace, absolutePath);
+  if (
+    !requestedRelativePath.startsWith("..") &&
+    !isAbsolute(requestedRelativePath) &&
+    isSensitiveRelativePath(requestedRelativePath)
+  ) {
+    return true;
+  }
+
+  const canonicalPath = canonicalTarget(normalizedPath, workspace);
+  if (!canonicalPath) return false;
+  const canonicalRelativePath = relative(canonicalWorkspace, canonicalPath);
+  return (
+    !canonicalRelativePath.startsWith("..") &&
+    !isAbsolute(canonicalRelativePath) &&
+    isSensitiveRelativePath(canonicalRelativePath)
+  );
+}
+
+interface FilteredToolOutput {
+  text: string;
+  blocked: boolean;
+}
+
+export function filterSensitiveToolOutput(
+  toolName: string,
+  input: { path?: unknown },
+  text: string,
+  workspace: string,
+): FilteredToolOutput {
+  if (toolName !== "grep" && toolName !== "find" && toolName !== "ls") {
+    return { text, blocked: false };
+  }
+
+  const inputPath = typeof input.path === "string" ? toolPath(input.path) : ".";
+  const searchPath = isAbsolute(inputPath) ? inputPath : resolve(workspace, inputPath);
+  let resultRoot = searchPath;
+  if (toolName === "grep") {
+    try {
+      if (!statSync(searchPath).isDirectory()) resultRoot = dirname(searchPath);
+    } catch {
+      return { text, blocked: false };
+    }
+  }
+
+  let blocked = false;
+  const lines = text.split("\n").filter((line) => {
+    let reportedPath: string | undefined;
+    if (toolName === "grep") {
+      reportedPath = /^(.*?)(?::\d+: |-\d+- )/.exec(line)?.[1];
+    } else if (
+      line &&
+      !line.startsWith("[") &&
+      !line.startsWith("No ") &&
+      line !== "(empty directory)"
+    ) {
+      reportedPath = line.endsWith("/") ? line.slice(0, -1) : line;
+    }
+    if (!reportedPath || !isSensitiveWorkspacePath(resolve(resultRoot, reportedPath), workspace)) {
+      return true;
+    }
+    blocked = true;
+    return false;
+  });
+
+  const filtered = lines.join("\n").trim();
+  return {
+    text: filtered || (blocked ? "Sensitive path results were blocked." : text),
+    blocked,
+  };
 }
 
 export function workspacePolicy(workspace: string): InlineExtension {
@@ -35,6 +142,21 @@ export function workspacePolicy(workspace: string): InlineExtension {
         if (!isPathInWorkspace(path, workspace)) {
           return { block: true, reason: `Path is outside the configured workspace: ${path}` };
         }
+        if (isSensitiveWorkspacePath(path, workspace)) {
+          return { block: true, reason: "Access to sensitive workspace paths is blocked" };
+        }
+      });
+      pi.on("tool_result", (event) => {
+        if (!PATH_TOOLS.has(event.toolName)) return;
+        const input = event.input as { path?: unknown };
+        let blocked = false;
+        const content = event.content.map((item) => {
+          if (item.type !== "text") return item;
+          const filtered = filterSensitiveToolOutput(event.toolName, input, item.text, workspace);
+          blocked ||= filtered.blocked;
+          return { ...item, text: filtered.text };
+        });
+        return blocked ? { content } : undefined;
       });
     },
   };

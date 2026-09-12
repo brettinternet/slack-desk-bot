@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmdirSync, symlinkSync, unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { isPathInWorkspace } from "../src/workspace-policy.ts";
+import {
+  filterSensitiveToolOutput,
+  isPathInWorkspace,
+  isSensitiveWorkspacePath,
+} from "../src/workspace-policy.ts";
 
 const workspace = process.cwd();
 
@@ -17,6 +21,105 @@ describe("workspace policy", () => {
   test("blocks relative and absolute paths outside the workspace", () => {
     expect(isPathInWorkspace("../outside.txt", workspace)).toBe(false);
     expect(isPathInWorkspace("/etc/passwd", workspace)).toBe(false);
+  });
+
+  test("blocks documented sensitive paths and allows near-matches", () => {
+    const sensitivePaths = [
+      ".env",
+      ".env.local",
+      "nested/.env.production",
+      "server.key",
+      "certificates/client.pem",
+      "identity.p12",
+      ".ssh/config",
+      ".aws/credentials",
+      ".config/gcloud/application_default_credentials.json",
+      ".docker/config.json",
+      ".npmrc",
+      "id_ed25519",
+    ];
+    for (const path of sensitivePaths) {
+      expect(isSensitiveWorkspacePath(path, workspace), path).toBe(true);
+      expect(isSensitiveWorkspacePath(resolve(workspace, path), workspace), path).toBe(true);
+    }
+
+    for (const path of [
+      ".env.example",
+      ".env.sample",
+      ".env.template",
+      ".environment",
+      "src/environment.ts",
+      "server.key.test.ts",
+      "id_ed25519.pub",
+      "credentials.ts",
+    ]) {
+      expect(isSensitiveWorkspacePath(path, workspace), path).toBe(false);
+    }
+  });
+
+  test("filters sensitive entries from recursive discovery tool results", () => {
+    expect(
+      filterSensitiveToolOutput(
+        "grep",
+        { path: "." },
+        ".env:1: SECRET=:2: value\nsrc/index.ts:2: safe\nserver.key-2- private",
+        workspace,
+      ),
+    ).toEqual({ text: "src/index.ts:2: safe", blocked: true });
+    expect(
+      filterSensitiveToolOutput(
+        "find",
+        { path: "." },
+        ".env\nsrc/index.ts\ncertificates/client.pem",
+        workspace,
+      ),
+    ).toEqual({ text: "src/index.ts", blocked: true });
+    expect(
+      filterSensitiveToolOutput("ls", { path: "." }, ".ssh/\nsrc/\n.env.example", workspace),
+    ).toEqual({ text: "src/\n.env.example", blocked: true });
+  });
+
+  test("filters grep output reached through a benign symlink name", () => {
+    const temporaryWorkspace = mkdtempSync(join(tmpdir(), "slack-agent-result-policy-"));
+    const secret = join(temporaryWorkspace, ".env");
+    const alias = join(temporaryWorkspace, "settings");
+    writeFileSync(secret, "SECRET=value");
+    symlinkSync(secret, alias);
+
+    try {
+      expect(
+        filterSensitiveToolOutput(
+          "grep",
+          { path: temporaryWorkspace },
+          "settings:1: SECRET=value",
+          temporaryWorkspace,
+        ),
+      ).toEqual({ text: "Sensitive path results were blocked.", blocked: true });
+    } finally {
+      unlinkSync(alias);
+      unlinkSync(secret);
+      rmdirSync(temporaryWorkspace);
+    }
+  });
+
+  test("blocks aliases and prospective descendants of sensitive paths", () => {
+    const temporaryWorkspace = mkdtempSync(join(tmpdir(), "slack-agent-sensitive-policy-"));
+    const nested = join(temporaryWorkspace, "nested");
+    const secret = join(nested, ".env");
+    const alias = join(temporaryWorkspace, "settings");
+    mkdirSync(nested);
+    writeFileSync(secret, "SECRET=value");
+    symlinkSync(secret, alias);
+
+    try {
+      expect(isSensitiveWorkspacePath(alias, temporaryWorkspace)).toBe(true);
+      expect(isSensitiveWorkspacePath(".ssh/future-key", temporaryWorkspace)).toBe(true);
+    } finally {
+      unlinkSync(alias);
+      unlinkSync(secret);
+      rmdirSync(nested);
+      rmdirSync(temporaryWorkspace);
+    }
   });
 
   test("blocks broken symlinks that point outside the workspace", () => {

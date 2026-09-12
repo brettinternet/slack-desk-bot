@@ -3,10 +3,31 @@ import type { AgentCommand } from "./agent.ts";
 const SLACK_MESSAGE_LIMIT = 3_500;
 const AGENT_COMMANDS = new Set<AgentCommand>(["reset", "status", "cancel"]);
 
-export function parseAgentCommand(text: string): AgentCommand | undefined {
-  const match = /^!(reset|status|cancel)$/.exec(text.trim().toLowerCase());
+export const HELP_MESSAGE = `SlackDeskBot commands:
+• !help — show this help
+• !status — show the conversation session
+• !reset — start a fresh session
+• !cancel (or cancel) — stop the active request
+
+Send a prompt or attach a supported text/image file in a DM. In a channel, mention the bot for every prompt or command, including replies in a thread.`;
+
+export type SlackCommand =
+  { kind: "agent"; command: AgentCommand } | { kind: "help" } | { kind: "unknown" };
+
+export function parseSlackCommand(text: string): SlackCommand | undefined {
+  const value = text.trim().toLowerCase();
+  if (value === "!help") return { kind: "help" };
+  if (value === "cancel") return { kind: "agent", command: "cancel" };
+
+  const match = /^!(reset|status|cancel)$/.exec(value);
   const command = match?.[1] as AgentCommand | undefined;
-  return command && AGENT_COMMANDS.has(command) ? command : undefined;
+  if (command && AGENT_COMMANDS.has(command)) return { kind: "agent", command };
+  return value.startsWith("!") ? { kind: "unknown" } : undefined;
+}
+
+export function parseAgentCommand(text: string): AgentCommand | undefined {
+  const parsed = parseSlackCommand(text);
+  return parsed?.kind === "agent" ? parsed.command : undefined;
 }
 
 export function isSupportedDirectMessage(subtype?: string): boolean {

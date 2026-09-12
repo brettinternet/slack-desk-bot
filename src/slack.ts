@@ -5,8 +5,9 @@ import { ingestSlackFiles } from "./slack-files.ts";
 import { type LogWriter, writeStructuredLog } from "./log.ts";
 import {
   conversationId,
+  HELP_MESSAGE,
   isSupportedDirectMessage,
-  parseAgentCommand,
+  parseSlackCommand,
   splitSlackMessage,
   stripBotMention,
 } from "./messages.ts";
@@ -151,6 +152,19 @@ export class SlackAgent {
     prompt: string,
     files: readonly SlackFileReference[],
   ): Promise<void> {
+    const command = files.length === 0 ? parseSlackCommand(prompt) : undefined;
+    if (command?.kind === "help" || command?.kind === "unknown") {
+      await client.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text:
+          command.kind === "help"
+            ? HELP_MESSAGE
+            : "Unknown command. Send `!help` to see supported commands.",
+      });
+      return;
+    }
+
     const id = conversationId(channel, threadTs);
     const startedAt = performance.now();
     let toolCount = 0;
@@ -178,13 +192,9 @@ export class SlackAgent {
         return;
       }
 
-      const command =
-        attachments.length === 0
-          ? (parseAgentCommand(prompt) ??
-            (prompt.trim().toLowerCase() === "cancel" ? "cancel" : undefined))
-          : undefined;
-      const output = command
-        ? await this.options.agent.handleCommand(id, requesterId, command)
+      const agentCommand = attachments.length === 0 ? command?.command : undefined;
+      const output = agentCommand
+        ? await this.options.agent.handleCommand(id, requesterId, agentCommand)
         : await this.options.agent.run(
             {
               conversationId: id,

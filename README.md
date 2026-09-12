@@ -13,11 +13,11 @@ Your desktop coding agent, available in Slack. Slack transport and conversation 
 - Cancels the active request when a user sends `cancel` in its DM or channel thread.
 - Uses Pi's configured model, credentials, instructions, skills, and extensions.
 - Allows `read`, `grep`, `find`, and `ls` by default; `edit` and `write` require explicit read-write mode. Shell execution is unavailable.
-- Rejects tool paths outside `SLACK_AGENT_CWD`, including paths reached through existing symlinks.
+- Rejects tool paths outside `SLACK_AGENT_CWD` and documented sensitive paths inside it, including paths reached through existing symlinks.
 - Splits long responses into Slack-safe messages.
 - Emits prompt-free JSON request logs with request, user, conversation, duration, tool count, and outcome fields.
 
-Use `!status`, `!reset`, or `!cancel` as an exact message to inspect a conversation's session, start a fresh session while retaining its previous transcript, or stop its active request. Plain `cancel` also cancels an active request. In channels, mention the bot with the command as usual.
+Use `!help` to see Slack examples and all supported commands. `!status`, `!reset`, and `!cancel` inspect a conversation's session, start a fresh session while retaining its previous transcript, or stop its active request. Plain `cancel` also cancels an active request. Commands are case-insensitive exact messages; an unsupported message beginning with `!` points back to `!help` instead of invoking the agent. In channels, mention the bot for every prompt or command, including thread replies.
 
 ## Resource limits
 
@@ -81,7 +81,9 @@ Set only one of these settings. The file is read when the service starts, so res
 
 The agent starts in read-only mode. Set `SLACK_AGENT_MODE=read-write` to explicitly enable `edit` and `write` for allowlisted users. Read-write mode processes only one conversation at a time because every conversation shares `SLACK_AGENT_CWD`; queued conversations resume when the active run settles. Use a dedicated checkout, review changes before committing, and do not point `SLACK_AGENT_CWD` at a directory containing unrelated or sensitive files.
 
-The path policy limits Pi's selected filesystem tools, but locally installed Pi extensions run as trusted code. Only load extensions you trust on the service machine. Slack interaction instructions are sent to the configured model, so do not put secrets in them.
+The path policy blocks direct access by Pi's selected filesystem tools to `.env` files (except `.env.example`, `.env.sample`, and `.env.template`), `.ssh` contents, common private-key extensions and names, `.aws/credentials`, Google application-default credentials, Docker's `config.json`, `.netrc`, `.npmrc`, and `.pypirc`. The same rules apply in read-only and read-write modes and follow symlink targets. This is a narrow path-based safeguard, not secret detection: ordinary readable source files and model output can still disclose sensitive content, so use a dedicated checkout without secrets.
+
+Locally installed Pi extensions run as trusted code outside this path policy. Only load extensions you trust on the service machine. Slack interaction instructions are sent to the configured model, so do not put secrets in them.
 
 Session JSONL files are designed for one service process. Running multiple instances against the same session directory requires conversation affinity and external locking.
 

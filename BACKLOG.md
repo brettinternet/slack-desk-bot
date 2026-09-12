@@ -50,7 +50,7 @@ Read-write mode now forces the effective cross-conversation concurrency to one w
 ## BL-002 — Protect sensitive files inside the workspace
 
 **Priority:** P0
-**Status:** Ready
+**Status:** Done
 
 ### Context
 
@@ -76,12 +76,16 @@ Consider whether operators need a deliberate override. If added, it must be expl
 - Tests cover relative paths, absolute paths, nested sensitive files, symlinks, and allowed near-matches.
 - README documents the protection and its limits, including that model output can still disclose any readable source content.
 
+### Completion notes
+
+The workspace policy now blocks documented high-confidence environment, private-key, and credential paths for every path tool, including relative, absolute, nested, prospective, and symlink-aliased paths. Template and source-file near-matches remain readable. Tests cover the policy matrix, and the README documents that path rules cannot detect secrets in ordinary readable source or model output.
+
 ---
 
 ## BL-003 — Add discoverable in-Slack help and command handling
 
 **Priority:** P1
-**Status:** Ready
+**Status:** Done
 
 ### Context
 
@@ -107,6 +111,10 @@ An App Home can be considered later; it is not required to close this item.
 - Unknown `!…` commands return a concise error pointing to `!help`.
 - Ordinary prompts containing punctuation or embedded exclamation marks remain unaffected.
 - Parser and Slack transport tests cover help, unknown commands, case handling, and whitespace.
+
+### Completion notes
+
+`!help` and unknown bang commands are now handled directly by the Slack transport before status reactions, file ingestion, session access, queue admission, or backend invocation. Help covers DMs, channel mentions, files, and every supported command. Parsing and transport tests cover case, whitespace, unknown commands, and ordinary punctuation.
 
 ---
 
