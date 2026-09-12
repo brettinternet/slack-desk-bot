@@ -8,12 +8,12 @@ enter = [
 ]
 
 [tools]
-bun = "latest"
-prettier = "latest"
-gitleaks = "latest"
-lefthook = "latest"
-task = "latest"
-"github:brettinternet/hum" = { version = "latest", minimum_release_age = "0" }
+bun = "1.4.2"
+prettier = "3.9.6"
+gitleaks = "8.30.1"
+lefthook = "2.1.12"
+task = "3.53.1"
+"github:brettinternet/hum" = "0.12.1"
 
 [settings]
 disable_backends = ["asdf"]

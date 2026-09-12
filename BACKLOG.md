@@ -337,7 +337,7 @@ Separate liveness from readiness. Track a small sanitized snapshot: Slack connec
 ## BL-010 — Provide one reproducible installation and deployment path
 
 **Priority:** P2
-**Status:** Ready
+**Status:** Done
 **Depends on:** BL-004, BL-009
 
 ### Context
@@ -366,12 +366,16 @@ Define one supported desktop deployment, preferably using Hum plus the platform 
 - CI uses the same pinned toolchain as local development.
 - A fresh-install smoke checklist ends with `task doctor`, a healthy service, and a successful Slack DM.
 
+### Completion notes
+
+The supported deployment is now a macOS LaunchAgent that loads an external mode-`0600` environment file and runs the Hum-supervised service at login with durable external session storage. Project tools and development dependencies are pinned, CI consumes the same Mise and Bun locks, and the README documents clean bootstrap, operation, bounded logs, backup, restore, upgrade, rollback, and an end-to-end smoke checklist.
+
 ---
 
 ## BL-011 — Add startup, manifest, and configuration integration checks
 
 **Priority:** P2
-**Status:** Ready
+**Status:** Done
 **Depends on:** BL-004
 
 ### Context
@@ -398,6 +402,10 @@ Add focused integration/smoke checks with mocked external Slack calls. Validate 
 - A smoke test assembles the production startup components with mocked Slack authentication and verifies readiness and graceful shutdown.
 - Failure tests cover invalid Slack authentication and occupied health port with actionable process-level diagnostics.
 - Tests do not create persistent Pi sessions, contact Slack, or require developer credentials.
+
+### Completion notes
+
+Startup composition is injectable and starts health before contacting Slack, producing sanitized actionable diagnostics for invalid Slack authentication and occupied health ports. Integration tests verify readiness, idempotent graceful shutdown, and both failure paths without Slack, credentials, or Pi sessions. CI's check task now validates the Slack manifest, Hum readiness/restart contract, LaunchAgent definition, and example environment contract.
 
 ---
 

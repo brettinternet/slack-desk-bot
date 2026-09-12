@@ -34,6 +34,13 @@ interface SlackAgentOptions {
   health?: HealthState;
 }
 
+export class SlackAuthenticationError extends Error {
+  constructor() {
+    super("Slack authentication failed; verify SLACK_BOT_TOKEN and reinstall the app if needed");
+    this.name = "SlackAuthenticationError";
+  }
+}
+
 interface DeliveryResult {
   outcome: "success" | "partial" | "failure";
   publishedMessages: number;
@@ -163,10 +170,15 @@ export class SlackAgent {
   }
 
   async start(): Promise<void> {
-    const authentication = await this.slackOperation(
-      this.app.client.auth.test({ token: this.options.botToken }),
-    );
-    if (!authentication.user_id) throw new Error("Slack auth.test did not return a bot user ID");
+    let authentication: Awaited<ReturnType<typeof this.app.client.auth.test>>;
+    try {
+      authentication = await this.slackOperation(
+        this.app.client.auth.test({ token: this.options.botToken }),
+      );
+    } catch {
+      throw new SlackAuthenticationError();
+    }
+    if (!authentication.user_id) throw new SlackAuthenticationError();
     this.botUserId = authentication.user_id;
     await this.app.start();
     console.log("SlackDeskBot connected");

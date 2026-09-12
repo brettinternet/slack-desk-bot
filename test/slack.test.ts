@@ -56,6 +56,11 @@ class MockSocketModeReceiver {
 class MockSlackApp {
   readonly handlers = new Map<string, SlackEventHandler>();
   readonly receiver: MockSocketModeReceiver;
+  readonly client = {
+    auth: { test: mock(async (): Promise<{ user_id?: string }> => ({ user_id: "U_BOT" })) },
+  };
+  readonly start = mock(async () => {});
+  readonly stop = mock(async () => {});
 
   constructor(options: { receiver: MockSocketModeReceiver }) {
     this.receiver = options.receiver;
@@ -73,7 +78,8 @@ mock.module("@slack/bolt", () => ({
   SocketModeReceiver: MockSocketModeReceiver,
 }));
 
-const { SlackAgent, userFacingAgentError } = await import("../src/slack.ts");
+const { SlackAgent, SlackAuthenticationError, userFacingAgentError } =
+  await import("../src/slack.ts");
 const { HealthState } = await import("../src/health.ts");
 
 function client(): SlackClient {
@@ -129,6 +135,40 @@ function queueLimits(overrides: Partial<QueueLimits> = {}): QueueLimits {
 }
 
 describe("SlackAgent transport", () => {
+  test("sanitizes rejected and incomplete Slack authentication", async () => {
+    const token = "xoxb-test-secret";
+    const agent = new SlackAgent({
+      botToken: token,
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+    });
+    app.client.auth.test.mockImplementationOnce(async () => {
+      throw new Error(`Slack rejected ${token}`);
+    });
+
+    let rejected: unknown;
+    try {
+      await agent.start();
+    } catch (error) {
+      rejected = error;
+    }
+    expect(rejected).toBeInstanceOf(SlackAuthenticationError);
+    expect(String(rejected)).toContain("verify SLACK_BOT_TOKEN");
+    expect(String(rejected)).not.toContain(token);
+    expect(app.start).not.toHaveBeenCalled();
+
+    const incomplete = new SlackAgent({
+      botToken: token,
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+    });
+    app.client.auth.test.mockImplementationOnce(async () => ({}));
+    await expect(incomplete.start()).rejects.toBeInstanceOf(SlackAuthenticationError);
+    expect(app.start).not.toHaveBeenCalled();
+  });
+
   test("tracks Socket Mode connection lifecycle transitions", () => {
     const health = new HealthState();
     new SlackAgent({

@@ -23,11 +23,20 @@ tasks:
     desc: Validate local setup without starting the service
     cmd: bun src/doctor-cli.ts
 
+  service:install:
+    desc: Install and start the supported macOS LaunchAgent
+    cmd: bun scripts/install-launch-agent.ts
+
   check:
-    desc: Run type and formatting checks
+    desc: Run type, formatting, and configuration checks
     cmds:
       - bun run check
       - mise exec prettier -- prettier --check --ignore-unknown .
+      - task: check:config
+
+  check:config:
+    desc: Validate deployment and configuration documents
+    cmd: bun test test/config-documents.test.ts
 
   check:staged:
     desc: Run checks only for staged files

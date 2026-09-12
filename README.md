@@ -2,6 +2,19 @@
 
 Your desktop coding agent, available in Slack. Slack transport and conversation routing depend on a small `AgentBackend` interface; the initial backend uses the Pi SDK.
 
+## Supported platform and prerequisites
+
+The supported always-on deployment is a single-user macOS desktop running SlackDeskBot under LaunchAgent and Hum. A clean machine needs macOS, Git, and [Mise](https://mise.jdx.dev/getting-started.html); Mise installs the pinned Bun, Task, Hum, TypeScript, formatting, and check toolchain declared by this repository. A Slack workspace administrator must also allow installing an app from a manifest. Linux remains supported for development and CI, but no Linux service recipe is maintained.
+
+Bootstrap a clean checkout:
+
+```sh
+git clone https://github.com/brettinternet/slack-desk-bot.git
+cd slack-desk-bot
+mise install
+mise exec task -- task init
+```
+
 ## Behavior
 
 - Responds to app mentions in channels and messages in the app's DM.
@@ -41,14 +54,7 @@ The manifest defaults to `SlackDeskBot` and enables Socket Mode, so local develo
 
 ## Local setup
 
-Install Git and [Mise](https://mise.jdx.dev/getting-started.html), then clone this repository. Mise supplies Task, Bun, Hum, and the remaining project tools; bootstrap them before using project Task commands:
-
-```sh
-mise install
-mise exec task -- task init
-```
-
-Pi uses the model authentication already configured on the machine. If needed, authenticate and select a model first:
+Complete the bootstrap above. Pi uses the model authentication already configured on the machine. If needed, authenticate and select a model first:
 
 ```sh
 pi
@@ -77,6 +83,74 @@ curl -fsS "http://127.0.0.1:${SLACK_AGENT_HEALTH_PORT:-3210}/readyz"
 ```
 
 Bun loads `.env` automatically. The machine must remain awake and connected to Slack.
+
+## Supported macOS deployment
+
+Keep the checkout at a stable path. Store service secrets outside the checkout and make Pi sessions durable:
+
+```sh
+mkdir -p "$HOME/.config/slack-desk-bot" "$HOME/Library/Application Support/SlackDeskBot/sessions"
+cp .env.example "$HOME/.config/slack-desk-bot/service.env"
+chmod 600 "$HOME/.config/slack-desk-bot/service.env"
+```
+
+Edit `service.env`: set the Slack tokens, allowed users, and absolute workspace path, and set `SLACK_AGENT_SESSION_DIR` to the absolute `.../Library/Application Support/SlackDeskBot/sessions` path created above. Do not commit this file or copy it into the target repository. Verify it while the service is stopped:
+
+```sh
+set -a
+source "$HOME/.config/slack-desk-bot/service.env"
+set +a
+task doctor
+```
+
+From the SlackDeskBot checkout, `task service:install` writes a mode-`0600` LaunchAgent to `~/Library/LaunchAgents/com.slackdeskbot.agent.plist`, loads it, and starts Hum. LaunchAgent starts it at login, while Hum applies `restart: on-failure` and waits for `/readyz`. The plist stores only paths; it sources the external environment file at startup.
+
+Operate the installed service from its checkout:
+
+```sh
+hum status                    # process and readiness
+hum logs agent                # retained application output
+hum restart agent             # graceful process restart
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.slackdeskbot.agent.plist"
+hum down                      # full shutdown after unloading LaunchAgent
+```
+
+Run `task service:install` again to load or restart it. Hum retains at most 4 MiB of output per process and 20 completed records by default; application logs are prompt-free and credential-free, but should still be treated as operator data. macOS may additionally retain LaunchAgent diagnostics according to its system log policy.
+
+### Backup and restore
+
+Sessions are the only application data requiring backup; the checkout and pinned dependencies are reproducible, and secrets should be backed up through the operator's password manager rather than copied with sessions. Stop the service, then archive the configured session directory:
+
+```sh
+tar -C "$HOME/Library/Application Support/SlackDeskBot" -czf "slackdeskbot-sessions-$(date +%Y%m%d).tgz" sessions
+```
+
+To restore, stop the service, move the existing session directory aside, extract a trusted archive into the same parent directory, verify ownership and write permissions, run the environment-loaded `task doctor`, then run `task service:install`. Never merge two live session directories or run two service instances against one directory.
+
+### Upgrade and rollback
+
+Stop the service, back up sessions, and upgrade only from a reviewed tag or commit:
+
+```sh
+git pull --ff-only
+mise install
+bun install --frozen-lockfile
+task check
+task test
+# Load service.env as shown above, then:
+task doctor
+task service:install
+```
+
+For rollback, unload the LaunchAgent, check out the previously recorded tag or commit, rerun `mise install` and `bun install --frozen-lockfile`, then run the same doctor and install steps. The pinned `mise.toml` and `bun.lock` keep local development and CI on the same toolchain; update those pins intentionally in one reviewed change.
+
+### Fresh-install smoke checklist
+
+1. Complete the clean-machine bootstrap and Slack setup.
+2. Create the external `service.env` and durable session directory.
+3. Load `service.env` and confirm `task doctor` passes.
+4. Run `task service:install`, then confirm `hum status` reports ready and `/readyz` returns HTTP 200 with `"status":"ready"`.
+5. Send the app a Slack DM containing `!help`, then send an ordinary prompt and confirm a successful reply.
 
 ### Slack interaction instructions
 

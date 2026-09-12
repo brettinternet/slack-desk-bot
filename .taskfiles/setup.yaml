@@ -7,7 +7,7 @@ tasks:
     desc: Install project tools, dependencies, and Git hooks
     cmds:
       - task: mise
-      - bun install
+      - bun install --frozen-lockfile
       - task: lefthook
 
   mise:
