@@ -1,5 +1,15 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { AgentRunObserver, CancellableAgentBackend } from "../src/agent.ts";
+import {
+  AgentCancelledError,
+  AgentTimeoutError,
+  ConversationQueueFullError,
+  GlobalQueueFullError,
+  QueueWaitTimeoutError,
+  RateLimitError,
+  RequesterLimitError,
+  type AgentRunObserver,
+  type CancellableAgentBackend,
+} from "../src/agent.ts";
 import type { RequestLog } from "../src/log.ts";
 
 interface SlackEventHandler {
@@ -39,7 +49,7 @@ mock.module("@slack/bolt", () => ({
   LogLevel: { INFO: "info" },
 }));
 
-const { SlackAgent } = await import("../src/slack.ts");
+const { SlackAgent, userFacingAgentError } = await import("../src/slack.ts");
 
 function client(): SlackClient {
   return {
@@ -372,11 +382,15 @@ describe("SlackAgent transport", () => {
     expect(slack.chat.update).toHaveBeenCalledTimes(1);
   });
 
-  test("reports failures and clears the working reaction", async () => {
+  test("reports unexpected failures without exposing backend details", async () => {
     const records: RequestLog[] = [];
+    const operatorErrors: Array<{
+      message: string;
+      context: { requestId: string; errorType: string };
+    }> = [];
     const run = mock(async (_request: unknown, observer?: AgentRunObserver) => {
       observer?.onToolUse();
-      throw new Error("backend unavailable");
+      throw new Error("backend unavailable with secret-token");
     });
     new SlackAgent({
       botToken: "xoxb-test",
@@ -384,6 +398,7 @@ describe("SlackAgent transport", () => {
       allowedUserIds: new Set(["U_ALLOWED"]),
       agent: backend(run),
       log: (record) => records.push(record),
+      operatorError: (message, context) => operatorErrors.push({ message, context }),
     });
     const slack = client();
 
@@ -396,8 +411,16 @@ describe("SlackAgent transport", () => {
     expect(slack.chat.update).toHaveBeenCalledWith({
       channel: "C1",
       ts: "status-ts",
-      text: "Agent request failed: backend unavailable",
+      text: "The request failed unexpectedly. Try again or contact the operator with request ID `E_FAILURE`.",
     });
+    expect(JSON.stringify(slack.chat.update.mock.calls)).not.toContain("secret-token");
+    expect(operatorErrors).toEqual([
+      {
+        message: "Unexpected agent request failure",
+        context: { requestId: "E_FAILURE", errorType: "Error" },
+      },
+    ]);
+    expect(JSON.stringify(operatorErrors)).not.toContain("secret-token");
     expect(slack.reactions.add).toHaveBeenCalledWith({
       channel: "C1",
       timestamp: "2",
@@ -414,6 +437,30 @@ describe("SlackAgent transport", () => {
       tool_count: 1,
       outcome: "error",
     });
+  });
+
+  test("maps every expected queue outcome to distinct actionable text", () => {
+    const messages = [
+      userFacingAgentError(new ConversationQueueFullError(), "E1"),
+      userFacingAgentError(new GlobalQueueFullError(), "E1"),
+      userFacingAgentError(new RequesterLimitError(), "E1"),
+      userFacingAgentError(new RateLimitError(), "E1"),
+      userFacingAgentError(new AgentTimeoutError(), "E1"),
+      userFacingAgentError(new QueueWaitTimeoutError(), "E1"),
+      userFacingAgentError(new AgentCancelledError(), "E1"),
+    ];
+
+    expect(new Set(messages).size).toBe(messages.length);
+    expect(messages).toEqual([
+      expect.stringContaining("conversation"),
+      expect.stringContaining("capacity"),
+      expect.stringContaining("active or queued"),
+      expect.stringContaining("Wait a minute"),
+      expect.stringContaining("focused request"),
+      expect.stringContaining("waiting in the queue"),
+      "Request cancelled.",
+    ]);
+    expect(messages.slice(0, -1).every((message) => /wait|try/i.test(message))).toBe(true);
   });
 
   test("publishes long responses as ordered Slack-safe chunks", async () => {

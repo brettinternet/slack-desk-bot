@@ -1,5 +1,14 @@
 import { App, LogLevel } from "@slack/bolt";
-import { AgentCancelledError, type CancellableAgentBackend } from "./agent.ts";
+import {
+  AgentCancelledError,
+  AgentTimeoutError,
+  ConversationQueueFullError,
+  GlobalQueueFullError,
+  QueueWaitTimeoutError,
+  RateLimitError,
+  RequesterLimitError,
+  type CancellableAgentBackend,
+} from "./agent.ts";
 import { EventDeduplicator } from "./event-deduplicator.ts";
 import { ingestSlackFiles } from "./slack-files.ts";
 import { type LogWriter, writeStructuredLog } from "./log.ts";
@@ -19,6 +28,7 @@ interface SlackAgentOptions {
   agent: CancellableAgentBackend;
   fetch?: typeof fetch;
   log?: LogWriter;
+  operatorError?: (message: string, context: { requestId: string; errorType: string }) => void;
 }
 
 interface SlackFileReference {
@@ -30,6 +40,33 @@ function eventFiles(event: object): SlackFileReference[] {
   return event.files.filter(
     (file): file is SlackFileReference => typeof file === "object" && file !== null,
   );
+}
+
+export function userFacingAgentError(error: unknown, requestId: string): string {
+  if (error instanceof AgentCancelledError) return "Request cancelled.";
+  if (error instanceof ConversationQueueFullError) {
+    return "This conversation already has the maximum queued requests. Wait for one to finish, then try again.";
+  }
+  if (error instanceof GlobalQueueFullError) {
+    return "The agent is at capacity. Try again after another request finishes.";
+  }
+  if (error instanceof RequesterLimitError) {
+    return "You already have the maximum active or queued requests. Wait for one to finish, then try again.";
+  }
+  if (error instanceof RateLimitError) {
+    return "You're sending requests too quickly. Wait a minute, then try again.";
+  }
+  if (error instanceof AgentTimeoutError) {
+    return "The request timed out before completion. Try a smaller or more focused request.";
+  }
+  if (error instanceof QueueWaitTimeoutError) {
+    return "The request expired while waiting in the queue. Try again when the agent is less busy.";
+  }
+  return `The request failed unexpectedly. Try again or contact the operator with request ID \`${requestId}\`.`;
+}
+
+function errorType(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
 }
 
 export class SlackAgent {
@@ -212,11 +249,27 @@ export class SlackAgent {
     } catch (error) {
       const cancelled = error instanceof AgentCancelledError;
       outcome = cancelled ? "cancelled" : "error";
-      if (!cancelled) console.error("Agent request failed", { requestId, error });
-      const message = cancelled
-        ? "Request cancelled."
-        : `Agent request failed: ${error instanceof Error ? error.message : String(error)}`;
-      await this.publishResult(client, channel, threadTs, statusTs, message);
+      const expected =
+        cancelled ||
+        error instanceof ConversationQueueFullError ||
+        error instanceof GlobalQueueFullError ||
+        error instanceof RequesterLimitError ||
+        error instanceof RateLimitError ||
+        error instanceof AgentTimeoutError ||
+        error instanceof QueueWaitTimeoutError;
+      if (!expected) {
+        (this.options.operatorError ?? ((message, context) => console.error(message, context)))(
+          "Unexpected agent request failure",
+          { requestId, errorType: errorType(error) },
+        );
+      }
+      await this.publishResult(
+        client,
+        channel,
+        threadTs,
+        statusTs,
+        userFacingAgentError(error, requestId),
+      );
       await client.reactions.add({ channel, timestamp: messageTs, name: "x" }).catch(() => {});
     } finally {
       await client.reactions

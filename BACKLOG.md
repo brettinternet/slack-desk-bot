@@ -161,7 +161,7 @@ Do not print token values, instructions, file contents, or other secrets.
 ## BL-005 — Return actionable expected-error messages
 
 **Priority:** P1
-**Status:** Ready
+**Status:** Done
 
 ### Context
 
@@ -184,6 +184,10 @@ Map known domain errors to concise user-facing messages with a useful next actio
 - Operator logs retain enough sanitized context and a request ID to diagnose unexpected failures.
 - Tests verify each error mapping and confirm sensitive exception text is not posted.
 - README briefly documents limits and expected recovery behavior for users.
+
+### Completion notes
+
+Slack now maps each queue-admission, requester, rate, runtime-timeout, queue-wait, and cancellation outcome to distinct actionable text. Unexpected failures publish only a request ID and write sanitized request/error-type context to operator logs, never the raw exception. Transport tests cover every mapping, request correlation, and secret-bearing exception suppression.
 
 ---
 
