@@ -7,8 +7,11 @@ import {
   QueueWaitTimeoutError,
   RateLimitError,
   RequesterLimitError,
+  type AgentBackend,
   type AgentRunObserver,
   type CancellableAgentBackend,
+  type QueueLimits,
+  QueuedAgentBackend,
 } from "../src/agent.ts";
 import type { RequestLog } from "../src/log.ts";
 
@@ -87,6 +90,20 @@ function deferred<T>() {
     resolve = done;
   });
   return { promise, resolve };
+}
+
+function queueLimits(overrides: Partial<QueueLimits> = {}): QueueLimits {
+  return {
+    timeoutMs: 10_000,
+    queueWaitMs: 10_000,
+    maxQueuedPerConversation: 2,
+    maxConcurrentConversations: 1,
+    maxGlobalQueue: 20,
+    maxPendingPerRequester: 10,
+    rateLimitBurst: 20,
+    rateLimitRefillMs: 60_000,
+    ...overrides,
+  };
 }
 
 describe("SlackAgent transport", () => {
@@ -241,12 +258,16 @@ describe("SlackAgent transport", () => {
         requesterId: "U_ALLOWED",
         prompt: "request",
       },
-      { onToolUse: expect.any(Function) },
+      {
+        onQueued: expect.any(Function),
+        onStarted: expect.any(Function),
+        onToolUse: expect.any(Function),
+      },
     );
     expect(slack.chat.postMessage).toHaveBeenCalledWith({
       channel: "C1",
       thread_ts: "1",
-      text: "Working…",
+      text: "Queued…",
     });
     expect(slack.chat.update).toHaveBeenCalledWith({
       channel: "C1",
@@ -298,7 +319,9 @@ describe("SlackAgent transport", () => {
       user: "U_ALLOWED",
       conversation: "C1:1",
       tool_count: 2,
-      outcome: "success",
+      execution_outcome: "success",
+      delivery_outcome: "success",
+      published_messages: 1,
     });
     expect(records[0]!.duration_ms).toBeGreaterThanOrEqual(0);
     expect(JSON.stringify(records[0])).not.toContain("secret prompt contents");
@@ -339,7 +362,11 @@ describe("SlackAgent transport", () => {
         requesterId: "U_ALLOWED",
         prompt: "thread request",
       },
-      { onToolUse: expect.any(Function) },
+      {
+        onQueued: expect.any(Function),
+        onStarted: expect.any(Function),
+        onToolUse: expect.any(Function),
+      },
     );
     expect(run).toHaveBeenCalledWith(
       {
@@ -347,17 +374,21 @@ describe("SlackAgent transport", () => {
         requesterId: "U_ALLOWED",
         prompt: "dm request",
       },
-      { onToolUse: expect.any(Function) },
+      {
+        onQueued: expect.any(Function),
+        onStarted: expect.any(Function),
+        onToolUse: expect.any(Function),
+      },
     );
     expect(slack.chat.postMessage.mock.calls[0]?.[0]).toEqual({
       channel: "C1",
       thread_ts: "1",
-      text: "Working…",
+      text: "Queued…",
     });
     expect(slack.chat.postMessage.mock.calls[1]?.[0]).toEqual({
       channel: "D1",
       thread_ts: undefined,
-      text: "Working…",
+      text: "Queued…",
     });
   });
 
@@ -435,7 +466,8 @@ describe("SlackAgent transport", () => {
     expect(records[0]).toMatchObject({
       request_id: "E_FAILURE",
       tool_count: 1,
-      outcome: "error",
+      execution_outcome: "error",
+      delivery_outcome: "success",
     });
   });
 
@@ -486,6 +518,279 @@ describe("SlackAgent transport", () => {
       slack.chat.postMessage.mock.calls
         .slice(1)
         .every(([message]) => message.channel === "C1" && message.thread_ts === "4"),
+    ).toBe(true);
+  });
+
+  test("caps published responses and shows the truncation marker", async () => {
+    const run = mock(async () => "word ".repeat(4_000));
+    createAgent(run);
+    const slack = client();
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_TRUNCATED" },
+      event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "5" },
+      client: slack,
+    });
+
+    const published = [
+      slack.chat.update.mock.calls[0]?.[0].text,
+      ...slack.chat.postMessage.mock.calls.slice(1).map(([message]) => message.text),
+    ] as string[];
+    expect(published).toHaveLength(3);
+    expect(published.every((text) => text.length <= 3_500)).toBe(true);
+    expect(published[2]).toContain("Output truncated");
+  });
+
+  test("falls back to a new message when the final status update fails", async () => {
+    const records: RequestLog[] = [];
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+      log: (record) => records.push(record),
+    });
+    const slack = client();
+    slack.chat.update.mockImplementation(async () => {
+      throw new Error("update unavailable");
+    });
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_UPDATE_FALLBACK" },
+      event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "5" },
+      client: slack,
+    });
+
+    expect(slack.chat.postMessage).toHaveBeenCalledWith({
+      channel: "C1",
+      thread_ts: "5",
+      text: "response",
+    });
+    expect(records[0]).toMatchObject({
+      delivery_outcome: "success",
+      published_messages: 1,
+    });
+  });
+
+  test("logs partial multi-message delivery without recursively publishing an error", async () => {
+    const records: RequestLog[] = [];
+    const operatorErrors: Array<{
+      message: string;
+      context: { requestId: string; errorType: string };
+    }> = [];
+    const output = "word ".repeat(4_000);
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => output)),
+      log: (record) => records.push(record),
+      operatorError: (message, context) => operatorErrors.push({ message, context }),
+    });
+    const slack = client();
+    slack.chat.postMessage.mockImplementation(async (message: { text: string }) => {
+      if (message.text === "Queued…") return { ts: "status-ts" };
+      throw new Error("post unavailable");
+    });
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_PARTIAL" },
+      event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "6" },
+      client: slack,
+    });
+
+    expect(slack.chat.postMessage).toHaveBeenCalledTimes(2);
+    expect(operatorErrors).toEqual([
+      {
+        message: "Slack result delivery failure",
+        context: { requestId: "E_PARTIAL", errorType: "Error" },
+      },
+    ]);
+    expect(records[0]).toMatchObject({
+      execution_outcome: "success",
+      delivery_outcome: "partial",
+      published_messages: 1,
+    });
+  });
+
+  test("logs failed delivery and makes only one final publication attempt", async () => {
+    const records: RequestLog[] = [];
+    const operatorErrors: Array<{
+      message: string;
+      context: { requestId: string; errorType: string };
+    }> = [];
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+      log: (record) => records.push(record),
+      operatorError: (message, context) => operatorErrors.push({ message, context }),
+    });
+    const slack = client();
+    slack.chat.update.mockImplementation(async () => {
+      throw new Error("update unavailable");
+    });
+    slack.chat.postMessage.mockImplementation(async (message: { text: string }) => {
+      if (message.text === "Queued…") return { ts: "status-ts" };
+      throw new Error("post unavailable");
+    });
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_DELIVERY_FAILURE" },
+      event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "7" },
+      client: slack,
+    });
+
+    expect(slack.chat.postMessage).toHaveBeenCalledTimes(2);
+    expect(operatorErrors).toEqual([
+      {
+        message: "Slack result delivery failure",
+        context: { requestId: "E_DELIVERY_FAILURE", errorType: "Error" },
+      },
+    ]);
+    expect(records[0]).toMatchObject({
+      execution_outcome: "success",
+      delivery_outcome: "failure",
+      published_messages: 0,
+    });
+  });
+
+  test("shows queued, working, and rate-limited aggregate progress", async () => {
+    const first = deferred<string>();
+    const rawBackend: AgentBackend = {
+      run: async ({ prompt }, observer) => {
+        observer?.onToolUse();
+        return prompt === "first" ? first.promise : "second response";
+      },
+      dispose: () => {},
+    };
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: new QueuedAgentBackend(rawBackend, queueLimits()),
+      statusUpdateIntervalMs: 10,
+    });
+    const slack = client();
+    const mention = app.handlers.get("app_mention")!;
+
+    const firstHandling = mention({
+      body: { event_id: "E_FIRST" },
+      event: { user: "U_ALLOWED", text: "first", channel: "C1", ts: "8" },
+      client: slack,
+    });
+    await Bun.sleep(25);
+    const secondHandling = mention({
+      body: { event_id: "E_SECOND" },
+      event: { user: "U_ALLOWED", text: "second", channel: "C2", ts: "9" },
+      client: slack,
+    });
+    await Bun.sleep(0);
+
+    const progress = slack.chat.update.mock.calls
+      .map(([message]) => message.text as string)
+      .filter((text) => text.startsWith("Working…"));
+    expect(progress[0]).toBe("Working…");
+    expect(progress.some((text) => /elapsed · 1 tool use$/.test(text))).toBe(true);
+    expect(progress.filter((text) => text === "Working…")).toHaveLength(1);
+    expect(slack.chat.postMessage).toHaveBeenCalledWith({
+      channel: "C2",
+      thread_ts: "9",
+      text: "Queued…",
+    });
+
+    first.resolve("first response");
+    await Promise.all([firstHandling, secondHandling]);
+    expect(
+      slack.chat.update.mock.calls.some(
+        ([message]) => (message.text as string) === "second response",
+      ),
+    ).toBe(true);
+    expect(
+      slack.chat.update.mock.calls
+        .map(([message]) => message.text)
+        .filter((text) => text === "Working…"),
+    ).toHaveLength(2);
+  });
+
+  test("publishes one terminal timeout status", async () => {
+    const rawBackend: AgentBackend = {
+      run: ({ signal }) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+      dispose: () => {},
+    };
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: new QueuedAgentBackend(rawBackend, queueLimits({ timeoutMs: 10 })),
+    });
+    const slack = client();
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_TIMEOUT" },
+      event: { user: "U_ALLOWED", text: "slow", channel: "C1", ts: "10" },
+      client: slack,
+    });
+
+    expect(
+      slack.chat.update.mock.calls.filter(([message]) =>
+        (message.text as string).includes("focused request"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  test("publishes one terminal status when a running request is cancelled", async () => {
+    const rawBackend: AgentBackend = {
+      run: ({ signal }) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+      sessionCommand: async () => "command complete",
+      dispose: () => {},
+    };
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: new QueuedAgentBackend(rawBackend, queueLimits()),
+    });
+    const slack = client();
+    let statusCount = 0;
+    slack.chat.postMessage.mockImplementation(async () => ({ ts: `status-${++statusCount}` }));
+    const mention = app.handlers.get("app_mention")!;
+
+    const running = mention({
+      body: { event_id: "E_CANCELLED_RUN" },
+      event: { user: "U_ALLOWED", text: "slow", channel: "C1", ts: "11" },
+      client: slack,
+    });
+    await Bun.sleep(0);
+    const cancelling = mention({
+      body: { event_id: "E_CANCEL_COMMAND" },
+      event: {
+        user: "U_ALLOWED",
+        text: "!cancel",
+        channel: "C1",
+        ts: "12",
+        thread_ts: "11",
+      },
+      client: slack,
+    });
+    await Promise.all([running, cancelling]);
+
+    expect(
+      slack.chat.update.mock.calls.filter(
+        ([message]) => message.ts === "status-1" && message.text === "Request cancelled.",
+      ),
+    ).toHaveLength(1);
+    expect(
+      slack.chat.update.mock.calls.some(
+        ([message]) => message.ts === "status-1" && message.text === "Working…",
+      ),
     ).toBe(true);
   });
 
@@ -600,7 +905,11 @@ describe("SlackAgent transport", () => {
           },
         ],
       },
-      { onToolUse: expect.any(Function) },
+      {
+        onQueued: expect.any(Function),
+        onStarted: expect.any(Function),
+        onToolUse: expect.any(Function),
+      },
     );
   });
 });

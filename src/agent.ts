@@ -26,6 +26,8 @@ export type AgentCommand = "reset" | "status" | "cancel";
 export type SessionCommand = Exclude<AgentCommand, "cancel">;
 
 export interface AgentRunObserver {
+  onQueued?(): void;
+  onStarted?(): void;
   onToolUse(): void;
 }
 
@@ -41,6 +43,7 @@ export interface CancellableAgentBackend extends AgentBackend {
     conversationId: string,
     requesterId: string,
     command: AgentCommand,
+    observer?: AgentRunObserver,
   ): Promise<string>;
 }
 
@@ -105,6 +108,7 @@ interface Job {
   reject: (reason: unknown) => void;
   queueTimer?: ReturnType<typeof setTimeout>;
   completed: boolean;
+  observer?: AgentRunObserver;
 }
 
 interface ConversationState {
@@ -133,15 +137,23 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
   ) {}
 
   run(request: AgentRequest, observer?: AgentRunObserver): Promise<string> {
-    return this.enqueue(request, (signal) => this.backend.run({ ...request, signal }, observer));
+    return this.enqueue(
+      request,
+      (signal) => this.backend.run({ ...request, signal }, observer),
+      observer,
+    );
   }
 
   handleCommand(
     conversationId: string,
     requesterId: string,
     command: AgentCommand,
+    observer?: AgentRunObserver,
   ): Promise<string> {
     if (command === "cancel") {
+      try {
+        observer?.onStarted?.();
+      } catch {}
       return Promise.resolve(
         this.cancelActive(conversationId, requesterId)
           ? "Cancelled the active request."
@@ -150,10 +162,19 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
     }
     const sessionCommand = this.backend.sessionCommand;
     if (!sessionCommand) return Promise.reject(new Error("Agent backend does not manage sessions"));
-    if (command === "status") return sessionCommand.call(this.backend, conversationId, command);
+    if (command === "status") {
+      try {
+        observer?.onStarted?.();
+      } catch {}
+      return sessionCommand.call(this.backend, conversationId, command);
+    }
 
     const request = { conversationId, requesterId, prompt: `!${command}` };
-    return this.enqueue(request, () => sessionCommand.call(this.backend, conversationId, command));
+    return this.enqueue(
+      request,
+      () => sessionCommand.call(this.backend, conversationId, command),
+      observer,
+    );
   }
 
   cancelActive(conversationId: string, requesterId: string): boolean {
@@ -191,6 +212,7 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
   private enqueue(
     request: AgentRequest,
     operation: (signal: AbortSignal) => Promise<string>,
+    observer?: AgentRunObserver,
   ): Promise<string> {
     if (this.disposed) return Promise.reject(new Error("Agent backend is disposed"));
 
@@ -226,6 +248,7 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
         resolve,
         reject,
         completed: false,
+        observer,
       };
       job.queueTimer = setTimeout(
         () => this.expireQueuedJob(request.conversationId, job),
@@ -236,6 +259,9 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
 
     this.totalQueuedCount++;
     this.pendingByRequester.set(request.requesterId, pending + 1);
+    try {
+      observer?.onQueued?.();
+    } catch {}
     this.markReady(request.conversationId, conversation);
     this.pump();
     return result;
@@ -285,6 +311,9 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
   }
 
   private async execute(conversationId: string, state: ConversationState, job: Job): Promise<void> {
+    try {
+      job.observer?.onStarted?.();
+    } catch {}
     const runtimeTimer = setTimeout(() => {
       const error = new AgentTimeoutError();
       job.controller.abort(error);

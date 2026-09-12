@@ -1,6 +1,9 @@
 import type { AgentCommand } from "./agent.ts";
 
-const SLACK_MESSAGE_LIMIT = 3_500;
+export const SLACK_MESSAGE_LIMIT = 3_500;
+export const MAX_SLACK_RESPONSE_MESSAGES = 3;
+export const TRUNCATION_MARKER =
+  "\n\n_Output truncated. Ask for a narrower response to see the omitted portion._";
 const AGENT_COMMANDS = new Set<AgentCommand>(["reset", "status", "cancel"]);
 
 export const HELP_MESSAGE = `SlackDeskBot commands:
@@ -38,7 +41,11 @@ export function stripBotMention(text: string, botUserId: string): string {
   return text.replace(new RegExp(`<@${botUserId}>`, "g"), "").trim();
 }
 
-export function splitSlackMessage(text: string, limit = SLACK_MESSAGE_LIMIT): string[] {
+export function splitSlackMessage(
+  text: string,
+  limit = SLACK_MESSAGE_LIMIT,
+  maxMessages = MAX_SLACK_RESPONSE_MESSAGES,
+): string[] {
   const value = text.trim();
   if (!value) return ["Completed without a text response."];
 
@@ -52,7 +59,13 @@ export function splitSlackMessage(text: string, limit = SLACK_MESSAGE_LIMIT): st
     remaining = remaining.slice(splitAt).trimStart();
   }
   chunks.push(remaining);
-  return chunks;
+
+  if (chunks.length <= maxMessages) return chunks;
+  const published = chunks.slice(0, maxMessages);
+  published[maxMessages - 1] =
+    published[maxMessages - 1]!.slice(0, limit - TRUNCATION_MARKER.length).trimEnd() +
+    TRUNCATION_MARKER;
+  return published;
 }
 
 export function conversationId(channel: string, threadTs?: string): string {

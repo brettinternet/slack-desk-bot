@@ -229,7 +229,7 @@ Relevant files:
 ## BL-007 — Make Slack delivery bounded and observable
 
 **Priority:** P1
-**Status:** Ready
+**Status:** Done
 **Depends on:** BL-005
 
 ### Context
@@ -256,12 +256,16 @@ Set a documented maximum published response size or chunk count, with a clear tr
 - Error handling cannot recursively attempt to publish failures indefinitely.
 - Tests cover update fallback, partial multi-chunk failure, total limits, and delivery logging.
 
+### Completion notes
+
+Agent responses now publish at most three Slack-safe messages with a visible truncation marker. Final publication tracks success, partial delivery, and failure independently from agent execution, falls back when status updates fail, logs sanitized request context, and never recursively publishes delivery errors. Focused tests cover truncation, fallback, partial and failed publication, and delivery telemetry.
+
 ---
 
 ## BL-008 — Improve queue and long-running request feedback
 
 **Priority:** P2
-**Status:** Ready
+**Status:** Done
 **Depends on:** BL-005
 
 ### Context
@@ -285,6 +289,10 @@ Expose a small backend-neutral lifecycle observer such as queued, started, and t
 - Long-running feedback is rate-limited and contains only safe aggregate information.
 - Cancellation and timeout leave one unambiguous terminal status.
 - Lifecycle behavior is backend-neutral and tested for immediate and queued requests.
+
+### Completion notes
+
+The backend-neutral run observer now reports queue admission and execution start. Slack displays queued and working states, updates long-running work no more than every 30 seconds with elapsed time and aggregate tool use, and publishes one terminal result for cancellation or timeout. Queue and transport tests cover immediate starts, queued transitions, queue expiry, long-running feedback, and terminal timeout behavior.
 
 ---
 

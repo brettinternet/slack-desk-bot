@@ -5,7 +5,9 @@ export interface RequestLog {
   conversation: string;
   duration_ms: number;
   tool_count: number;
-  outcome: "success" | "cancelled" | "error";
+  execution_outcome: "success" | "cancelled" | "error";
+  delivery_outcome: "success" | "partial" | "failure";
+  published_messages: number;
 }
 
 export type LogWriter = (fields: RequestLog) => void;

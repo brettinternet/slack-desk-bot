@@ -65,6 +65,67 @@ describe("QueuedAgentBackend", () => {
     queued.dispose();
   });
 
+  test("reports immediate and queued lifecycle transitions", async () => {
+    const first = deferred();
+    const events: string[] = [];
+    const backend: AgentBackend = {
+      run: async ({ prompt }) => {
+        events.push(`run:${prompt}`);
+        return prompt === "first" ? first.promise : prompt;
+      },
+      dispose: () => {},
+    };
+    const queued = new QueuedAgentBackend(backend, limits({ maxConcurrentConversations: 1 }));
+    const observer = (name: string) => ({
+      onQueued: () => events.push(`queued:${name}`),
+      onStarted: () => events.push(`started:${name}`),
+      onToolUse: () => {},
+    });
+
+    const firstRun = queued.run(request("first", "first", "first"), observer("first"));
+    const secondRun = queued.run(request("second", "second", "second"), observer("second"));
+    await Bun.sleep(0);
+    expect(events).toEqual(["queued:first", "started:first", "run:first", "queued:second"]);
+
+    first.resolve("done");
+    await firstRun;
+    expect(await secondRun).toBe("second");
+    expect(events).toEqual([
+      "queued:first",
+      "started:first",
+      "run:first",
+      "queued:second",
+      "started:second",
+      "run:second",
+    ]);
+    queued.dispose();
+  });
+
+  test("does not report a queued request as started when it expires", async () => {
+    const active = deferred();
+    const events: string[] = [];
+    const backend: AgentBackend = {
+      run: async ({ prompt }) => (prompt === "active" ? active.promise : prompt),
+      dispose: () => {},
+    };
+    const queued = new QueuedAgentBackend(
+      backend,
+      limits({ maxConcurrentConversations: 1, queueWaitMs: 10 }),
+    );
+    const first = queued.run(request("active", "active", "one"));
+    const stale = queued.run(request("stale", "stale", "two"), {
+      onQueued: () => events.push("queued"),
+      onStarted: () => events.push("started"),
+      onToolUse: () => {},
+    });
+
+    await expect(stale).rejects.toBeInstanceOf(QueueWaitTimeoutError);
+    expect(events).toEqual(["queued"]);
+    active.resolve("done");
+    await first;
+    queued.dispose();
+  });
+
   test("limits concurrent conversations", async () => {
     const releases = [deferred(), deferred(), deferred()];
     const calls: string[] = [];

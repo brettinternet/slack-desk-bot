@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
   conversationId,
   isSupportedDirectMessage,
+  MAX_SLACK_RESPONSE_MESSAGES,
   parseAgentCommand,
   parseSlackCommand,
   splitSlackMessage,
   stripBotMention,
+  TRUNCATION_MARKER,
 } from "../src/messages.ts";
 
 describe("Slack message helpers", () => {
@@ -43,6 +45,21 @@ describe("Slack message helpers", () => {
     const chunks = splitSlackMessage("alpha beta gamma delta", 12);
     expect(chunks).toEqual(["alpha beta", "gamma delta"]);
     expect(chunks.join(" ")).toBe("alpha beta gamma delta");
+  });
+
+  test("bounds total output and marks truncation", () => {
+    const chunks = splitSlackMessage("word ".repeat(100), 100, 3);
+
+    expect(chunks).toHaveLength(3);
+    expect(chunks.every((chunk) => chunk.length <= 100)).toBe(true);
+    expect(chunks[2]).toEndWith(TRUNCATION_MARKER);
+  });
+
+  test("does not mark output within the total message limit", () => {
+    const chunks = splitSlackMessage("word ".repeat(100), 200, MAX_SLACK_RESPONSE_MESSAGES);
+
+    expect(chunks).toHaveLength(MAX_SLACK_RESPONSE_MESSAGES);
+    expect(chunks.join(" ")).not.toContain("Output truncated");
   });
 
   test("provides a visible response for empty agent output", () => {

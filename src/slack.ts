@@ -29,6 +29,13 @@ interface SlackAgentOptions {
   fetch?: typeof fetch;
   log?: LogWriter;
   operatorError?: (message: string, context: { requestId: string; errorType: string }) => void;
+  statusUpdateIntervalMs?: number;
+}
+
+interface DeliveryResult {
+  outcome: "success" | "partial" | "failure";
+  publishedMessages: number;
+  errorType?: string;
 }
 
 interface SlackFileReference {
@@ -204,14 +211,43 @@ export class SlackAgent {
 
     const id = conversationId(channel, threadTs);
     const startedAt = performance.now();
+    let runStartedAt = startedAt;
     let toolCount = 0;
-    let outcome: "success" | "cancelled" | "error" = "error";
+    let executionOutcome: "success" | "cancelled" | "error" = "error";
+    let delivery: DeliveryResult = { outcome: "failure", publishedMessages: 0 };
+    let finalOutput: string | undefined;
+    let feedbackTimer: ReturnType<typeof setInterval> | undefined;
 
     await client.reactions.add({ channel, timestamp: messageTs, name: "eyes" }).catch(() => {});
     const status = await client.chat
-      .postMessage({ channel, thread_ts: threadTs, text: "Working…" })
+      .postMessage({ channel, thread_ts: threadTs, text: "Queued…" })
       .catch(() => undefined);
     const statusTs = status?.ts;
+    let statusUpdates = Promise.resolve();
+    const updateStatus = (text: string): void => {
+      if (!statusTs) return;
+      statusUpdates = statusUpdates.then(async () => {
+        await client.chat.update({ channel, ts: statusTs, text }).catch(() => {});
+      });
+    };
+    const observer = {
+      onQueued: () => {},
+      onStarted: () => {
+        runStartedAt = performance.now();
+        updateStatus("Working…");
+        feedbackTimer = setInterval(() => {
+          const elapsedSeconds = Math.max(
+            1,
+            Math.floor((performance.now() - runStartedAt) / 1_000),
+          );
+          updateStatus(
+            `Working… ${elapsedSeconds}s elapsed · ${toolCount} tool ${toolCount === 1 ? "use" : "uses"}`,
+          );
+        }, this.options.statusUpdateIntervalMs ?? 30_000);
+        feedbackTimer.unref();
+      },
+      onToolUse: () => toolCount++,
+    };
 
     try {
       const { attachments, warnings } = await ingestSlackFiles(
@@ -225,30 +261,26 @@ export class SlackAgent {
       }
       if (!prompt && attachments.length === 0) {
         if (statusTs) await client.chat.delete({ channel, ts: statusTs }).catch(() => {});
-        outcome = "success";
-        return;
+        executionOutcome = "success";
+        delivery = { outcome: "success", publishedMessages: 0 };
+      } else {
+        const agentCommand = attachments.length === 0 ? command?.command : undefined;
+        finalOutput = agentCommand
+          ? await this.options.agent.handleCommand(id, requesterId, agentCommand, observer)
+          : await this.options.agent.run(
+              {
+                conversationId: id,
+                requesterId,
+                prompt,
+                ...(attachments.length > 0 ? { attachments } : {}),
+              },
+              observer,
+            );
+        executionOutcome = "success";
       }
-
-      const agentCommand = attachments.length === 0 ? command?.command : undefined;
-      const output = agentCommand
-        ? await this.options.agent.handleCommand(id, requesterId, agentCommand)
-        : await this.options.agent.run(
-            {
-              conversationId: id,
-              requesterId,
-              prompt,
-              ...(attachments.length > 0 ? { attachments } : {}),
-            },
-            { onToolUse: () => toolCount++ },
-          );
-      await this.publishResult(client, channel, threadTs, statusTs, output);
-      outcome = "success";
-      await client.reactions
-        .add({ channel, timestamp: messageTs, name: "white_check_mark" })
-        .catch(() => {});
     } catch (error) {
       const cancelled = error instanceof AgentCancelledError;
-      outcome = cancelled ? "cancelled" : "error";
+      executionOutcome = cancelled ? "cancelled" : "error";
       const expected =
         cancelled ||
         error instanceof ConversationQueueFullError ||
@@ -263,28 +295,38 @@ export class SlackAgent {
           { requestId, errorType: errorType(error) },
         );
       }
-      await this.publishResult(
-        client,
-        channel,
-        threadTs,
-        statusTs,
-        userFacingAgentError(error, requestId),
-      );
-      await client.reactions.add({ channel, timestamp: messageTs, name: "x" }).catch(() => {});
+      finalOutput = userFacingAgentError(error, requestId);
     } finally {
-      await client.reactions
-        .remove({ channel, timestamp: messageTs, name: "eyes" })
-        .catch(() => {});
-      (this.options.log ?? writeStructuredLog)({
-        event: "agent_request_completed",
-        request_id: requestId,
-        user: requesterId,
-        conversation: id,
-        duration_ms: Math.round(performance.now() - startedAt),
-        tool_count: toolCount,
-        outcome,
-      });
+      if (feedbackTimer) clearInterval(feedbackTimer);
+      await statusUpdates;
     }
+
+    if (finalOutput !== undefined) {
+      delivery = await this.publishResult(client, channel, threadTs, statusTs, finalOutput);
+      if (delivery.outcome !== "success") {
+        (this.options.operatorError ?? ((message, context) => console.error(message, context)))(
+          "Slack result delivery failure",
+          { requestId, errorType: delivery.errorType ?? "UnknownDeliveryError" },
+        );
+      }
+    }
+
+    const successful = executionOutcome === "success" && delivery.outcome === "success";
+    await client.reactions
+      .add({ channel, timestamp: messageTs, name: successful ? "white_check_mark" : "x" })
+      .catch(() => {});
+    await client.reactions.remove({ channel, timestamp: messageTs, name: "eyes" }).catch(() => {});
+    (this.options.log ?? writeStructuredLog)({
+      event: "agent_request_completed",
+      request_id: requestId,
+      user: requesterId,
+      conversation: id,
+      duration_ms: Math.round(performance.now() - startedAt),
+      tool_count: toolCount,
+      execution_outcome: executionOutcome,
+      delivery_outcome: delivery.outcome,
+      published_messages: delivery.publishedMessages,
+    });
   }
 
   private async publishResult(
@@ -293,20 +335,33 @@ export class SlackAgent {
     threadTs: string | undefined,
     statusTs: string | undefined,
     output: string,
-  ): Promise<void> {
+  ): Promise<DeliveryResult> {
     const [first, ...rest] = splitSlackMessage(output);
+    let publishedMessages = 0;
     let updated = false;
     if (statusTs) {
-      updated = await client.chat
-        .update({ channel, ts: statusTs, text: first })
-        .then(() => true)
-        .catch(() => false);
+      try {
+        await client.chat.update({ channel, ts: statusTs, text: first });
+        updated = true;
+        publishedMessages++;
+      } catch {}
     }
     if (!updated) {
-      await client.chat.postMessage({ channel, thread_ts: threadTs, text: first });
+      try {
+        await client.chat.postMessage({ channel, thread_ts: threadTs, text: first });
+        publishedMessages++;
+      } catch (error) {
+        return { outcome: "failure", publishedMessages, errorType: errorType(error) };
+      }
     }
     for (const text of rest) {
-      await client.chat.postMessage({ channel, thread_ts: threadTs, text });
+      try {
+        await client.chat.postMessage({ channel, thread_ts: threadTs, text });
+        publishedMessages++;
+      } catch (error) {
+        return { outcome: "partial", publishedMessages, errorType: errorType(error) };
+      }
     }
+    return { outcome: "success", publishedMessages };
   }
 }
