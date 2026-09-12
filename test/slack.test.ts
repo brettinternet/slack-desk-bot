@@ -12,6 +12,7 @@ interface SlackEventHandler {
 interface SlackClient {
   chat: { postMessage: ReturnType<typeof mock> };
   reactions: { add: ReturnType<typeof mock> };
+  files: { info: ReturnType<typeof mock> };
 }
 
 let app: MockSlackApp;
@@ -39,6 +40,7 @@ function client(): SlackClient {
   return {
     chat: { postMessage: mock(async () => {}) },
     reactions: { add: mock(async () => {}) },
+    files: { info: mock(async () => ({ ok: true })) },
   };
 }
 
@@ -102,6 +104,58 @@ describe("Slack authorization", () => {
       channel: "C1",
       thread_ts: "1",
       text: "response",
+    });
+  });
+
+  test("ingests file-only direct messages", async () => {
+    const run = mock(async () => "response");
+    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const fetcher = mock(async () => new Response(png)) as unknown as typeof fetch;
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(run),
+      fetch: fetcher,
+    });
+    const slack = client();
+    slack.files.info.mockImplementation(async () => ({
+      ok: true,
+      file: {
+        id: "F1",
+        name: "image.png",
+        mimetype: "image/png",
+        size: png.length,
+        url_private_download: "https://files.slack.com/files-pri/T1-F1/download/image.png",
+      },
+    }));
+
+    await app.handlers.get("message")!({
+      body: { event_id: "E3" },
+      event: {
+        subtype: "file_share",
+        channel_type: "im",
+        user: "U_ALLOWED",
+        text: "",
+        channel: "D1",
+        ts: "2",
+        files: [{ id: "F1" }],
+      },
+      client: slack,
+    });
+
+    expect(run).toHaveBeenCalledWith({
+      conversationId: "dm:D1",
+      requesterId: "U_ALLOWED",
+      prompt: "",
+      attachments: [
+        {
+          kind: "image",
+          name: "image.png",
+          mediaType: "image/png",
+          data: Buffer.from(png).toString("base64"),
+        },
+      ],
     });
   });
 });

@@ -9,6 +9,7 @@ import {
   createPiResourceLoader,
   createResponseCollector,
   PiBackend,
+  preparePiPrompt,
   toolsForMode,
 } from "../src/pi-backend.ts";
 
@@ -73,6 +74,28 @@ describe("Pi configuration", () => {
     await loader.reload();
 
     expect(loader.getAppendSystemPrompt()).toContain("Keep Slack replies brief.");
+  });
+});
+
+describe("Pi attachment input", () => {
+  test("formats text files and passes images separately", () => {
+    expect(
+      preparePiPrompt("Review these", [
+        { kind: "text", name: "notes.md", mediaType: "text/markdown", text: "# Notes" },
+        { kind: "image", name: "screen.png", mediaType: "image/png", data: "cG5n" },
+      ]),
+    ).toEqual({
+      text: 'Review these\n\n<slack-file name="notes.md" media-type="text/markdown">\n# Notes\n</slack-file>',
+      images: [{ type: "image", data: "cG5n", mimeType: "image/png" }],
+    });
+  });
+
+  test("supplies a prompt for image-only messages", () => {
+    expect(
+      preparePiPrompt("", [
+        { kind: "image", name: "screen.png", mediaType: "image/png", data: "cG5n" },
+      ]).text,
+    ).toBe("Review the attached Slack file(s).");
   });
 });
 

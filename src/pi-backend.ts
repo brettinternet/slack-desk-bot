@@ -10,7 +10,7 @@ import {
   type SessionInfo,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentBackend, AgentRequest, SessionCommand } from "./agent.ts";
+import type { AgentAttachment, AgentBackend, AgentRequest, SessionCommand } from "./agent.ts";
 import type { AgentMode } from "./config.ts";
 import { workspacePolicy } from "./workspace-policy.ts";
 
@@ -41,6 +41,30 @@ export interface PiBackendOptions {
   sessionFactory?: (sessionManager: SessionManager) => Promise<AgentSession>;
   sessionLister?: () => Promise<SessionInfo[]>;
   freshSessionManagerFactory?: () => SessionManager;
+}
+
+export function preparePiPrompt(prompt: string, attachments: readonly AgentAttachment[] = []) {
+  const textFiles = attachments
+    .filter((attachment) => attachment.kind === "text")
+    .map((attachment) =>
+      [
+        `<slack-file name=${JSON.stringify(attachment.name)} media-type=${JSON.stringify(attachment.mediaType)}>`,
+        attachment.text,
+        "</slack-file>",
+      ].join("\n"),
+    );
+  const images = attachments
+    .filter((attachment) => attachment.kind === "image")
+    .map((attachment) => ({
+      type: "image" as const,
+      data: attachment.data,
+      mimeType: attachment.mediaType,
+    }));
+  const text = [prompt.trim(), ...textFiles].filter(Boolean).join("\n\n");
+  return {
+    text: text || "Review the attached Slack file(s).",
+    images,
+  };
 }
 
 export function createResponseCollector() {
@@ -101,7 +125,7 @@ export class PiBackend implements AgentBackend {
     this.cleanupTimer.unref();
   }
 
-  async run({ conversationId, prompt, signal }: AgentRequest): Promise<string> {
+  async run({ conversationId, prompt, attachments, signal }: AgentRequest): Promise<string> {
     const entry = this.cachedSessionFor(conversationId);
     entry.activeRuns++;
     entry.lastUsedAt = this.now();
@@ -119,7 +143,8 @@ export class PiBackend implements AgentBackend {
       signal?.addEventListener("abort", abort, { once: true });
 
       try {
-        await session.prompt(prompt);
+        const input = preparePiPrompt(prompt, attachments);
+        await session.prompt(input.text, { images: input.images });
         if (signal?.aborted) throw signal.reason;
         return collector.text();
       } catch (error) {

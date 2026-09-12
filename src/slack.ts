@@ -1,6 +1,7 @@
 import { App, LogLevel } from "@slack/bolt";
 import { AgentCancelledError, type CancellableAgentBackend } from "./agent.ts";
 import { EventDeduplicator } from "./event-deduplicator.ts";
+import { ingestSlackFiles } from "./slack-files.ts";
 import {
   conversationId,
   isSupportedDirectMessage,
@@ -14,6 +15,18 @@ interface SlackAgentOptions {
   appToken: string;
   allowedUserIds: ReadonlySet<string>;
   agent: CancellableAgentBackend;
+  fetch?: typeof fetch;
+}
+
+interface SlackFileReference {
+  id?: string;
+}
+
+function eventFiles(event: object): SlackFileReference[] {
+  if (!("files" in event) || !Array.isArray(event.files)) return [];
+  return event.files.filter(
+    (file): file is SlackFileReference => typeof file === "object" && file !== null,
+  );
 }
 
 export class SlackAgent {
@@ -37,9 +50,13 @@ export class SlackAgent {
         return;
       }
       const prompt = stripBotMention(event.text, this.botUserId);
-      if (!prompt || !this.acceptEvent(body.event_id, event.channel, event.ts, event.client_msg_id))
+      const files = eventFiles(event);
+      if (
+        (!prompt && files.length === 0) ||
+        !this.acceptEvent(body.event_id, event.channel, event.ts, event.client_msg_id)
+      )
         return;
-      await this.respond(client, event.channel, event.ts, threadTs, event.user, prompt);
+      await this.respond(client, event.channel, event.ts, threadTs, event.user, prompt, files);
     });
 
     this.app.event("message", async ({ body, event, client }) => {
@@ -55,10 +72,14 @@ export class SlackAgent {
         return;
       }
       const text = "text" in event ? (event.text ?? "") : "";
+      const files = eventFiles(event);
       const clientMessageId = "client_msg_id" in event ? event.client_msg_id : undefined;
-      if (!text || !this.acceptEvent(body.event_id, event.channel, event.ts, clientMessageId))
+      if (
+        (!text && files.length === 0) ||
+        !this.acceptEvent(body.event_id, event.channel, event.ts, clientMessageId)
+      )
         return;
-      await this.respond(client, event.channel, event.ts, undefined, event.user, text);
+      await this.respond(client, event.channel, event.ts, undefined, event.user, text, files);
     });
   }
 
@@ -107,19 +128,36 @@ export class SlackAgent {
     threadTs: string | undefined,
     requesterId: string,
     prompt: string,
+    files: readonly SlackFileReference[],
   ): Promise<void> {
-    if (!prompt) return;
-
     const id = conversationId(channel, threadTs);
-    const command =
-      parseAgentCommand(prompt) ??
-      (prompt.trim().toLowerCase() === "cancel" ? "cancel" : undefined);
 
     await client.reactions.add({ channel, timestamp: messageTs, name: "eyes" }).catch(() => {});
     try {
+      const { attachments, warnings } = await ingestSlackFiles(
+        client,
+        this.options.botToken,
+        files,
+        this.options.fetch,
+      );
+      for (const warning of warnings) {
+        await client.chat.postMessage({ channel, thread_ts: threadTs, text: warning });
+      }
+      if (!prompt && attachments.length === 0) return;
+
+      const command =
+        attachments.length === 0
+          ? (parseAgentCommand(prompt) ??
+            (prompt.trim().toLowerCase() === "cancel" ? "cancel" : undefined))
+          : undefined;
       const output = command
         ? await this.options.agent.handleCommand(id, requesterId, command)
-        : await this.options.agent.run({ conversationId: id, requesterId, prompt });
+        : await this.options.agent.run({
+            conversationId: id,
+            requesterId,
+            prompt,
+            ...(attachments.length > 0 ? { attachments } : {}),
+          });
       for (const text of splitSlackMessage(output)) {
         await client.chat.postMessage({ channel, thread_ts: threadTs, text });
       }

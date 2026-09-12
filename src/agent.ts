@@ -1,7 +1,24 @@
+export type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+
+export type AgentAttachment =
+  | {
+      kind: "text";
+      name: string;
+      mediaType: string;
+      text: string;
+    }
+  | {
+      kind: "image";
+      name: string;
+      mediaType: ImageMediaType;
+      data: string;
+    };
+
 export interface AgentRequest {
   conversationId: string;
   requesterId: string;
   prompt: string;
+  attachments?: readonly AgentAttachment[];
   signal?: AbortSignal;
 }
 

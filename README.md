@@ -5,6 +5,7 @@ Your desktop coding agent, available in Slack. Slack transport and conversation 
 ## Behavior
 
 - Responds to app mentions in channels and messages in the app's DM.
+- Downloads supported Slack text and image attachments and passes them directly to Pi without writing them to disk.
 - Keeps one persisted agent session per Slack channel thread and one per DM channel.
 - Restores conversation history after service restarts.
 - Serializes messages within a conversation while allowing separate conversations to run concurrently.
@@ -21,6 +22,8 @@ Use `!status`, `!reset`, or `!cancel` as an exact message to inspect a conversat
 
 The defaults allow three concurrent conversations, two queued requests per conversation, twenty queued requests globally, and three active or queued requests per user. Each user may submit a burst of three requests, replenishing at one request per minute. Agent runs time out after five minutes and queued requests expire after ten minutes.
 
+Each message may include up to four supported files. Text files are limited to 1 MiB, images to 5 MiB, and all files in one message to 10 MiB. Supported text types are plain text, Markdown, JSON, and XML; supported image types are PNG, JPEG, GIF, and WebP. Downloads must come directly from Slack, are checked against their declared and actual size and content type, and are kept in memory rather than exposed as filesystem paths.
+
 Live sessions are disposed after one idle hour and limited to 32 least-recently-used entries by default. Their persisted history is reopened on the next message. `SLACK_AGENT_SESSION_DIR` optionally selects an absolute storage directory.
 
 The optional `SLACK_AGENT_*` settings in [`.env.example`](.env.example) override these limits. Cancellation and status requests bypass admission and rate limits.
@@ -30,7 +33,7 @@ The optional `SLACK_AGENT_*` settings in [`.env.example`](.env.example) override
 1. Optionally personalize the app by changing both `display_information.name` and `features.bot_user.display_name` in [`slack-app-manifest.yaml`](slack-app-manifest.yaml), for example to `Brett's Desktop Bot`.
 2. Create a Slack app from the manifest.
 3. Under **Basic Information → App-Level Tokens**, create a token with `connections:write`.
-4. Install the app into the workspace.
+4. Install the app into the workspace. Reinstall existing apps so the manifest's `files:read` scope is granted.
 5. Copy the bot token (`xoxb-…`) and app token (`xapp-…`).
 
 The manifest defaults to `SlackDeskBot` and enables Socket Mode, so local development needs no public HTTP endpoint. The name applies to the Slack app installation, not separately to each workspace user. Only Slack user IDs configured in `SLACK_ALLOWED_USER_IDS` can invoke the app.
