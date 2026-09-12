@@ -194,7 +194,7 @@ Slack now maps each queue-admission, requester, rate, runtime-timeout, queue-wai
 ## BL-006 — Support natural follow-ups in bot-owned channel threads
 
 **Priority:** P1
-**Status:** Needs design confirmation
+**Status:** Done
 
 ### Context
 
@@ -223,6 +223,10 @@ Relevant files:
 - Unauthorized users, bot messages, edits, and duplicate events cannot invoke the backend.
 - Owned-thread behavior remains correct after service restart, or the documented fallback explicitly requires a new mention.
 - Manifest, transport, deduplication, and restart tests cover the final design.
+
+### Completion notes
+
+Allowlisted mentions now establish in-memory ownership of public or private channel threads. Subsequent allowlisted human replies, file shares, and thread broadcasts route to the same conversation without another mention, while unrelated channel traffic, unauthorized users, bot messages, edits, and duplicate deliveries cannot invoke the backend. Ownership is intentionally not inferred from persisted sessions: after restart, one new mention is required and documented. The Slack manifest adds the required channel history scopes and message events; focused transport, manifest, deduplication, and restart tests pass.
 
 ---
 

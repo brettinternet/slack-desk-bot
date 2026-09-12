@@ -13,13 +13,17 @@ describe("configuration documents", () => {
     expect(manifest.settings?.socket_mode_enabled).toBe(true);
     expect(manifest.settings?.event_subscriptions?.bot_events).toEqual([
       "app_mention",
+      "message.channels",
+      "message.groups",
       "message.im",
     ]);
     expect(manifest.oauth_config?.scopes?.bot).toEqual(
       expect.arrayContaining([
         "app_mentions:read",
+        "channels:history",
         "chat:write",
         "files:read",
+        "groups:history",
         "im:history",
         "reactions:write",
       ]),

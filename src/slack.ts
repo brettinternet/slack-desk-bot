@@ -16,6 +16,7 @@ import { type HealthState } from "./health.ts";
 import {
   conversationId,
   HELP_MESSAGE,
+  isSupportedChannelMessage,
   isSupportedDirectMessage,
   parseSlackCommand,
   splitSlackMessage,
@@ -88,6 +89,7 @@ function errorType(error: unknown): string {
 export class SlackAgent {
   private readonly app: App;
   private readonly events = new EventDeduplicator();
+  private readonly ownedChannelThreads = new Set<string>();
   private readonly receiver: SocketModeReceiver;
   private botUserId = "";
 
@@ -124,6 +126,7 @@ export class SlackAgent {
         !this.acceptEvent(body.event_id, event.channel, event.ts, event.client_msg_id)
       )
         return;
+      this.ownedChannelThreads.add(conversationId(event.channel, threadTs));
       await this.respond(
         client,
         body.event_id,
@@ -137,18 +140,28 @@ export class SlackAgent {
     });
 
     this.app.event("message", async ({ body, event, client }) => {
+      if (!("user" in event) || !event.user || ("bot_id" in event && event.bot_id)) return;
+
+      const directMessage = event.channel_type === "im";
       if (
-        event.channel_type !== "im" ||
-        !isSupportedDirectMessage(event.subtype) ||
-        !("user" in event) ||
-        !event.user
+        !(directMessage
+          ? isSupportedDirectMessage(event.subtype)
+          : isSupportedChannelMessage(event.subtype))
+      )
+        return;
+      const threadTs = "thread_ts" in event ? event.thread_ts : undefined;
+      if (
+        !directMessage &&
+        (!threadTs || !this.ownedChannelThreads.has(conversationId(event.channel, threadTs)))
       )
         return;
       if (!this.options.allowedUserIds.has(event.user)) {
-        await this.deny(client, event.channel, undefined);
+        await this.deny(client, event.channel, threadTs);
         return;
       }
-      const text = "text" in event ? (event.text ?? "") : "";
+
+      const rawText = "text" in event ? (event.text ?? "") : "";
+      const text = directMessage ? rawText : stripBotMention(rawText, this.botUserId);
       const files = eventFiles(event);
       const clientMessageId = "client_msg_id" in event ? event.client_msg_id : undefined;
       if (
@@ -161,7 +174,7 @@ export class SlackAgent {
         body.event_id,
         event.channel,
         event.ts,
-        undefined,
+        threadTs,
         event.user,
         text,
         files,

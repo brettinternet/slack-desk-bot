@@ -12,7 +12,7 @@ export const HELP_MESSAGE = `SlackDeskBot commands:
 • !reset — start a fresh session
 • !cancel (or cancel) — stop the active request
 
-Send a prompt or attach a supported text/image file in a DM. In a channel, mention the bot for every prompt or command, including replies in a thread.`;
+Send a prompt or attach a supported text/image file in a DM. In a channel, mention the bot to start or rejoin a thread; replies in that thread do not need another mention.`;
 
 export type SlackCommand =
   { kind: "agent"; command: AgentCommand } | { kind: "help" } | { kind: "unknown" };
@@ -35,6 +35,10 @@ export function parseAgentCommand(text: string): AgentCommand | undefined {
 
 export function isSupportedDirectMessage(subtype?: string): boolean {
   return subtype === undefined || subtype === "file_share";
+}
+
+export function isSupportedChannelMessage(subtype?: string): boolean {
+  return isSupportedDirectMessage(subtype) || subtype === "thread_broadcast";
 }
 
 export function stripBotMention(text: string, botUserId: string): string {

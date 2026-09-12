@@ -17,7 +17,7 @@ mise exec task -- task init
 
 ## Behavior
 
-- Responds to app mentions in channels and messages in the app's DM.
+- Responds to app mentions in channels, mention-free follow-ups in bot-owned channel threads, and messages in the app's DM.
 - Downloads supported Slack text and image attachments and passes them directly to Pi without writing them to disk.
 - Keeps one persisted agent session per Slack channel thread and one per DM channel.
 - Restores conversation history after service restarts.
@@ -30,7 +30,7 @@ mise exec task -- task init
 - Publishes at most three Slack-safe messages (10,500 characters total) per agent response and marks truncated output.
 - Emits prompt-free JSON request logs with request, user, conversation, duration, tool count, execution outcome, and Slack delivery outcome fields.
 
-Use `!help` to see Slack examples and all supported commands. `!status`, `!reset`, and `!cancel` inspect a conversation's session, start a fresh session while retaining its previous transcript, or stop its active request. Plain `cancel` also cancels an active request. Commands are case-insensitive exact messages; an unsupported message beginning with `!` points back to `!help` instead of invoking the agent. In channels, mention the bot for every prompt or command, including thread replies.
+Use `!help` to see Slack examples and all supported commands. `!status`, `!reset`, and `!cancel` inspect a conversation's session, start a fresh session while retaining its previous transcript, or stop its active request. Plain `cancel` also cancels an active request. Commands are case-insensitive exact messages; an unsupported message beginning with `!` points back to `!help` instead of invoking the agent. In a channel, an allowlisted user must mention the bot to start a conversation. Further allowlisted human replies in that thread do not need a mention. Thread ownership is intentionally kept in memory rather than inferred from persisted agent sessions, so after a service restart mention the bot once in the thread before continuing. Root channel messages and replies in unrelated threads are ignored.
 
 ## Resource limits
 
@@ -47,7 +47,7 @@ The optional `SLACK_AGENT_*` settings in [`.env.example`](.env.example) override
 1. Optionally personalize the app by changing both `display_information.name` and `features.bot_user.display_name` in [`slack-app-manifest.yaml`](slack-app-manifest.yaml), for example to `Brett's Desktop Bot`.
 2. Create a Slack app from the manifest.
 3. Under **Basic Information → App-Level Tokens**, create a token with `connections:write`.
-4. Install the app into the workspace. Reinstall existing apps so the manifest's `files:read` scope is granted.
+4. Install the app into the workspace. Reinstall existing apps so the manifest's `files:read`, `channels:history`, and `groups:history` scopes and channel-message event subscriptions are granted.
 5. Copy the bot token (`xoxb-…`) and app token (`xapp-…`).
 
 The manifest defaults to `SlackDeskBot` and enables Socket Mode, so local development needs no public HTTP endpoint. The name applies to the Slack app installation, not separately to each workspace user. Only Slack user IDs configured in `SLACK_ALLOWED_USER_IDS` can invoke the app.
@@ -170,7 +170,7 @@ Set only one of these settings. The file is read when the service starts, so res
 
 ## Security
 
-`SLACK_ALLOWED_USER_IDS` is a required comma-separated allowlist of Slack member IDs. Requests from all other users are rejected before Pi runs. Find a member ID in Slack from **Profile → More → Copy member ID**.
+`SLACK_ALLOWED_USER_IDS` is a required comma-separated allowlist of Slack member IDs. Requests from all other users are rejected before Pi runs. The app receives public and private channel message events so it can accept natural follow-ups, but it ignores channel roots and threads that an allowlisted mention has not claimed during the current service process. Find a member ID in Slack from **Profile → More → Copy member ID**.
 
 The agent starts in read-only mode. Set `SLACK_AGENT_MODE=read-write` to explicitly enable `edit` and `write` for allowlisted users. Read-write mode processes only one conversation at a time because every conversation shares `SLACK_AGENT_CWD`; queued conversations resume when the active run settles. Use a dedicated checkout, review changes before committing, and do not point `SLACK_AGENT_CWD` at a directory containing unrelated or sensitive files.
 

@@ -8,14 +8,18 @@ oauth_config:
   scopes:
     bot:
       - app_mentions:read
+      - channels:history
       - chat:write
       - files:read
+      - groups:history
       - im:history
       - reactions:write
 settings:
   event_subscriptions:
     bot_events:
       - app_mention
+      - message.channels
+      - message.groups
       - message.im
   interactivity:
     is_enabled: false

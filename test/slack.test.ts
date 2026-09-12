@@ -537,6 +537,218 @@ describe("SlackAgent transport", () => {
     });
   });
 
+  test("accepts mention-free replies only in allowlisted mention-owned channel threads", async () => {
+    const run = mock(async () => "response");
+    createAgent(run);
+    const slack = client();
+    const mention = app.handlers.get("app_mention")!;
+    const message = app.handlers.get("message")!;
+
+    await message({
+      body: { event_id: "E_UNRELATED_ROOT" },
+      event: {
+        channel_type: "channel",
+        user: "U_ALLOWED",
+        text: "unrelated root",
+        channel: "C1",
+        ts: "1",
+      },
+      client: slack,
+    });
+    await message({
+      body: { event_id: "E_UNRELATED_THREAD" },
+      event: {
+        channel_type: "channel",
+        user: "U_ALLOWED",
+        text: "unrelated reply",
+        channel: "C1",
+        ts: "2",
+        thread_ts: "1",
+      },
+      client: slack,
+    });
+    await mention({
+      body: { event_id: "E_OWN_THREAD" },
+      event: { user: "U_ALLOWED", text: "start", channel: "C1", ts: "3" },
+      client: slack,
+    });
+    await message({
+      body: { event_id: "E_FOLLOW_UP" },
+      event: {
+        channel_type: "channel",
+        user: "U_ALLOWED",
+        text: "follow up",
+        channel: "C1",
+        ts: "4",
+        thread_ts: "3",
+      },
+      client: slack,
+    });
+    await message({
+      body: { event_id: "E_BROADCAST_FOLLOW_UP" },
+      event: {
+        channel_type: "channel",
+        subtype: "thread_broadcast",
+        user: "U_ALLOWED",
+        text: "broadcast follow up",
+        channel: "C1",
+        ts: "5",
+        thread_ts: "3",
+      },
+      client: slack,
+    });
+
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(run).toHaveBeenLastCalledWith(
+      {
+        conversationId: "C1:3",
+        requesterId: "U_ALLOWED",
+        prompt: "broadcast follow up",
+      },
+      {
+        onQueued: expect.any(Function),
+        onStarted: expect.any(Function),
+        onToolUse: expect.any(Function),
+      },
+    );
+  });
+
+  test("filters unsafe events in owned channel threads", async () => {
+    const run = mock(async () => "response");
+    createAgent(run);
+    const slack = client();
+    const mention = app.handlers.get("app_mention")!;
+    const message = app.handlers.get("message")!;
+
+    await mention({
+      body: { event_id: "E_OWN_SAFE_THREAD" },
+      event: { user: "U_ALLOWED", text: "start", channel: "C1", ts: "10" },
+      client: slack,
+    });
+    for (const [eventId, event] of [
+      [
+        "E_BOT_REPLY",
+        {
+          channel_type: "channel",
+          user: "U_ALLOWED",
+          bot_id: "B1",
+          text: "bot reply",
+          channel: "C1",
+          ts: "11",
+          thread_ts: "10",
+        },
+      ],
+      [
+        "E_EDITED_REPLY",
+        {
+          channel_type: "channel",
+          subtype: "message_changed",
+          user: "U_ALLOWED",
+          text: "edited reply",
+          channel: "C1",
+          ts: "12",
+          thread_ts: "10",
+        },
+      ],
+    ] as const) {
+      await message({ body: { event_id: eventId }, event, client: slack });
+    }
+    await message({
+      body: { event_id: "E_DENIED_REPLY" },
+      event: {
+        channel_type: "channel",
+        user: "U_DENIED",
+        text: "denied reply",
+        channel: "C1",
+        ts: "13",
+        thread_ts: "10",
+      },
+      client: slack,
+    });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(slack.chat.postMessage).toHaveBeenCalledWith({
+      channel: "C1",
+      thread_ts: "10",
+      text: "You are not authorized to use this agent.",
+    });
+  });
+
+  test("requires a new mention to restore channel-thread ownership after restart", async () => {
+    const firstRun = mock(async () => "first response");
+    createAgent(firstRun);
+    const slack = client();
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_BEFORE_RESTART" },
+      event: { user: "U_ALLOWED", text: "start", channel: "C1", ts: "20" },
+      client: slack,
+    });
+
+    const restartedRun = mock(async () => "restarted response");
+    createAgent(restartedRun);
+    const restartedMention = app.handlers.get("app_mention")!;
+    const restartedMessage = app.handlers.get("message")!;
+    const reply = {
+      channel_type: "channel",
+      user: "U_ALLOWED",
+      text: "follow up",
+      channel: "C1",
+      ts: "21",
+      thread_ts: "20",
+    };
+    await restartedMessage({
+      body: { event_id: "E_IGNORED_AFTER_RESTART" },
+      event: reply,
+      client: slack,
+    });
+    expect(restartedRun).not.toHaveBeenCalled();
+
+    await restartedMention({
+      body: { event_id: "E_REJOIN_AFTER_RESTART" },
+      event: { ...reply, text: "<@U_BOT> rejoin" },
+      client: slack,
+    });
+    await restartedMessage({
+      body: { event_id: "E_ACCEPTED_AFTER_RESTART" },
+      event: { ...reply, ts: "22" },
+      client: slack,
+    });
+
+    expect(restartedRun).toHaveBeenCalledTimes(2);
+    expect(restartedRun).toHaveBeenLastCalledWith(
+      expect.objectContaining({ conversationId: "C1:20", prompt: "follow up" }),
+      expect.any(Object),
+    );
+  });
+
+  test("deduplicates app mentions delivered through channel message subscriptions", async () => {
+    const run = mock(async () => "response");
+    createAgent(run);
+    const slack = client();
+    const event = {
+      channel_type: "channel",
+      user: "U_ALLOWED",
+      text: "request",
+      channel: "C1",
+      ts: "30",
+      client_msg_id: "M30",
+      thread_ts: "29",
+    };
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_MENTION_DELIVERY" },
+      event,
+      client: slack,
+    });
+    await app.handlers.get("message")!({
+      body: { event_id: "E_MESSAGE_DELIVERY" },
+      event,
+      client: slack,
+    });
+
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   test("processes duplicate Slack deliveries only once", async () => {
     const run = mock(async () => "response");
     createAgent(run);

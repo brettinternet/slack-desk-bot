@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   conversationId,
+  isSupportedChannelMessage,
   isSupportedDirectMessage,
   MAX_SLACK_RESPONSE_MESSAGES,
   parseAgentCommand,
@@ -15,11 +16,13 @@ describe("Slack message helpers", () => {
     expect(stripBotMention("<@BOT> please ask <@HUMAN>", "BOT")).toBe("please ask <@HUMAN>");
   });
 
-  test("accepts plain and file-share DMs but ignores system subtypes", () => {
+  test("accepts user-authored message subtypes but ignores system subtypes", () => {
     expect(isSupportedDirectMessage()).toBe(true);
     expect(isSupportedDirectMessage("file_share")).toBe(true);
-    expect(isSupportedDirectMessage("bot_message")).toBe(false);
-    expect(isSupportedDirectMessage("message_changed")).toBe(false);
+    expect(isSupportedDirectMessage("thread_broadcast")).toBe(false);
+    expect(isSupportedChannelMessage("thread_broadcast")).toBe(true);
+    expect(isSupportedChannelMessage("bot_message")).toBe(false);
+    expect(isSupportedChannelMessage("message_changed")).toBe(false);
   });
 
   test("recognizes commands case-insensitively with surrounding whitespace", () => {
