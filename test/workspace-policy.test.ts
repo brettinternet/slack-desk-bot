@@ -82,9 +82,6 @@ describe("workspace policy", () => {
     }
 
     for (const path of [
-      ".env.example",
-      ".env.sample",
-      ".env.template",
       ".environment",
       "src/environment.ts",
       "server.key.test.ts",
@@ -116,7 +113,7 @@ describe("workspace policy", () => {
     ).toEqual({ text: "src/index.ts", blocked: true });
     expect(
       filterSensitiveToolOutput("ls", { path: "." }, ".ssh/\nsrc/\n.env.example", workspace),
-    ).toEqual({ text: "src/\n.env.example", blocked: true });
+    ).toEqual({ text: "src/", blocked: true });
   });
 
   test("filters grep output reached through a benign symlink name", () => {

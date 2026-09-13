@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
+import { sensitiveSeatbeltRegex } from "./sensitive-paths.ts";
 
 export interface SeatbeltOptions {
   /** Directory the agent may read, and write when `allowWorkspaceWrite` is set. */
@@ -16,10 +17,6 @@ export interface SeatbeltOptions {
 
 function literal(value: string): string {
   return JSON.stringify(value);
-}
-
-function escapedRegex(value: string): string {
-  return value.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
 }
 
 /**
@@ -43,13 +40,7 @@ export function seatbeltProfile(options: SeatbeltOptions): string {
     "/private/var/folders",
     "/Volumes",
   ];
-  const pattern = escapedRegex(workspace);
-  const sensitive = [
-    `${pattern}/(.*/)?(\\.git|\\.ssh|\\.codex|\\.claude)(/|$)`,
-    `${pattern}/(.*/)?(\\.pi/agent|Library/Keychains)(/|$)`,
-    `${pattern}/(.*/)?(auth\\.json|\\.env(\\..*)?|\\.netrc|\\.npmrc|\\.pypirc|id_(rsa|dsa|ecdsa|ed25519)|[^/]+\\.(key|pem|p12|pfx))$`,
-    `${pattern}/(.*/)?(\\.aws/credentials|gcloud/application_default_credentials\\.json|\\.docker/config\\.json)$`,
-  ].join("|");
+  const sensitive = sensitiveSeatbeltRegex(workspace);
 
   return [
     "(version 1)",

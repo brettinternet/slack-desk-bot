@@ -1,13 +1,11 @@
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
+import { isSensitiveRelativePath } from "./sensitive-paths.ts";
 
 const PATH_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write"]);
-const ALLOWED_ENV_TEMPLATES = new Set([".env.example", ".env.sample", ".env.template"]);
-const PRIVATE_KEY_NAMES = new Set(["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"]);
-const SENSITIVE_FILES = new Set([".netrc", ".npmrc", ".pypirc"]);
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
@@ -25,37 +23,6 @@ function toolPath(path: string): string {
     }
   }
   return normalized;
-}
-
-function isSensitiveRelativePath(path: string): boolean {
-  const parts = path
-    .split(sep)
-    .filter(Boolean)
-    .map((part) => part.toLowerCase());
-  const name = parts.at(-1);
-  if (!name) return false;
-
-  if (
-    parts.includes(".ssh") ||
-    parts.includes(".git") ||
-    parts.includes(".codex") ||
-    parts.includes(".claude")
-  ) {
-    return true;
-  }
-  if (parts.some((part, index) => part === ".pi" && parts[index + 1] === "agent")) return true;
-  if (parts.some((part, index) => part === "library" && parts[index + 1] === "keychains")) {
-    return true;
-  }
-  if (name === "auth.json") return true;
-  if (name === "credentials" && parts.includes(".aws")) return true;
-  if (name === "application_default_credentials.json" && parts.includes("gcloud")) return true;
-  if (name === "config.json" && parts.includes(".docker")) return true;
-  if (SENSITIVE_FILES.has(name) || PRIVATE_KEY_NAMES.has(name)) return true;
-  if (name === ".env" || (name.startsWith(".env.") && !ALLOWED_ENV_TEMPLATES.has(name))) {
-    return true;
-  }
-  return /\.(?:key|pem|p12|pfx)$/.test(name);
 }
 
 function canonicalTarget(path: string, workspace: string): string | undefined {

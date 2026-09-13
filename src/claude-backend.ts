@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import { writePromptAndCapture } from "./cli-process.ts";
 import { ConversationStore } from "./conversation-store.ts";
 import { seatbeltProfile } from "./seatbelt.ts";
+import { claudeSensitiveReadPermissions } from "./sensitive-paths.ts";
 import type {
   AgentAttachment,
   AgentBackend,
@@ -136,18 +137,7 @@ function claudeSettings(mode: AgentMode): string {
           "WebFetch",
           "WebSearch",
           "NotebookEdit",
-          "Read(.env)",
-          "Read(.env.*)",
-          "Read(.git/**)",
-          "Read(**/auth.json)",
-          "Read(**/.codex/**)",
-          "Read(**/.claude/**)",
-          "Read(**/.pi/agent/**)",
-          "Read(**/Library/Keychains/**)",
-          "Read(~/.ssh/**)",
-          "Read(~/.aws/**)",
-          "Read(**/*.pem)",
-          "Read(**/*.key)",
+          ...claudeSensitiveReadPermissions(),
         ],
         allow: tools,
       },

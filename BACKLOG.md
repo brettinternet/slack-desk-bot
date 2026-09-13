@@ -15,16 +15,6 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 
 Findings from the September 2025 audit, grouped by theme and ordered by priority within each group.
 
-### Security
-
-#### SDB-032: Single source of truth for sensitive path patterns
-
-**Why:** Sensitive path rules exist four times: `workspace-policy.ts` (structured), `codexSandboxProfile` (regex), `claudeSandboxProfile` (regex), and `claudeSettings` (Claude permission globs, which omit `.netrc`, `.npmrc`, `.pypirc`, `.p12`, `.pfx`, Docker and gcloud credentials). They have already drifted and will drift further.
-
-**Scope:** Define the sensitive names, extensions, and directory rules once and derive the Pi policy predicate, the Seatbelt regex, and the Claude permission globs from it. Keep the derivation simple (three small formatters), not a rules engine.
-
-**Done:** One table drives all three outputs and a test enumerates fixture paths through each enforcement layer expecting identical verdicts.
-
 ### Robustness
 
 #### SDB-036: Bound shutdown time
@@ -112,6 +102,12 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 **Done:** CI shows the Seatbelt tests executing on macOS.
 
 ## Completed items
+
+### SDB-032: Single source of truth for sensitive path patterns
+
+**Resolution:** Added one data-only sensitive path table with small formatters for the Pi policy predicate, shared Seatbelt regex, and Claude permission globs. Claude now denies the previously omitted credential files, private-key formats, Docker credentials, and gcloud credentials. Environment variants, including templates, are consistently blocked by every backend.
+
+**Verified:** Shared fixtures assert identical structured, Seatbelt-regex, and Claude-glob verdicts for every sensitive rule and representative near-matches. Focused workspace-policy, real Seatbelt, and Claude backend tests pass, along with `task check`.
 
 ### SDB-031: Warn when the workspace or environment exposes service credentials
 
