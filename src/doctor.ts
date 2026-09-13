@@ -20,6 +20,7 @@ import { WebClient } from "@slack/web-api";
 import { codexSandboxProfile, defaultCodexHome } from "./codex-backend.ts";
 import { claudeSandboxProfile, defaultClaudeHome } from "./claude-backend.ts";
 import { loadConfig, type Config } from "./config.ts";
+import { isConversationStoreCorrupt } from "./conversation-store.ts";
 import { defaultSessionDirectory } from "./pi-backend.ts";
 
 export type DoctorStatus = "pass" | "fail" | "warning";
@@ -81,13 +82,35 @@ async function checkWorkspace(config: Config): Promise<void> {
   await access(config.workspace, permissions);
 }
 
+const BACKEND_LABELS: Record<Config["agentBackend"], string> = {
+  pi: "Pi",
+  codex: "Codex",
+  claude: "Claude",
+};
+
+const SESSION_PATH_SETTINGS: Record<Config["agentBackend"], string> = {
+  pi: "SLACK_AGENT_SESSION_DIR",
+  codex: "SLACK_CODEX_HOME",
+  claude: "SLACK_CLAUDE_HOME",
+};
+
+function backendSessionPath(config: Config): string {
+  return config.agentBackend === "codex"
+    ? (config.codexHome ?? defaultCodexHome(config.workspace))
+    : config.agentBackend === "claude"
+      ? (config.claudeHome ?? defaultClaudeHome(config.workspace))
+      : (config.sessionDir ?? defaultSessionDirectory(config.workspace));
+}
+
+/** Only the external CLI backends keep a conversation mapping store. */
+function backendStorePath(config: Config): string | undefined {
+  return config.agentBackend === "pi"
+    ? undefined
+    : join(backendSessionPath(config), "conversations.json");
+}
+
 async function checkSessionPath(config: Config): Promise<void> {
-  const sessionPath =
-    config.agentBackend === "codex"
-      ? (config.codexHome ?? defaultCodexHome(config.workspace))
-      : config.agentBackend === "claude"
-        ? (config.claudeHome ?? defaultClaudeHome(config.workspace))
-        : (config.sessionDir ?? defaultSessionDirectory(config.workspace));
+  const sessionPath = backendSessionPath(config);
   const existing = await nearestExistingPath(sessionPath);
   const metadata = await stat(existing);
   if (!metadata.isDirectory()) throw new Error("an existing path component is not a directory");
@@ -383,14 +406,24 @@ export async function runDoctor(
       diagnostics,
       "pass",
       "Session storage",
-      `${config.agentBackend === "codex" ? "Codex" : config.agentBackend === "claude" ? "Claude" : "Pi"} session storage is writable`,
+      `${BACKEND_LABELS[config.agentBackend]} session storage is writable`,
     );
   } catch {
     diagnostic(
       diagnostics,
       "fail",
       "Session storage",
-      "SLACK_AGENT_SESSION_DIR must be a creatable, writable directory",
+      `${SESSION_PATH_SETTINGS[config.agentBackend]} must be a creatable, writable directory`,
+    );
+  }
+
+  const storePath = backendStorePath(config);
+  if (storePath && isConversationStoreCorrupt(storePath)) {
+    diagnostic(
+      diagnostics,
+      "fail",
+      "Session storage",
+      `${BACKEND_LABELS[config.agentBackend]} conversation store at ${storePath} is unreadable; restore it from backup or let the service quarantine it and start fresh`,
     );
   }
 

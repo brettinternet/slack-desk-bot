@@ -3,9 +3,16 @@ import { chmod, lstat, mkdir, stat, unlink } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { dirname } from "node:path";
 import type { ConversationCoordinator, ConversationEvent } from "./conversation-coordinator.ts";
+import {
+  isLocalRequest,
+  LOCAL_OPERATOR_ID,
+  LOCAL_PROTOCOL_VERSION,
+  MAX_LOCAL_FRAME_BYTES,
+  type LocalRequest,
+} from "./local-protocol.ts";
 
-export const LOCAL_PROTOCOL_VERSION = 1;
-export const MAX_LOCAL_FRAME_BYTES = 64 * 1024;
+export { LOCAL_PROTOCOL_VERSION, MAX_LOCAL_FRAME_BYTES };
+
 const MAX_LOCAL_CLIENTS = 8;
 const MAX_PENDING_REQUESTS = 4;
 const MAX_BUFFERED_BYTES = 256 * 1024;
@@ -13,7 +20,12 @@ const MAX_BUFFERED_BYTES = 256 * 1024;
 interface LocalControlOptions {
   socketPath: string;
   coordinator: ConversationCoordinator;
-  peerOwner?: (socket: Socket) => boolean;
+  /**
+   * Test seam for simulating a rejected peer. Neither Node nor Bun exposes
+   * `SO_PEERCRED`/`getpeereid`, so the real boundary is the owner-only `0700`
+   * parent directory and `0600` socket enforced in `prepareSocketPath`.
+   */
+  acceptPeer?: (socket: Socket) => boolean;
 }
 
 interface ClientState {
@@ -23,14 +35,6 @@ interface ClientState {
   detach?: () => void;
   conversationId?: string;
 }
-
-type ProtocolRequest = {
-  v: 1;
-  type: "list" | "attach" | "run" | "status" | "cancel";
-  requestId: string;
-  sessionId?: string;
-  prompt?: string;
-};
 
 export class LocalControlServer {
   private server?: Server;
@@ -43,16 +47,23 @@ export class LocalControlServer {
     await prepareSocketPath(this.options.socketPath);
     const server = createServer((socket) => this.accept(socket));
     this.server = server;
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(this.options.socketPath, () => {
-        server.off("error", reject);
-        resolve();
+    // Bind under a restrictive umask so the socket is never briefly
+    // group/world-accessible between listen() and a follow-up chmod.
+    const previousUmask = process.umask(0o077);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(this.options.socketPath, () => {
+          server.off("error", reject);
+          resolve();
+        });
       });
-    }).catch((error) => {
+    } catch (error) {
       this.server = undefined;
       throw error;
-    });
+    } finally {
+      process.umask(previousUmask);
+    }
     await chmod(this.options.socketPath, 0o600);
   }
 
@@ -77,10 +88,7 @@ export class LocalControlServer {
   }
 
   private accept(socket: Socket): void {
-    if (
-      this.clients.size >= MAX_LOCAL_CLIENTS ||
-      !(this.options.peerOwner ?? isOwnerPeer)(socket)
-    ) {
+    if (this.clients.size >= MAX_LOCAL_CLIENTS || this.options.acceptPeer?.(socket) === false) {
       socket.destroy();
       return;
     }
@@ -114,10 +122,10 @@ export class LocalControlServer {
   }
 
   private async handleFrame(client: ClientState, frame: Buffer): Promise<void> {
-    let request: ProtocolRequest;
+    let request: LocalRequest;
     try {
       const value: unknown = JSON.parse(frame.toString("utf8"));
-      if (!isRequest(value)) throw new Error("Invalid protocol request");
+      if (!isLocalRequest(value)) throw new Error("Invalid protocol request");
       request = value;
     } catch (error) {
       this.sendError(
@@ -153,7 +161,7 @@ export class LocalControlServer {
     }
   }
 
-  private async dispatch(client: ClientState, request: ProtocolRequest): Promise<unknown> {
+  private async dispatch(client: ClientState, request: LocalRequest): Promise<unknown> {
     if (request.type === "list") return this.options.coordinator.listConversations();
     if (request.type === "attach") {
       if (!request.sessionId) throw new Error("sessionId is required");
@@ -187,7 +195,7 @@ export class LocalControlServer {
         status: boundedProtocolText(
           await this.options.coordinator.handleCommand(
             client.conversationId,
-            "local-operator",
+            LOCAL_OPERATOR_ID,
             "status",
           ),
         ),
@@ -234,29 +242,6 @@ function boundedProtocolText(text: string): string {
   return text.length <= maxCharacters
     ? text
     : `${text.slice(0, maxCharacters)}\n\n[Local response truncated]`;
-}
-
-function isOwnerPeer(socket: Socket): boolean {
-  const credentials = socket as Socket & {
-    getPeerCredentials?: () => { uid?: number };
-  };
-  if (!credentials.getPeerCredentials) return true;
-  try {
-    return credentials.getPeerCredentials().uid === process.getuid?.();
-  } catch {
-    return false;
-  }
-}
-
-function isRequest(value: unknown): value is ProtocolRequest {
-  if (typeof value !== "object" || value === null) return false;
-  const request = value as Record<string, unknown>;
-  return (
-    request.v === LOCAL_PROTOCOL_VERSION &&
-    typeof request.requestId === "string" &&
-    request.requestId.length > 0 &&
-    ["list", "attach", "run", "status", "cancel"].includes(String(request.type))
-  );
 }
 
 async function prepareSocketPath(socketPath: string): Promise<void> {

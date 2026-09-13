@@ -67,6 +67,17 @@ export function splitSlackMessage(
   return published;
 }
 
+/**
+ * Escapes Slack's three reserved characters so untrusted agent output cannot
+ * inject mentions (`<!channel>`, `<@U…>`), fake channel links, or disguised
+ * link labels. Slack renders these entities back as literal text.
+ * Only apply this to agent, repository, or operator-supplied content; bot
+ * authored text that intentionally mentions a user must not be escaped.
+ */
+export function escapeSlackText(text: string): string {
+  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
 export function conversationId(channel: string, threadTs?: string): string {
   return threadTs ? `${channel}:${threadTs}` : `dm:${channel}`;
 }

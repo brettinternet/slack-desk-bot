@@ -17,22 +17,6 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 ### Security
 
-#### SDB-028: Sanitize and bound agent output before posting to Slack
-
-**Why:** Agent responses and local operator prompts are posted verbatim as `text`. Slack renders `<!channel>`, `<!here>`, `<!everyone>`, `<@U…>`, `<#C…>`, and `<https://…|label>` syntax in message text, so repository content or a file attachment can prompt-inject a mass notification, a fake mention, or a disguised link. `publishOperatorExchange` also posts the operator prompt without `splitSlackMessage`, so a 64 KiB protocol frame can exceed Slack's message size limit and fail delivery.
-
-**Scope:** Escape `&`, `<`, and `>` in agent output and operator prompts (Slack's documented escaping), or strip `<!…>` and `<@…>` control sequences while preserving code blocks. Route every outbound text, including operator exchanges, through the same splitting and truncation path. Consider `unfurl_links: false` and `unfurl_media: false` for agent output.
-
-**Done:** Tests show `<!channel>` and `<@U123>` in a response arrive as inert text, and an oversized operator prompt is split and truncated the same way as a response.
-
-#### SDB-029: Fix the local socket owner check and socket permission race
-
-**Why:** `isOwnerPeer` probes `socket.getPeerCredentials`, which neither Node nor Bun implements, so the function always returns `true` and the README claim about rejecting non-owner peers is untrue. `LocalControlServer.start` also calls `chmod 0600` after `listen`, leaving a window where the socket is created with the process umask.
-
-**Scope:** Remove the dead credential probe or implement it through a real mechanism (`LOCAL_PEERCRED`/`getpeereid` via a small native call is not available in Bun without FFI; owner-only directory and file modes are the enforceable boundary). Create the socket with a restrictive umask or inside a freshly created `0700` directory so the mode is correct before the first accept. Update the README security section to describe the actual boundary.
-
-**Done:** Tests assert the socket mode immediately after `start()` resolves and that the README no longer claims peer-credential rejection.
-
 #### SDB-030: Isolate the Pi service from desktop user-level extensions
 
 **Why:** `createPiResources` loads `~/.pi/agent` resources with `projectTrusted: false`, but user-level extensions, skills, prompt templates, and MCP configuration from the operator's desktop Pi still load into the Slack service as trusted code. An extension that registers a shell or network tool bypasses `toolsForMode`, because `workspacePolicy` only guards the six built-in path tools. The trust boundary therefore depends on whatever the operator has installed for interactive use.
@@ -57,31 +41,7 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 **Done:** One table drives all three outputs and a test enumerates fixture paths through each enforcement layer expecting identical verdicts.
 
-#### SDB-033: Make the Codex Seatbelt profile allowlist-based like Claude's
-
-**Why:** The Codex profile starts from `(allow file-read*)` and then denies enumerated roots, so anything not on the deny list (for example `/opt`, `/etc`, non-`folders` paths under `/private/var`, other mounted volumes not under `/Volumes`) is readable. The Claude profile is allowlist-based. Codex also receives the real `HOME` while Claude receives its dedicated home.
-
-**Scope:** Rewrite the Codex profile as an allowlist of system runtime paths, the executable root, the Codex home, and the workspace, matching the Claude structure. Set `HOME` to the Codex home. Keep the existing Seatbelt integration test and extend it with an out-of-allowlist system path.
-
-**Done:** Both profiles share the same shape and denials; the Codex Seatbelt test proves `/opt` and `/private/var/log` reads fail.
-
 ### Robustness
-
-#### SDB-034: Handle CLI backend stream errors and surface stderr
-
-**Why:** Both CLI backends call `child.stdin.end(prompt)` with no `error` listener. If `sandbox-exec` or the CLI exits before reading stdin, the resulting `EPIPE` is an unhandled stream error that can crash the service. `stderr` is drained and discarded, so failures surface only as "exited unsuccessfully (code 1)" with nothing in the logs to diagnose.
-
-**Scope:** Attach `stdin.on("error")` and treat it as an output error. Capture a bounded tail of stderr (for example 4 KiB) and include it in the operator error report, never in the Slack reply. Reject on `spawn` errors before the `close` promise is created.
-
-**Done:** Tests simulate early exit with stdin `EPIPE` and a nonzero exit with stderr, asserting the service survives and the operator log contains the bounded stderr.
-
-#### SDB-035: Tolerate corrupt conversation mapping stores
-
-**Why:** `loadMappings` in both CLI backends runs `JSON.parse` in the constructor. A truncated `conversations.json` (for example after a crash between temp-file write and rename on a full disk) makes the service fail to start, and the LaunchAgent will restart-loop.
-
-**Scope:** On parse or schema failure, move the store aside with a timestamp suffix, log an operator warning, and start with an empty mapping. Doctor should report a corrupt store as a failure so the operator can restore from backup.
-
-**Done:** Tests write malformed and wrong-version stores and assert startup succeeds with the file renamed.
 
 #### SDB-036: Bound shutdown time
 
@@ -95,9 +55,9 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 #### SDB-037: Extract shared CLI backend plumbing
 
-**Why:** `codex-backend.ts` and `claude-backend.ts` duplicate the mapping store (load/save/atomic rename), the sandboxed spawn with SIGTERM-then-SIGKILL cancellation, JSONL line handling with parse-error abort, executable discovery, prompt preparation with `<slack-file>` inlining, and the `reset`/`status` text. Roughly 200 lines are copied with small variations.
+**Why:** `codex-backend.ts` and `claude-backend.ts` still duplicate the sandboxed spawn with SIGTERM-then-SIGKILL cancellation, JSONL line handling with parse-error abort, executable discovery, prompt preparation with `<slack-file>` inlining, and the `reset`/`status` text. SDB-048 already extracted the Seatbelt profile (`seatbelt.ts`), the mapping store (`conversation-store.ts`), and stdin/stderr handling (`cli-process.ts`), so roughly 120 lines remain copied.
 
-**Scope:** Introduce a small `ConversationMappingStore` and a `runSandboxedJsonl` helper that returns the exit result and streams parsed events to a per-backend callback. Keep event interpretation, arguments, and Seatbelt profiles in each adapter. Move `<slack-file>` inlining to one function shared with `preparePiPrompt`. This resolves the "premature framework" caveat from SDB-027 now that two consumers exist.
+**Scope:** Introduce a `runSandboxedJsonl` helper that returns the exit result and streams parsed events to a per-backend callback. Keep event interpretation, arguments, and profile construction in each adapter. Move `<slack-file>` inlining to one function shared with `preparePiPrompt`. This resolves the "premature framework" caveat from SDB-027 now that two consumers exist.
 
 **Done:** Adapter files shrink to argument construction and event translation; existing tests pass unchanged.
 
@@ -116,14 +76,6 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 **Scope:** Introduce an `InboundSlackMessage` value (`requestId`, `channel`, `messageTs`, `threadTs`, `requesterId`, `prompt`, `files`) and split `respondAdmitted` into status-message management, execution, and delivery. Behavior must not change.
 
 **Done:** `slack.test.ts` passes unchanged; no method exceeds roughly 60 lines.
-
-#### SDB-040: Share protocol types between server and CLI, and type the operator identity
-
-**Why:** `local-control.ts` defines `ProtocolRequest`; `local-cli.ts` redefines loose response/event shapes. The CLI parses frames with an unguarded `JSON.parse`. The string `"local-operator"` is a magic requester ID used in three places.
-
-**Scope:** Move request, response, and event types to a `local-protocol.ts` module used by both sides, guard CLI parsing, and export a `LOCAL_OPERATOR_ID` constant with a comment explaining why it cannot collide with a Slack user ID.
-
-**Done:** Both modules import the shared types; a malformed frame in the CLI prints an error instead of crashing.
 
 #### SDB-041: Index Pi sessions instead of scanning the session directory
 
@@ -167,14 +119,6 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 **Done:** Every non-Bolt log line is a single JSON object with `event` and `timestamp`.
 
-#### SDB-046: Fix backend-specific doctor messages and settings naming
-
-**Why:** Doctor's session-storage failure always says `SLACK_AGENT_SESSION_DIR must be…` even when the backend is Codex or Claude, whose homes are configured through `SLACK_CODEX_HOME`/`SLACK_CLAUDE_HOME`. `package.json` declares a Node engine although the service requires Bun (`Bun.serve`).
-
-**Scope:** Name the actual setting in the diagnostic. Replace the `engines` entry with Bun or remove it. Consider documenting all three storage settings side by side in `.env.example`.
-
-**Done:** Doctor test asserts the backend-specific setting name for each backend.
-
 #### SDB-047: Run Seatbelt tests on a macOS CI runner
 
 **Why:** The Codex and Claude sandbox tests are `skipIf(process.platform !== "darwin")` and CI runs on Ubuntu, so the security boundary that SDB-026/027 required to be proven by a real process is never verified in CI.
@@ -184,6 +128,14 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 **Done:** CI shows the Seatbelt tests executing on macOS.
 
 ## Completed items
+
+### SDB-048: Fix external CLI backend sandbox, auth, and robustness defects
+
+**Why:** Neither CLI backend could execute a single request. Both generated Seatbelt profiles denied path metadata outside their allowlists, and `codex` and `claude` both canonicalize their own home, executable, and workspace during startup, so every run failed before reaching the model. Existing tests passed because they exercised the profiles with `/bin/sh` rather than the real binaries. Codex additionally selected a `keyring` credential store that reports "Not logged in", readiness used `sandbox-exec -p` (which truncates long profiles) so it never tested the real boundary, Claude's stderr was discarded, and a corrupt mapping store threw from the backend constructor and would restart-loop under launchd.
+
+**Resolution:** Consolidated both near-duplicate profiles into `src/seatbelt.ts`, denying `file-read-data` instead of `file-read*` so metadata resolution still works, and granting Claude its fixed `/tmp/claude-<uid>` and `/tmp/cc-socks` runtime directories. Codex uses the default credential store and its own `HOME`, and stores state under Application Support like the other backends. Readiness now writes a profile file and launches the real executable. Added `src/cli-process.ts` for bounded stderr capture and stdin `EPIPE` handling, and `src/conversation-store.ts`, which quarantines an unreadable store and starts empty while doctor reports it. Untrusted agent output and operator prompts are escaped and split before posting to Slack. Replaced the dead `getPeerCredentials` probe (unimplemented in both Node and Bun) with the filesystem boundary it actually relies on, and bound the socket under a restrictive umask. Shared local protocol types now live in `src/local-protocol.ts`, guarding CLI frame parsing, and `slack-desk` accepts `--socket`.
+
+**Verified:** `test/seatbelt.test.ts` starts the real `codex` and `claude` binaries under the generated profile and asserts the metadata/content split; both regression tests fail against the previous profile. Live runs confirmed a new and resumed thread for each backend, shell-escape attempts blocked (`auth.json`, out-of-workspace reads, writes, `.env`), Claude tool denials, and `slack-desk sessions` over a real socket. Closed **SDB-033** as obsolete: making the Codex profile allowlist-based "like Claude's" is the exact shape proven unable to launch either CLI.
 
 ### SDB-025: Add a local operator connection to live conversations
 
@@ -218,7 +170,7 @@ The attached client can watch new turns, submit an operator turn, show status, a
 
 **Security and operations:**
 
-- Default the socket below the user's application-support directory, create its parent and socket with owner-only permissions, reject non-owner peers where macOS exposes peer credentials, and remove only a verified stale socket owned by this service.
+- Default the socket below the user's application-support directory, create its parent and socket with owner-only permissions, and remove only a verified stale socket owned by this service. (Peer-credential rejection proved impossible: neither Node nor Bun exposes `SO_PEERCRED`/`getpeereid`, so owner-only directory and file modes are the boundary. See SDB-048.)
 - The socket is local-only and has no TCP fallback. Do not put tokens, prompts, file contents, session file paths, or Slack user names in discovery output or logs.
 - Treat the local client as an operator identity. It may participate only in existing conversations and may cancel any active request, but it must not bypass tool mode, workspace policy, queue limits, or backend disposal.
 - Add readiness/doctor checks for socket path validity and collision. Shutdown stops accepting clients, closes them, then disposes the backend exactly once.

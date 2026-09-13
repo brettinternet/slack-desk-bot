@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { lstat, mkdtemp, rmdir } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { QueuedAgentBackend, type AgentBackend, type QueueLimits } from "../src/agent.ts";
 import { ConversationCoordinator } from "../src/conversation-coordinator.ts";
 import { LocalControlServer, MAX_LOCAL_FRAME_BYTES } from "../src/local-control.ts";
@@ -191,8 +191,15 @@ describe("local conversation control", () => {
     const path = await socketPath();
     const { coordinator } = fixture();
     const server = new LocalControlServer({ socketPath: path, coordinator });
-    await server.start();
+    const permissive = process.umask(0o000);
+    try {
+      await server.start();
+    } finally {
+      process.umask(permissive);
+    }
+    // Owner-only from the first accept, even under a permissive umask.
     expect((await lstat(path)).mode & 0o777).toBe(0o600);
+    expect((await lstat(dirname(path))).mode & 0o777).toBe(0o700);
     await expect(new LocalControlServer({ socketPath: path, coordinator }).start()).rejects.toThrow(
       "Another SlackDeskBot process",
     );
@@ -208,7 +215,7 @@ describe("local conversation control", () => {
     const denied = new LocalControlServer({
       socketPath: path,
       coordinator,
-      peerOwner: () => false,
+      acceptPeer: () => false,
     });
     await denied.start();
     const unauthorized = await ProtocolClient.connect(path);

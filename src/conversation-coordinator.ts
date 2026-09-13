@@ -7,6 +7,7 @@ import {
   type ConversationSummary,
   type QueueSnapshot,
 } from "./agent.ts";
+import { LOCAL_OPERATOR_ID } from "./local-protocol.ts";
 
 export type ConversationEventType =
   "queued" | "started" | "tool-use" | "response" | "failure" | "cancellation";
@@ -82,7 +83,7 @@ export class ConversationCoordinator implements CancellableAgentBackend {
     try {
       const response = await this.run({
         conversationId,
-        requesterId: "local-operator",
+        requesterId: LOCAL_OPERATOR_ID,
         prompt,
       });
       await this.publishOperatorExchange({ conversationId, prompt, response });
@@ -98,7 +99,7 @@ export class ConversationCoordinator implements CancellableAgentBackend {
   }
 
   cancelOperator(conversationId: string): boolean {
-    const cancelled = this.backend.cancelActive(conversationId, "local-operator", true);
+    const cancelled = this.backend.cancelActive(conversationId, LOCAL_OPERATOR_ID, true);
     if (cancelled) this.emit({ type: "cancellation", conversationId });
     return cancelled;
   }

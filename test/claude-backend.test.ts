@@ -18,6 +18,9 @@ interface FakeRun {
   events: string[];
   code?: number;
   wait?: boolean;
+  stderr?: string;
+  /** Destroys stdin before the prompt is written, reproducing an EPIPE. */
+  stdinEpipe?: boolean;
 }
 function fakeSpawner(runs: FakeRun[], calls: string[][]) {
   return ((command: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
@@ -42,10 +45,20 @@ function fakeSpawner(runs: FakeRun[], calls: string[][]) {
       });
       return true;
     };
+    if (run.stdinEpipe) {
+      child.stdin.destroy(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+      queueMicrotask(() => {
+        child.stdout.end();
+        child.stderr.write(run.stderr ?? "");
+        child.stderr.end();
+        child.emit("close", run.code ?? 1, null);
+      });
+    }
     child.stdin.once("finish", () => {
       if (run.wait) return;
       queueMicrotask(() => {
         for (const event of run.events) child.stdout.write(`${event}\n`);
+        if (run.stderr) child.stderr.write(run.stderr);
         child.stdout.end();
         child.stderr.end();
         child.emit("close", run.code ?? 0, null);
@@ -195,6 +208,57 @@ describe("Claude sessions and stream output", () => {
       }
     }
   });
+  test("reports stdin failures and stderr instead of crashing the service", async () => {
+    const unhandled: unknown[] = [];
+    const capture = (error: unknown) => unhandled.push(error);
+    process.on("unhandledRejection", capture);
+    process.on("uncaughtException", capture);
+    const epipe = backend([{ events: [], stdinEpipe: true, code: 1 }], []);
+    try {
+      await expect(
+        epipe.backend.run({ conversationId: "C", requesterId: "U", prompt: "x" }),
+      ).rejects.toThrow(/did not accept the prompt|EPIPE/);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", capture);
+      process.off("uncaughtException", capture);
+      epipe.backend.dispose();
+      rmSync(epipe.root, { recursive: true, force: true });
+    }
+
+    const failing = backend([{ events: [], code: 3, stderr: "boom: bad flag" }], []);
+    try {
+      await expect(
+        failing.backend.run({ conversationId: "C", requesterId: "U", prompt: "x" }),
+      ).rejects.toThrow("boom: bad flag");
+    } finally {
+      failing.backend.dispose();
+      rmSync(failing.root, { recursive: true, force: true });
+    }
+  });
+
+  test("starts with an empty mapping when the store is corrupt", async () => {
+    const item = backend([success("session-new", "fresh")], []);
+    try {
+      writeFileSync(join(item.home, "conversations.json"), '{"version":1,"conversations":{"C1"');
+      const restarted = new ClaudeBackend(item.workspace, {
+        executable: "/usr/bin/true",
+        home: item.home,
+        platform: "darwin",
+        spawnProcess: fakeSpawner([success("session-new", "fresh")], []),
+      });
+      expect(await restarted.hasConversation("C1")).toBe(false);
+      expect(await restarted.run({ conversationId: "C1", requesterId: "U", prompt: "x" })).toBe(
+        "fresh",
+      );
+      restarted.dispose();
+    } finally {
+      item.backend.dispose();
+      rmSync(item.root, { recursive: true, force: true });
+    }
+  });
+
   test("cancels and disposes active processes", async () => {
     const item = backend([{ events: [], wait: true }], []);
     const controller = new AbortController();

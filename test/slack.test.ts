@@ -14,6 +14,7 @@ import {
   QueuedAgentBackend,
 } from "../src/agent.ts";
 import type { RequestLog } from "../src/log.ts";
+import { SLACK_MESSAGE_LIMIT } from "../src/messages.ts";
 
 interface SlackEventHandler {
   (input: {
@@ -193,12 +194,41 @@ describe("SlackAgent transport", () => {
       channel: "C123",
       thread_ts: "100.1",
       text: "*Local operator:* check the build",
+      unfurl_links: false,
+      unfurl_media: false,
     });
     expect(app.client.chat.postMessage).toHaveBeenNthCalledWith(2, {
       channel: "C123",
       thread_ts: "100.1",
       text: "*Agent (operator request):* It passes.",
+      unfurl_links: false,
+      unfurl_media: false,
     });
+  });
+
+  test("escapes and splits untrusted operator exchanges so Slack cannot render mentions", async () => {
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+    });
+
+    await agent.publishOperatorExchange(
+      "C123:100.1",
+      "<!channel> ping",
+      `<@U999> & <https://evil.example|docs> ${"x".repeat(SLACK_MESSAGE_LIMIT)}`,
+    );
+
+    const texts = app.client.chat.postMessage.mock.calls.map((call: unknown[]) =>
+      String((call[0] as { text: string }).text),
+    );
+    expect(texts[0]).toBe("*Local operator:* &lt;!channel&gt; ping");
+    expect(texts.join("\n")).not.toContain("<!channel>");
+    expect(texts.join("\n")).not.toContain("<@U999>");
+    expect(texts[1]).toContain("&lt;@U999&gt; &amp; &lt;https://evil.example|docs&gt;");
+    expect(texts.length).toBeGreaterThan(2);
+    for (const text of texts) expect(text.length).toBeLessThanOrEqual(SLACK_MESSAGE_LIMIT + 40);
   });
 
   test("tracks Socket Mode connection lifecycle transitions", () => {
@@ -572,6 +602,23 @@ describe("SlackAgent transport", () => {
     });
     expect(records[0]!.duration_ms).toBeGreaterThanOrEqual(0);
     expect(JSON.stringify(records[0])).not.toContain("secret prompt contents");
+  });
+
+  test("escapes untrusted agent output so repository content cannot inject mentions", async () => {
+    createAgent(mock(async () => "<!channel> see <@U999> & <https://evil.example|docs>"));
+    const slack = client();
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_ESCAPED" },
+      event: { user: "U_ALLOWED", text: "summarize", channel: "C1", ts: "1" },
+      client: slack,
+    });
+
+    expect(slack.chat.update).toHaveBeenCalledWith({
+      channel: "C1",
+      ts: "status-ts",
+      text: "&lt;!channel&gt; see &lt;@U999&gt; &amp; &lt;https://evil.example|docs&gt;",
+    });
   });
 
   test("routes existing threads and direct messages to stable conversations", async () => {

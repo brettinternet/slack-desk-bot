@@ -16,6 +16,7 @@ import { type LogWriter, writeStructuredLog } from "./log.ts";
 import { type HealthState } from "./health.ts";
 import {
   conversationId,
+  escapeSlackText,
   HELP_MESSAGE,
   isSupportedChannelMessage,
   isSupportedDirectMessage,
@@ -228,18 +229,24 @@ export class SlackAgent {
     response: string,
   ): Promise<void> {
     const destination = slackDestination(conversation);
-    await this.chatOperation(() =>
-      this.app.client.chat.postMessage({
-        ...destination,
-        text: `*Local operator:* ${prompt}`,
-      }),
-    );
-    const [first, ...rest] = splitSlackMessage(response);
-    for (const [index, text] of [first, ...rest].entries()) {
+    await this.publishAttributed(destination, "*Local operator:*", prompt);
+    await this.publishAttributed(destination, "*Agent (operator request):*", response);
+  }
+
+  /** Splits and escapes untrusted text so one oversized frame cannot fail delivery. */
+  private async publishAttributed(
+    destination: { channel: string; thread_ts?: string },
+    label: string,
+    text: string,
+  ): Promise<void> {
+    const chunks = splitSlackMessage(escapeSlackText(text));
+    for (const [index, chunk] of chunks.entries()) {
       await this.chatOperation(() =>
         this.app.client.chat.postMessage({
           ...destination,
-          text: index === 0 ? `*Agent (operator request):* ${text}` : text,
+          text: index === 0 ? `${label} ${chunk}` : chunk,
+          unfurl_links: false,
+          unfurl_media: false,
         }),
       );
     }
@@ -544,15 +551,17 @@ export class SlackAgent {
             ? `<@${requesterId}> cancelled the active request.`
             : "There is no active request to cancel.";
         } else if (agentCommand) {
-          finalOutput = admission
-            ? await this.options.agent.handleCommand(
-                id,
-                requesterId,
-                agentCommand,
-                observer,
-                admission,
-              )
-            : await this.options.agent.handleCommand(id, requesterId, agentCommand, observer);
+          finalOutput = escapeSlackText(
+            admission
+              ? await this.options.agent.handleCommand(
+                  id,
+                  requesterId,
+                  agentCommand,
+                  observer,
+                  admission,
+                )
+              : await this.options.agent.handleCommand(id, requesterId, agentCommand, observer),
+          );
         } else {
           const request = {
             conversationId: id,
@@ -560,9 +569,11 @@ export class SlackAgent {
             prompt,
             ...(attachments.length > 0 ? { attachments } : {}),
           };
-          finalOutput = admission
-            ? await this.options.agent.run(request, observer, admission)
-            : await this.options.agent.run(request, observer);
+          finalOutput = escapeSlackText(
+            admission
+              ? await this.options.agent.run(request, observer, admission)
+              : await this.options.agent.run(request, observer),
+          );
         }
         executionOutcome = "success";
       }

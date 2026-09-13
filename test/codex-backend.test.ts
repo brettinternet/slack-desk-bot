@@ -19,6 +19,8 @@ interface FakeRun {
   stderr?: string;
   wait?: boolean;
   exitBeforeEvents?: boolean;
+  /** Destroys stdin before the prompt is written, reproducing an EPIPE. */
+  stdinEpipe?: boolean;
 }
 
 function fakeSpawner(runs: FakeRun[], calls: string[][]) {
@@ -44,6 +46,15 @@ function fakeSpawner(runs: FakeRun[], calls: string[][]) {
       });
       return true;
     };
+    if (run.stdinEpipe) {
+      child.stdin.destroy(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+      queueMicrotask(() => {
+        child.stdout.end();
+        child.stderr.write(run.stderr ?? "");
+        child.stderr.end();
+        child.emit("close", run.code ?? 1, null);
+      });
+    }
     child.stdin.once("finish", () => {
       if (run.wait) return;
       queueMicrotask(() => {
@@ -204,6 +215,55 @@ describe("Codex output", () => {
       ).resolves.toBe("complete");
     } finally {
       backend.dispose();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("reports stdin failures and stderr instead of crashing the service", async () => {
+    const unhandled: unknown[] = [];
+    const capture = (error: unknown) => unhandled.push(error);
+    process.on("unhandledRejection", capture);
+    process.on("uncaughtException", capture);
+    const epipe = temporaryBackend([{ events: [], stdinEpipe: true, code: 1 }], []);
+    try {
+      await expect(
+        epipe.backend.run({ conversationId: "C", requesterId: "U", prompt: "hello" }),
+      ).rejects.toThrow(/did not accept the prompt|EPIPE/);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", capture);
+      process.off("uncaughtException", capture);
+      epipe.backend.dispose();
+      rmSync(epipe.home, { recursive: true, force: true });
+    }
+
+    const failing = temporaryBackend([{ events: [], code: 3, stderr: "boom: bad flag" }], []);
+    try {
+      await expect(
+        failing.backend.run({ conversationId: "C", requesterId: "U", prompt: "hello" }),
+      ).rejects.toThrow("boom: bad flag");
+    } finally {
+      failing.backend.dispose();
+      rmSync(failing.home, { recursive: true, force: true });
+    }
+  });
+
+  test("starts with an empty mapping when the store is corrupt", async () => {
+    const home = mkdtempSync(join(tmpdir(), "slack-desk-codex-corrupt-"));
+    try {
+      writeFileSync(join(home, "conversations.json"), '{"version":1,"conversations":{"C1:1"');
+      const backend = new CodexBackend(process.cwd(), {
+        executable: "/usr/bin/true",
+        home,
+        spawnProcess: fakeSpawner([success("thread-new", "fresh")], []),
+      });
+      expect(await backend.hasConversation("C1:1")).toBe(false);
+      expect(await backend.run({ conversationId: "C1:1", requesterId: "U", prompt: "hello" })).toBe(
+        "fresh",
+      );
+      backend.dispose();
+    } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });

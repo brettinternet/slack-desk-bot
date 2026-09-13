@@ -1,17 +1,11 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { writePromptAndCapture } from "./cli-process.ts";
+import { ConversationStore } from "./conversation-store.ts";
 import { seatbeltProfile } from "./seatbelt.ts";
 import type {
   AgentAttachment,
@@ -23,7 +17,6 @@ import type {
 } from "./agent.ts";
 import type { AgentMode } from "./config.ts";
 
-const STORE_VERSION = 1;
 const STORE_FILE = "conversations.json";
 const SETTINGS_FILE = "settings.json";
 const SANDBOX_PROFILE = "sandbox.sb";
@@ -31,10 +24,6 @@ const SANDBOX_PROFILE = "sandbox.sb";
 interface StoredConversation {
   sessionId: string;
   lastActiveAt: number;
-}
-interface StoredMappings {
-  version: 1;
-  conversations: Record<string, StoredConversation>;
 }
 interface ActiveRun {
   process: ChildProcessWithoutNullStreams;
@@ -156,7 +145,7 @@ export class ClaudeBackend implements AgentBackend {
   private readonly executable: string;
   private readonly home: string;
   private readonly mode: AgentMode;
-  private readonly storePath: string;
+  private readonly store: ConversationStore<StoredConversation>;
   private readonly sandboxPath: string;
   private readonly settingsPath: string;
   private readonly mappings = new Map<string, StoredConversation>();
@@ -175,7 +164,14 @@ export class ClaudeBackend implements AgentBackend {
     this.executable = findClaudeExecutable(options.executable);
     this.home = resolve(options.home ?? defaultClaudeHome(workspace));
     this.mode = options.mode ?? "read-only";
-    this.storePath = join(this.home, STORE_FILE);
+    this.store = new ConversationStore<StoredConversation>(
+      join(this.home, STORE_FILE),
+      (mapping) => typeof mapping.sessionId === "string" && Number.isFinite(mapping.lastActiveAt),
+      ({ movedTo, reason }) =>
+        console.warn(
+          `Claude conversation store was unreadable (${reason}); moved to ${movedTo} and starting empty`,
+        ),
+    );
     this.sandboxPath = join(this.home, SANDBOX_PROFILE);
     this.settingsPath = join(this.home, SETTINGS_FILE);
     this.now = options.now ?? Date.now;
@@ -253,7 +249,7 @@ export class ClaudeBackend implements AgentBackend {
       },
     ) as ChildProcessWithoutNullStreams;
     this.active.set(request.conversationId, { process: child });
-    child.stdin.end(prompt);
+    const streams = writePromptAndCapture(child, prompt);
     let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
     const abort = () => {
       child.kill("SIGTERM");
@@ -303,11 +299,6 @@ export class ClaudeBackend implements AgentBackend {
         child.kill("SIGTERM");
       }
     });
-    let stderrTail = "";
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => {
-      stderrTail = `${stderrTail}${chunk}`.slice(-500);
-    });
     try {
       const exit = await new Promise<{ code: number | null }>((resolveExit, reject) => {
         child.once("error", reject);
@@ -315,10 +306,15 @@ export class ClaudeBackend implements AgentBackend {
       });
       if (request.signal?.aborted) throw request.signal.reason;
       if (parseError) throw parseError;
+      const stdinFailure = streams.failure();
+      if (stdinFailure)
+        throw new ClaudeOutputError(
+          `Claude Code did not accept the prompt: ${stdinFailure.message}`,
+        );
       if (exit.code !== 0)
         throw new ClaudeOutputError(
           `Claude Code exited unsuccessfully${exit.code == null ? "" : ` (code ${exit.code})`}` +
-            (stderrTail.trim() ? `: ${stderrTail.trim()}` : ""),
+            (streams.stderrTail() ? `: ${streams.stderrTail()}` : ""),
         );
       if (providerError) throw new ClaudeProviderError();
       if (!sessionId) throw new ClaudeOutputError("Claude Code did not report a session ID");
@@ -372,22 +368,11 @@ export class ClaudeBackend implements AgentBackend {
   }
 
   private loadMappings(): void {
-    if (!existsSync(this.storePath)) return;
-    const stored = JSON.parse(readFileSync(this.storePath, "utf8")) as StoredMappings;
-    if (stored.version !== STORE_VERSION || !stored.conversations)
-      throw new Error("Unsupported Claude conversation mapping format");
-    for (const [conversationId, mapping] of Object.entries(stored.conversations)) {
-      if (typeof mapping.sessionId === "string" && Number.isFinite(mapping.lastActiveAt))
-        this.mappings.set(conversationId, mapping);
+    for (const [conversationId, mapping] of this.store.load()) {
+      this.mappings.set(conversationId, mapping);
     }
   }
   private saveMappings(): void {
-    const contents: StoredMappings = {
-      version: STORE_VERSION,
-      conversations: Object.fromEntries(this.mappings),
-    };
-    const temporary = `${this.storePath}.${process.pid}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify(contents, null, 2)}\n`, { mode: 0o600 });
-    renameSync(temporary, this.storePath);
+    this.store.save(this.mappings);
   }
 }

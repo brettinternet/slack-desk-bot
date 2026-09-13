@@ -1,4 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runDoctor } from "../src/doctor.ts";
 
 const valid = {
@@ -86,6 +89,62 @@ describe("runDoctor", () => {
     expect(checks.claudeReady).toHaveBeenCalledTimes(1);
     expect(checks.codexReady).not.toHaveBeenCalled();
     expect(checks.piReady).not.toHaveBeenCalled();
+  });
+
+  test("names the backend's own storage setting when session storage fails", async () => {
+    // A regular file blocks directory creation, so every backend's storage
+    // check fails and must name its own setting.
+    const blocked = join(mkdtempSync(join(tmpdir(), "slack-desk-doctor-blocked-")), "file");
+    writeFileSync(blocked, "");
+    const unwritable = join(blocked, "sessions");
+    for (const [environment, setting] of [
+      [{ SLACK_AGENT_SESSION_DIR: unwritable }, "SLACK_AGENT_SESSION_DIR"],
+      [
+        {
+          SLACK_AGENT_BACKEND: "codex",
+          SLACK_CODEX_HOME: unwritable,
+          SLACK_CODEX_EXECUTABLE: "/usr/bin/true",
+        },
+        "SLACK_CODEX_HOME",
+      ],
+      [
+        {
+          SLACK_AGENT_BACKEND: "claude",
+          SLACK_CLAUDE_HOME: unwritable,
+          SLACK_CLAUDE_EXECUTABLE: "/usr/bin/true",
+        },
+        "SLACK_CLAUDE_HOME",
+      ],
+    ] as Array<[Record<string, string>, string]>) {
+      const result = await runDoctor({ ...valid, ...environment }, dependencies());
+      const storage = result.diagnostics.find(({ check }) => check === "Session storage");
+      expect(storage?.message).toContain(setting);
+    }
+  });
+
+  test("fails when a CLI backend conversation store is unreadable", async () => {
+    const home = mkdtempSync(join(tmpdir(), "slack-desk-doctor-store-"));
+    try {
+      writeFileSync(join(home, "conversations.json"), '{"version":1,"conversations":{"C1"');
+      const result = await runDoctor(
+        {
+          ...valid,
+          SLACK_AGENT_BACKEND: "codex",
+          SLACK_CODEX_HOME: home,
+          SLACK_CODEX_EXECUTABLE: "/usr/bin/true",
+        },
+        dependencies(),
+      );
+      expect(result.ok).toBe(false);
+      expect(
+        result.diagnostics.some(
+          ({ check, message }) =>
+            check === "Session storage" && message.includes("conversation store"),
+        ),
+      ).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("uses the same trimmed Slack token as production", async () => {

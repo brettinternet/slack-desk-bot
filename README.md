@@ -94,7 +94,7 @@ slack-desk attach f82ab719
 
 Inside an attachment, enter prompts normally or use `/status`, `/cancel`, and `/quit`. Slack and local prompts use the same per-conversation queue. Local operator prompts and replies are posted back to the originating Slack thread with attribution; disconnecting the terminal does not stop the session or an active request.
 
-The socket defaults to `~/Library/Application Support/SlackDeskBot/control.sock` on macOS. Override it for both service and client with an absolute `SLACK_AGENT_SOCKET_PATH`. The versioned newline-delimited JSON control protocol is local-only, bounds frames, clients, pending requests, subscriptions, and buffered output, and exposes only session ID, canonical conversation ID, state, and last-active time during discovery.
+The socket defaults to `~/Library/Application Support/SlackDeskBot/control.sock` on macOS. Override it for the service with an absolute `SLACK_AGENT_SOCKET_PATH`; the client reads the same variable or takes `--socket <path>`. The versioned newline-delimited JSON control protocol is local-only, bounds frames, clients, pending requests, subscriptions, and buffered output, and exposes only session ID, canonical conversation ID, state, and last-active time during discovery.
 
 ### Custom instructions
 
@@ -224,7 +224,7 @@ Rollback: unload LaunchAgent, check out the previous tag/commit, rerun the insta
 
 **Claude security differs from Pi and Codex.** Claude runs in restricted mode with inherited project and user settings ignored, no MCP servers or slash commands, no permission prompts, and an explicit file-tool list. Read-only mode exposes `Read`, `Glob`, and `Grep`; read-write also exposes `Edit` and `Write` and retains the global single-writer limit. The same Seatbelt boundary used for Codex confines file contents and writes, additionally allowing writes to Claude's fixed `/tmp/claude-<uid>` and `/tmp/cc-socks` runtime directories, which the CLI requires to start. Read-write mode adds workspace writes only. Bash and other code-running tools, WebFetch, WebSearch, image attachments, Linux service deployment, and unrestricted command networking are not supported.
 
-**Sessions** are designed for one service owner. The service is their sole mutable owner. The local socket is owner-only, has no TCP fallback, and does not expose session file paths, prompts, tokens, user names, or file contents in discovery or logs. Do not share session files across instances without external locking.
+**Sessions** are designed for one service owner. The service is their sole mutable owner. The local socket has no TCP fallback and does not expose session file paths, prompts, tokens, user names, or file contents in discovery or logs. Access control is filesystem-based: the socket is created `0600` inside a `0700` owner-only directory, which is the enforceable boundary because neither Node nor Bun exposes Unix peer credentials. Any process running as the service's user can therefore connect, and is treated as the operator. Do not share session files across instances without external locking.
 
 ## Adding another backend
 

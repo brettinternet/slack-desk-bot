@@ -4,20 +4,12 @@ import { createConnection, type Socket } from "node:net";
 import { createInterface } from "node:readline";
 import type { ConversationSummary } from "./agent.ts";
 import { defaultSocketPath } from "./config.ts";
-import { LOCAL_PROTOCOL_VERSION } from "./local-control.ts";
-
-type ResponseMessage = {
-  type: "response";
-  requestId: string;
-  ok: boolean;
-  result?: unknown;
-  error?: string;
-};
-
-type EventMessage = {
-  type: "event";
-  event: { type: string; response?: string; error?: string };
-};
+import type { ConversationEvent } from "./conversation-coordinator.ts";
+import {
+  isLocalServerMessage,
+  LOCAL_PROTOCOL_VERSION,
+  type LocalRequestType,
+} from "./local-protocol.ts";
 
 class LocalClient {
   private buffer = "";
@@ -25,7 +17,7 @@ class LocalClient {
     string,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
   >();
-  onEvent?: (event: EventMessage["event"]) => void;
+  onEvent?: (event: ConversationEvent) => void;
 
   private constructor(private readonly socket: Socket) {
     socket.setEncoding("utf8");
@@ -42,7 +34,7 @@ class LocalClient {
     });
   }
 
-  request(type: string, fields: Record<string, unknown> = {}): Promise<unknown> {
+  request(type: LocalRequestType, fields: Record<string, unknown> = {}): Promise<unknown> {
     const requestId = randomUUID();
     return new Promise((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject });
@@ -63,7 +55,16 @@ class LocalClient {
       const line = this.buffer.slice(0, newline);
       this.buffer = this.buffer.slice(newline + 1);
       if (!line) continue;
-      const message = JSON.parse(line) as ResponseMessage | EventMessage;
+      let message;
+      try {
+        const value: unknown = JSON.parse(line);
+        if (!isLocalServerMessage(value)) throw new Error("unrecognized message");
+        message = value;
+      } catch {
+        // A malformed or unsupported frame must not kill the client.
+        console.error("Ignoring an unrecognized message from SlackDeskBot");
+        continue;
+      }
       if (message.type === "event") {
         this.onEvent?.(message.event);
         continue;
@@ -81,6 +82,9 @@ class LocalClient {
     this.pending.clear();
   }
 }
+
+const USAGE =
+  "Usage: slack-desk [--socket <path>] sessions | slack-desk [--socket <path>] attach <session-id>";
 
 function formatAge(timestamp: number): string {
   const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1_000));
@@ -140,16 +144,37 @@ async function attach(client: LocalClient, sessionId: string): Promise<void> {
   await new Promise<void>((resolve) => input.once("close", resolve));
 }
 
-export async function main(args: string[] = process.argv.slice(2)): Promise<void> {
-  const [command, argument] = args;
-  if (
-    !command ||
-    !["sessions", "attach"].includes(command) ||
-    (command === "attach" && !argument)
-  ) {
-    throw new Error("Usage: slack-desk sessions | slack-desk attach <session-id>");
+export function parseArguments(args: readonly string[]): {
+  command: "sessions" | "attach";
+  sessionId?: string;
+  socketPath?: string;
+} {
+  const positional: string[] = [];
+  let socketPath: string | undefined;
+  for (let index = 0; index < args.length; index++) {
+    const value = args[index]!;
+    if (value === "--socket") {
+      socketPath = args[++index];
+      if (!socketPath) throw new Error("--socket requires a path");
+    } else if (value.startsWith("--socket=")) {
+      socketPath = value.slice("--socket=".length);
+      if (!socketPath) throw new Error("--socket requires a path");
+    } else {
+      positional.push(value);
+    }
   }
-  const socketPath = process.env.SLACK_AGENT_SOCKET_PATH?.trim() || defaultSocketPath();
+  const [command, sessionId] = positional;
+  if (command !== "sessions" && command !== "attach") {
+    throw new Error(USAGE);
+  }
+  if (command === "attach" && !sessionId) throw new Error(USAGE);
+  return { command, sessionId, socketPath };
+}
+
+export async function main(args: string[] = process.argv.slice(2)): Promise<void> {
+  const { command, sessionId, socketPath: requested } = parseArguments(args);
+  const socketPath =
+    requested ?? (process.env.SLACK_AGENT_SOCKET_PATH?.trim() || defaultSocketPath());
   let client: LocalClient;
   try {
     client = await LocalClient.connect(socketPath);
@@ -160,7 +185,7 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
     if (command === "sessions") {
       printSessions((await client.request("list")) as ConversationSummary[]);
     } else {
-      await attach(client, argument!);
+      await attach(client, sessionId!);
     }
   } finally {
     client.close();
