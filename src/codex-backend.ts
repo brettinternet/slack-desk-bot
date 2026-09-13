@@ -35,6 +35,7 @@ export interface CodexBackendOptions {
   now?: () => number;
   spawnProcess?: typeof spawn;
   platform?: NodeJS.Platform;
+  systemPromptSupported?: boolean;
 }
 
 export class CodexCapabilityError extends Error {}
@@ -98,6 +99,22 @@ function findCodexExecutable(configured?: string): string {
   return realpathSync(executable);
 }
 
+export function codexSupportsSystemPrompt(help: string): boolean {
+  return help.includes("--config") || help.includes("-c, ");
+}
+
+function detectCodexSystemPromptSupport(executable: string, home: string): boolean {
+  try {
+    const help = execFileSync(executable, ["exec", "--help"], {
+      encoding: "utf8",
+      env: codexProcessEnvironment(home),
+    });
+    return codexSupportsSystemPrompt(help);
+  } catch {
+    return false;
+  }
+}
+
 export class CodexBackend implements AgentBackend {
   private readonly executable: string;
   private readonly home: string;
@@ -107,6 +124,7 @@ export class CodexBackend implements AgentBackend {
   private readonly active = new Map<string, ActiveRun>();
   private readonly now: () => number;
   private readonly spawnProcess: typeof spawn;
+  private readonly systemPromptSupported: boolean;
   private disposed = false;
 
   constructor(
@@ -131,6 +149,9 @@ export class CodexBackend implements AgentBackend {
     this.spawnProcess = options.spawnProcess ?? spawn;
     mkdirSync(this.home, { recursive: true, mode: 0o700 });
     chmodSync(this.home, 0o700);
+    this.systemPromptSupported =
+      options.systemPromptSupported ??
+      (!options.instructions || detectCodexSystemPromptSupport(this.executable, this.home));
     writeFileSync(this.sandboxPath, codexSandboxProfile(workspace, this.home, this.executable), {
       mode: 0o600,
     });
@@ -165,10 +186,13 @@ export class CodexBackend implements AgentBackend {
     const prompt = prepareCodexPrompt(
       request.prompt,
       request.attachments,
-      this.options.instructions,
+      this.systemPromptSupported ? undefined : this.options.instructions,
     );
     const common = [
       "--json",
+      ...(this.options.instructions && this.systemPromptSupported
+        ? ["-c", `developer_instructions=${JSON.stringify(this.options.instructions)}`]
+        : []),
       "-c",
       'shell_environment_policy.inherit="none"',
       "--skip-git-repo-check",

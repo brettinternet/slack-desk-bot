@@ -106,7 +106,7 @@ SLACK_AGENT_INSTRUCTIONS="Be concise, conversational, and avoid narrating tool u
 # SLACK_AGENT_INSTRUCTIONS_FILE=/absolute/path/to/instructions.md
 ```
 
-Restart after changes. These apply only to SlackDeskBot sessions; the target repository's `AGENTS.md` still provides project instructions.
+Restart after changes. These apply only to SlackDeskBot sessions; the target repository's `AGENTS.md` still provides project instructions. Pi appends them to its system prompt, Claude uses `--append-system-prompt`, and Codex uses `developer_instructions`. `task doctor` reports when an older CLI lacks the required option and SlackDeskBot must instead prefix instructions to each prompt.
 
 ## Resource limits
 

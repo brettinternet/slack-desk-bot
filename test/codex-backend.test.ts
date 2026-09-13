@@ -23,7 +23,7 @@ interface FakeRun {
   stdinEpipe?: boolean;
 }
 
-function fakeSpawner(runs: FakeRun[], calls: string[][]) {
+function fakeSpawner(runs: FakeRun[], calls: string[][], inputs?: string[]) {
   return ((command: string, args: readonly string[]) => {
     const run = runs.shift();
     if (!run) throw new Error("Unexpected spawn");
@@ -35,6 +35,11 @@ function fakeSpawner(runs: FakeRun[], calls: string[][]) {
       kill: (signal?: string) => boolean;
     };
     child.stdin = new PassThrough();
+    if (inputs) {
+      let input = "";
+      child.stdin.on("data", (chunk) => (input += String(chunk)));
+      child.stdin.on("finish", () => inputs.push(input));
+    }
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
     child.kill = () => {
@@ -71,13 +76,21 @@ function fakeSpawner(runs: FakeRun[], calls: string[][]) {
   }) as never;
 }
 
-function temporaryBackend(runs: FakeRun[], calls: string[][], now = () => 1234) {
+function temporaryBackend(
+  runs: FakeRun[],
+  calls: string[][],
+  now = () => 1234,
+  instructions?: string,
+  inputs?: string[],
+) {
   const home = mkdtempSync(join(tmpdir(), "slack-desk-codex-home-"));
   const backend = new CodexBackend(process.cwd(), {
     executable: "/usr/bin/true",
     home,
     now,
-    spawnProcess: fakeSpawner(runs, calls),
+    instructions,
+    systemPromptSupported: true,
+    spawnProcess: fakeSpawner(runs, calls, inputs),
   });
   return { backend, home };
 }
@@ -105,6 +118,26 @@ describe("Codex input", () => {
     ).toBe(
       'Be concise.\n\nReview it\n\n<slack-file name="notes.md" media-type="text/markdown">\n# Notes\n</slack-file>',
     );
+  });
+
+  test("passes instructions as developer configuration, not prompt input", async () => {
+    const calls: string[][] = [];
+    const inputs: string[] = [];
+    const { backend, home } = temporaryBackend(
+      [success("thread-123", "done")],
+      calls,
+      undefined,
+      "Be concise.",
+      inputs,
+    );
+    try {
+      await backend.run({ conversationId: "C1", requesterId: "U1", prompt: "hello" });
+      expect(calls[0]).toContain('developer_instructions="Be concise."');
+      expect(inputs).toEqual(["hello"]);
+    } finally {
+      backend.dispose();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("rejects images instead of writing them to disk", () => {

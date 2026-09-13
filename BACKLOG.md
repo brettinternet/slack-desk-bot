@@ -17,14 +17,6 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 ### Ergonomics and ease of use
 
-#### SDB-043: Pass instructions as system prompts for Codex and Claude
-
-**Why:** For CLI backends, `SLACK_AGENT_INSTRUCTIONS` is prepended to every user prompt. It is weaker than a system prompt, repeats in history on every turn, and inflates context and cost. Pi uses `appendSystemPrompt`.
-
-**Scope:** Use `--append-system-prompt` for Claude and `-c developer_instructions=…` (or the equivalent supported config key) for Codex, verified against the installed CLI versions. Fall back to prompt prefixing only if the flag is unavailable and say so in doctor.
-
-**Done:** Tests assert the instruction appears in the CLI arguments and not in stdin.
-
 #### SDB-044: Show Slack prompts in attached terminal sessions
 
 **Why:** The README example shows `user>` lines, but `started` and `queued` events carry no prompt, so an attached operator sees `agent> Working…` followed by a response with no idea what was asked.
@@ -50,6 +42,12 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 **Done:** CI shows the Seatbelt tests executing on macOS.
 
 ## Completed items
+
+### SDB-043: Pass instructions as system prompts for Codex and Claude
+
+**Resolution:** Claude now passes Slack-specific instructions with `--append-system-prompt`, and Codex passes them through `developer_instructions`. Each backend checks the installed CLI before using the capability and retains prompt-prefix fallback for older versions; doctor identifies that fallback explicitly.
+
+**Verified:** Backend tests assert instructions appear in CLI arguments and not stdin, doctor tests cover fallback reporting, and the installed Codex 0.154.0 and Claude Code 2.1.270 expose the required configuration interfaces. `task test` and `task check` pass.
 
 ### SDB-042: Tell users when a request is dropped at capacity
 

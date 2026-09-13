@@ -22,7 +22,7 @@ interface FakeRun {
   /** Destroys stdin before the prompt is written, reproducing an EPIPE. */
   stdinEpipe?: boolean;
 }
-function fakeSpawner(runs: FakeRun[], calls: string[][]) {
+function fakeSpawner(runs: FakeRun[], calls: string[][], inputs?: string[]) {
   return ((command: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
     const run = runs.shift();
     if (!run) throw new Error("Unexpected spawn");
@@ -35,6 +35,11 @@ function fakeSpawner(runs: FakeRun[], calls: string[][]) {
       kill: () => boolean;
     };
     child.stdin = new PassThrough();
+    if (inputs) {
+      let input = "";
+      child.stdin.on("data", (chunk) => (input += String(chunk)));
+      child.stdin.on("finish", () => inputs.push(input));
+    }
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
     child.kill = () => {
@@ -71,6 +76,8 @@ function backend(
   runs: FakeRun[],
   calls: string[][],
   mode: "read-only" | "read-write" = "read-only",
+  instructions?: string,
+  inputs?: string[],
 ) {
   const root = mkdtempSync(join(tmpdir(), "slack-desk-claude-"));
   const workspace = join(root, "workspace");
@@ -84,8 +91,10 @@ function backend(
       executable: "/usr/bin/true",
       home,
       mode,
+      instructions,
+      systemPromptSupported: true,
       platform: "darwin",
-      spawnProcess: fakeSpawner(runs, calls),
+      spawnProcess: fakeSpawner(runs, calls, inputs),
     }),
     workspace,
     home,
@@ -119,6 +128,27 @@ describe("Claude input and policy", () => {
       ]),
     ).toThrow(ClaudeCapabilityError);
   });
+  test("passes instructions as a system prompt argument, not prompt input", async () => {
+    const calls: string[][] = [];
+    const inputs: string[] = [];
+    const item = backend(
+      [success("session-123", "done")],
+      calls,
+      "read-only",
+      "Be concise.",
+      inputs,
+    );
+    try {
+      await item.backend.run({ conversationId: "C1", requesterId: "U1", prompt: "hello" });
+      const argument = calls[0]?.indexOf("--append-system-prompt") ?? -1;
+      expect(calls[0]?.[argument + 1]).toBe("Be concise.");
+      expect(inputs).toEqual(["hello"]);
+    } finally {
+      item.backend.dispose();
+      rmSync(item.root, { recursive: true, force: true });
+    }
+  });
+
   test("grants Claude's fixed runtime directories write access without widening the workspace", () => {
     const root = mkdtempSync(join(tmpdir(), "slack-desk-claude-profile-"));
     const workspace = join(root, "workspace");

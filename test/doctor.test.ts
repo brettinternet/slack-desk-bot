@@ -166,6 +166,33 @@ describe("runDoctor", () => {
     }
   });
 
+  test("reports prompt-prefix fallback when a CLI lacks system prompt support", async () => {
+    const executeFile = mock(async () => ({ stdout: "", stderr: "" }));
+    for (const backend of ["codex", "claude"] as const) {
+      const home = join(tmpdir(), `slack-desk-doctor-instructions-${backend}`);
+      const config = loadConfig({
+        ...valid,
+        SLACK_AGENT_BACKEND: backend,
+        SLACK_AGENT_INSTRUCTIONS: "Be concise.",
+        SLACK_CODEX_HOME: home,
+        SLACK_CLAUDE_HOME: home,
+        SLACK_CODEX_EXECUTABLE: "/usr/bin/true",
+        SLACK_CLAUDE_EXECUTABLE: "/usr/bin/true",
+      });
+      const message =
+        backend === "codex"
+          ? await checkCodexReadiness(config, {
+              executeFile: executeFile as never,
+              platform: "darwin",
+            })
+          : await checkClaudeReadiness(config, {
+              executeFile: executeFile as never,
+              platform: "darwin",
+            });
+      expect(message).toContain("instructions will be prefixed to prompts");
+    }
+  });
+
   test("runs only Codex readiness for the Codex backend", async () => {
     const checks = dependencies();
     const result = await runDoctor(

@@ -19,10 +19,16 @@ import type {
 } from "@earendil-works/pi-ai";
 import { WebClient } from "@slack/web-api";
 import { BACKENDS } from "./backend-table.ts";
-import { codexProcessEnvironment, codexSandboxProfile, defaultCodexHome } from "./codex-backend.ts";
+import {
+  codexProcessEnvironment,
+  codexSandboxProfile,
+  codexSupportsSystemPrompt,
+  defaultCodexHome,
+} from "./codex-backend.ts";
 import {
   claudeProcessEnvironment,
   claudeSandboxProfile,
+  claudeSupportsSystemPrompt,
   defaultClaudeHome,
 } from "./claude-backend.ts";
 import { loadConfig, type Config } from "./config.ts";
@@ -266,6 +272,18 @@ export async function checkCodexReadiness(
   } catch {
     throw new Error("Codex CLI could not be executed; verify SLACK_CODEX_EXECUTABLE");
   }
+  let systemPromptSupported = true;
+  if (config.instructions) {
+    try {
+      const help = await run(executable, ["exec", "--help"], {
+        timeout: 10_000,
+        env: environment,
+      });
+      systemPromptSupported = codexSupportsSystemPrompt(help.stdout);
+    } catch {
+      systemPromptSupported = false;
+    }
+  }
   try {
     await run(executable, ["login", "status"], { timeout: 10_000, env: environment });
   } catch {
@@ -281,7 +299,12 @@ export async function checkCodexReadiness(
   } catch {
     throw new Error("Codex process confinement is unavailable; macOS Seatbelt must be enabled");
   }
-  return "Codex CLI authentication and read-only process confinement are available";
+  return (
+    "Codex CLI authentication and read-only process confinement are available" +
+    (systemPromptSupported
+      ? ""
+      : "; this CLI lacks developer instruction support, so instructions will be prefixed to prompts")
+  );
 }
 
 export async function checkClaudeReadiness(
@@ -309,6 +332,15 @@ export async function checkClaudeReadiness(
   } catch {
     throw new Error("Claude Code CLI could not be executed; verify SLACK_CLAUDE_EXECUTABLE");
   }
+  let systemPromptSupported = true;
+  if (config.instructions) {
+    try {
+      const help = await run(executable, ["--help"], { timeout: 10_000, env: environment });
+      systemPromptSupported = claudeSupportsSystemPrompt(help.stdout);
+    } catch {
+      systemPromptSupported = false;
+    }
+  }
   try {
     await run(executable, ["auth", "status"], { timeout: 10_000, env: environment });
   } catch {
@@ -326,7 +358,12 @@ export async function checkClaudeReadiness(
   } catch {
     throw new Error("Claude process confinement is unavailable; macOS Seatbelt must be enabled");
   }
-  return `Claude Code authentication and ${config.agentMode} process confinement are available`;
+  return (
+    `Claude Code authentication and ${config.agentMode} process confinement are available` +
+    (systemPromptSupported
+      ? ""
+      : "; this CLI lacks --append-system-prompt, so instructions will be prefixed to prompts")
+  );
 }
 
 export async function checkPiReadiness(workspace: string): Promise<string> {

@@ -38,6 +38,7 @@ export interface ClaudeBackendOptions {
   now?: () => number;
   spawnProcess?: typeof spawn;
   platform?: NodeJS.Platform;
+  systemPromptSupported?: boolean;
 }
 
 export class ClaudeCapabilityError extends Error {}
@@ -109,6 +110,22 @@ function findClaudeExecutable(configured?: string): string {
   return realpathSync(executable);
 }
 
+export function claudeSupportsSystemPrompt(help: string): boolean {
+  return help.includes("--append-system-prompt");
+}
+
+function detectClaudeSystemPromptSupport(executable: string, home: string): boolean {
+  try {
+    const help = execFileSync(executable, ["--help"], {
+      encoding: "utf8",
+      env: claudeProcessEnvironment(home),
+    });
+    return claudeSupportsSystemPrompt(help);
+  } catch {
+    return false;
+  }
+}
+
 function claudeTools(mode: AgentMode): string[] {
   return mode === "read-write"
     ? ["Read", "Glob", "Grep", "Edit", "Write"]
@@ -146,6 +163,7 @@ export class ClaudeBackend implements AgentBackend {
   private readonly active = new Map<string, ActiveRun>();
   private readonly now: () => number;
   private readonly spawnProcess: typeof spawn;
+  private readonly systemPromptSupported: boolean;
   private disposed = false;
 
   constructor(
@@ -172,6 +190,9 @@ export class ClaudeBackend implements AgentBackend {
     this.spawnProcess = options.spawnProcess ?? spawn;
     mkdirSync(this.home, { recursive: true, mode: 0o700 });
     chmodSync(this.home, 0o700);
+    this.systemPromptSupported =
+      options.systemPromptSupported ??
+      (!options.instructions || detectClaudeSystemPromptSupport(this.executable, this.home));
     writeFileSync(this.settingsPath, claudeSettings(this.mode), { mode: 0o600 });
     writeFileSync(
       this.sandboxPath,
@@ -206,7 +227,7 @@ export class ClaudeBackend implements AgentBackend {
     const prompt = prepareClaudePrompt(
       request.prompt,
       request.attachments,
-      this.options.instructions,
+      this.systemPromptSupported ? undefined : this.options.instructions,
     );
     const generatedSessionId = existing?.sessionId ?? randomUUID();
     const claudeArguments = [
@@ -223,6 +244,9 @@ export class ClaudeBackend implements AgentBackend {
       this.settingsPath,
       "--tools",
       claudeTools(this.mode).join(","),
+      ...(this.options.instructions && this.systemPromptSupported
+        ? ["--append-system-prompt", this.options.instructions]
+        : []),
       ...(existing ? ["--resume", existing.sessionId] : ["--session-id", generatedSessionId]),
     ];
     mkdirSync(join(this.home, "tmp"), { recursive: true, mode: 0o700 });
