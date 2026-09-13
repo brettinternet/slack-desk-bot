@@ -23,7 +23,7 @@ export const BACKENDS: Record<AgentBackendKind, BackendDefinition> = {
   pi: {
     label: "Pi",
     storageSetting: "SLACK_AGENT_SESSION_DIR",
-    hasConversationStore: false,
+    hasConversationStore: true,
     create: (config) =>
       new PiBackend(config.workspace, {
         mode: config.agentMode,

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type AgentSession,
@@ -21,6 +21,7 @@ import type {
 } from "./agent.ts";
 import { prepareTextPrompt } from "./agent-prompt.ts";
 import type { AgentMode } from "./config.ts";
+import { ConversationStore } from "./conversation-store.ts";
 import { workspacePolicy } from "./workspace-policy.ts";
 
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
@@ -34,6 +35,14 @@ const SESSION_NAME_PREFIX = "slack-agent:";
 const DEFAULT_MAX_ACTIVE_SESSIONS = 32;
 const DEFAULT_SESSION_IDLE_MS = 60 * 60 * 1_000;
 const CLEANUP_INTERVAL_MS = 60_000;
+const STORE_FILE = "conversations.json";
+
+interface StoredPiConversation {
+  sessionId: string;
+  sessionFile: string;
+  lastActiveAt: number;
+  messageCount: number;
+}
 
 interface CachedSession {
   ready: Promise<AgentSession>;
@@ -52,6 +61,7 @@ export interface PiBackendOptions {
   sessionFactory?: (sessionManager: SessionManager) => Promise<AgentSession>;
   sessionLister?: () => Promise<SessionInfo[]>;
   freshSessionManagerFactory?: () => SessionManager;
+  conversationStorePath?: string;
 }
 
 export function preparePiPrompt(prompt: string, attachments: readonly AgentAttachment[] = []) {
@@ -141,6 +151,10 @@ export function createPiResources(workspace: string, options: PiResourceOptions 
 export class PiBackend implements AgentBackend {
   private readonly sessions = new Map<string, CachedSession>();
   private readonly sessionDir: string;
+  private readonly store: ConversationStore<StoredPiConversation>;
+  private readonly mappings = new Map<string, StoredPiConversation>();
+  private indexInitialized: boolean;
+  private scanPromise?: Promise<void>;
   private readonly maxActiveSessions: number;
   private readonly sessionIdleMs: number;
   private readonly now: () => number;
@@ -152,6 +166,24 @@ export class PiBackend implements AgentBackend {
     private readonly options: PiBackendOptions = {},
   ) {
     this.sessionDir = options.sessionDir ?? defaultSessionDirectory(workspace);
+    mkdirSync(this.sessionDir, { recursive: true, mode: 0o700 });
+    const storePath = options.conversationStorePath ?? join(this.sessionDir, STORE_FILE);
+    this.store = new ConversationStore<StoredPiConversation>(
+      storePath,
+      (mapping) =>
+        typeof mapping.sessionId === "string" &&
+        typeof mapping.sessionFile === "string" &&
+        Number.isFinite(mapping.lastActiveAt) &&
+        Number.isFinite(mapping.messageCount),
+      ({ movedTo, reason }) =>
+        console.warn(
+          `Pi conversation store was unreadable (${reason}); moved to ${movedTo} and starting empty`,
+        ),
+    );
+    for (const [conversationId, mapping] of this.store.load()) {
+      this.mappings.set(conversationId, mapping);
+    }
+    this.indexInitialized = existsSync(storePath);
     this.maxActiveSessions = options.maxActiveSessions ?? DEFAULT_MAX_ACTIVE_SESSIONS;
     this.sessionIdleMs = options.sessionIdleMs ?? DEFAULT_SESSION_IDLE_MS;
     this.now = options.now ?? Date.now;
@@ -164,20 +196,15 @@ export class PiBackend implements AgentBackend {
   }
 
   async listConversations(): Promise<ConversationSummary[]> {
+    await this.ensureIndex();
     const summaries = new Map<string, ConversationSummary>();
-    for (const session of await this.listSessionInfo()) {
-      if (!session.name?.startsWith(SESSION_NAME_PREFIX)) continue;
-      const conversationId = session.name.slice(SESSION_NAME_PREFIX.length);
-      if (conversationId.includes(":reset:")) continue;
-      const existing = summaries.get(conversationId);
-      if (!existing || existing.lastActiveAt < session.modified.getTime()) {
-        summaries.set(conversationId, {
-          conversationId,
-          sessionId: session.id,
-          state: "inactive",
-          lastActiveAt: session.modified.getTime(),
-        });
-      }
+    for (const [conversationId, mapping] of this.mappings) {
+      summaries.set(conversationId, {
+        conversationId,
+        sessionId: mapping.sessionId,
+        state: "inactive",
+        lastActiveAt: mapping.lastActiveAt,
+      });
     }
     for (const [conversationId, entry] of this.sessions) {
       const session = await entry.ready;
@@ -214,6 +241,7 @@ export class PiBackend implements AgentBackend {
       try {
         const input = preparePiPrompt(prompt, attachments);
         await session.prompt(input.text, { images: input.images });
+        this.indexSession(conversationId, session);
         if (signal?.aborted) throw signal.reason;
         return collector.text();
       } catch (error) {
@@ -271,7 +299,10 @@ export class PiBackend implements AgentBackend {
       ? SessionManager.open(persisted.path, this.sessionDir, this.workspace)
       : this.createPersistentManager();
     const session = await this.createSession(manager);
-    if (!persisted) session.setSessionName(this.sessionName(conversationId));
+    if (!persisted) {
+      session.setSessionName(this.sessionName(conversationId));
+      this.indexSession(conversationId, session);
+    }
     return session;
   }
 
@@ -307,10 +338,68 @@ export class PiBackend implements AgentBackend {
   }
 
   private async findSession(conversationId: string): Promise<SessionInfo | undefined> {
-    const name = this.sessionName(conversationId);
-    return (await this.listSessionInfo())
-      .filter((session) => session.name === name)
-      .sort((left, right) => right.modified.getTime() - left.modified.getTime())[0];
+    await this.ensureIndex();
+    const mapping = this.mappings.get(conversationId);
+    return mapping ? this.sessionInfo(conversationId, mapping) : undefined;
+  }
+
+  private async ensureIndex(): Promise<void> {
+    if (!this.indexInitialized) await this.scanAndIndexSessions();
+  }
+
+  private async scanAndIndexSessions(): Promise<void> {
+    if (this.scanPromise) return this.scanPromise;
+    this.scanPromise = this.listSessionInfo().then((sessions) => {
+      for (const session of sessions) {
+        if (!session.name?.startsWith(SESSION_NAME_PREFIX)) continue;
+        const conversationId = session.name.slice(SESSION_NAME_PREFIX.length);
+        if (conversationId.includes(":reset:")) continue;
+        const existing = this.mappings.get(conversationId);
+        if (!existing || existing.lastActiveAt < session.modified.getTime()) {
+          this.mappings.set(conversationId, {
+            sessionId: session.id,
+            sessionFile: session.path,
+            lastActiveAt: session.modified.getTime(),
+            messageCount: session.messageCount,
+          });
+        }
+      }
+      this.store.save(this.mappings);
+      this.indexInitialized = true;
+    });
+    try {
+      await this.scanPromise;
+    } finally {
+      this.scanPromise = undefined;
+    }
+  }
+
+  private indexSession(conversationId: string, session: AgentSession): void {
+    const stats = session.getSessionStats();
+    if (!stats.sessionFile) return;
+    this.mappings.set(conversationId, {
+      sessionId: stats.sessionId,
+      sessionFile: stats.sessionFile,
+      lastActiveAt: this.now(),
+      messageCount: stats.totalMessages,
+    });
+    this.store.save(this.mappings);
+    this.indexInitialized = true;
+  }
+
+  private sessionInfo(conversationId: string, mapping: StoredPiConversation): SessionInfo {
+    const modified = new Date(mapping.lastActiveAt);
+    return {
+      path: mapping.sessionFile,
+      id: mapping.sessionId,
+      cwd: this.workspace,
+      name: this.sessionName(conversationId),
+      created: modified,
+      modified,
+      messageCount: mapping.messageCount,
+      firstMessage: "",
+      allMessagesText: "",
+    };
   }
 
   private async status(conversationId: string): Promise<string> {
@@ -362,6 +451,7 @@ export class PiBackend implements AgentBackend {
       );
     }
 
+    this.indexSession(conversationId, fresh);
     const entry: CachedSession = {
       ready: Promise.resolve(fresh),
       session: fresh,

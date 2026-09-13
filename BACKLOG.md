@@ -15,16 +15,6 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 
 Findings from the September 2025 audit, grouped by theme and ordered by priority within each group.
 
-### Code design
-
-#### SDB-041: Index Pi sessions instead of scanning the session directory
-
-**Why:** `PiBackend.findSession` and `listConversations` call `SessionManager.list`, which reads every session file header in the directory. `hasConversation` runs on each unowned channel-thread message (with only a 60 s negative cache), and `!reset` archives grow the directory indefinitely, so lookup cost grows with history.
-
-**Scope:** Persist a conversation-to-session-file mapping alongside the session directory (reuse the store from SDB-037), consult it first, and fall back to a scan only when the mapping is missing so existing deployments migrate on first run.
-
-**Done:** Tests show lookup without a directory scan after the first run and successful migration from a directory with no mapping.
-
 ### Ergonomics and ease of use
 
 #### SDB-042: Tell users when a request is dropped at capacity
@@ -68,6 +58,12 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 **Done:** CI shows the Seatbelt tests executing on macOS.
 
 ## Completed items
+
+### SDB-041: Index Pi sessions instead of scanning the session directory
+
+**Resolution:** Pi now persists conversation-to-session metadata in the shared conversation store alongside its session directory. Existing deployments perform one session-directory scan to build the index, while subsequent positive and negative lookups, listings, status checks, restarts, and resets use or update the index directly.
+
+**Verified:** Tests cover migration from an unindexed session directory and prove that found, missing, and listing lookups do not scan again after restart. `task test` and `task check` pass.
 
 ### SDB-039: Pass an inbound message object through the Slack handler
 

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +17,20 @@ import {
   preparePiPrompt,
   toolsForMode,
 } from "../src/pi-backend.ts";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function testConversationStorePath(): string {
+  const directory = mkdtempSync(join(tmpdir(), "slack-pi-index-"));
+  temporaryDirectories.push(directory);
+  return join(directory, "conversations.json");
+}
 
 function event(value: object): AgentSessionEvent {
   return value as AgentSessionEvent;
@@ -279,6 +293,7 @@ describe("Pi session management", () => {
     let openedPath: string | undefined;
     const backend = new PiBackend(process.cwd(), {
       sessionDir: "/tmp",
+      conversationStorePath: testConversationStorePath(),
       sessionLister: async () => [sessionInfo()],
       sessionFactory: async (manager) => {
         openedPath = manager.getSessionFile();
@@ -297,6 +312,7 @@ describe("Pi session management", () => {
   test("lists safe conversation metadata and excludes reset archives", async () => {
     const backend = new PiBackend(process.cwd(), {
       sessionDir: "/tmp",
+      conversationStorePath: testConversationStorePath(),
       sessionLister: async () => [
         sessionInfo(),
         sessionInfo({
@@ -317,11 +333,42 @@ describe("Pi session management", () => {
     backend.dispose();
   });
 
+  test("migrates existing sessions once and uses the persisted index after restart", async () => {
+    const conversationStorePath = testConversationStorePath();
+    let scans = 0;
+    const migrating = new PiBackend(process.cwd(), {
+      sessionDir: "/tmp",
+      conversationStorePath,
+      sessionLister: async () => {
+        scans++;
+        return [sessionInfo()];
+      },
+    });
+
+    expect(await migrating.hasConversation("thread")).toBe(true);
+    migrating.dispose();
+
+    const restored = new PiBackend(process.cwd(), {
+      sessionDir: "/tmp",
+      conversationStorePath,
+      sessionLister: async () => {
+        scans++;
+        return [];
+      },
+    });
+    expect(await restored.hasConversation("thread")).toBe(true);
+    expect(await restored.hasConversation("missing")).toBe(false);
+    expect(await restored.listConversations()).toHaveLength(1);
+    expect(scans).toBe(1);
+    restored.dispose();
+  });
+
   test("bounds live sessions with LRU eviction", async () => {
     const controls: FakeSessionControls = { disposed: [], names: [] };
     const created: string[] = [];
     const backend = new PiBackend(process.cwd(), {
       sessionDir: "/tmp",
+      conversationStorePath: testConversationStorePath(),
       maxActiveSessions: 1,
       sessionLister: async () => [],
       freshSessionManagerFactory: () => SessionManager.inMemory(process.cwd()),
@@ -351,6 +398,7 @@ describe("Pi session management", () => {
     };
     const backend = new PiBackend(process.cwd(), {
       sessionDir: "/tmp",
+      conversationStorePath: testConversationStorePath(),
       sessionLister: async () => [],
       freshSessionManagerFactory: () => SessionManager.inMemory(process.cwd()),
       sessionFactory: async (manager) => fakeSession(manager, controls),
@@ -368,6 +416,7 @@ describe("Pi session management", () => {
     let creations = 0;
     const backend = new PiBackend(process.cwd(), {
       sessionDir: "/tmp",
+      conversationStorePath: testConversationStorePath(),
       sessionLister: async () => [sessionInfo()],
       sessionFactory: async (manager) => {
         creations++;
@@ -386,6 +435,7 @@ describe("Pi session management", () => {
     let creations = 0;
     const backend = new PiBackend(process.cwd(), {
       sessionDir: "/tmp",
+      conversationStorePath: testConversationStorePath(),
       sessionLister: async () => [],
       sessionFactory: async (manager) => {
         creations++;
@@ -413,6 +463,7 @@ describe("Pi session management", () => {
     };
     const backend = new PiBackend(process.cwd(), {
       sessionDir: "/tmp",
+      conversationStorePath: testConversationStorePath(),
       sessionLister: async () => [],
       freshSessionManagerFactory: () => SessionManager.inMemory(process.cwd()),
       sessionFactory: async (manager) => fakeSession(manager, controls),
