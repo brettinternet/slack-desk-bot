@@ -49,9 +49,11 @@ interface ApplicationDependencies {
   }) => LocalControlLifecycle;
 }
 
+export type ShutdownStage = "health_server" | "local_control" | "slack" | "backend";
+
 export interface RunningApplication {
   readonly healthPort: number;
-  stop(): Promise<void>;
+  stop(onStage?: (stage: ShutdownStage) => void): Promise<void>;
 }
 
 function defaultBackend(config: Config): RuntimeBackend {
@@ -125,13 +127,15 @@ export async function startApplication(
   const unsubscribeOperator = agent.onOperatorExchange((exchange) =>
     slack.publishOperatorExchange?.(exchange.conversationId, exchange.prompt, exchange.response),
   );
-  const disposeRuntime = async (): Promise<void> => {
+  const disposeRuntime = async (onStage?: (stage: ShutdownStage) => void): Promise<void> => {
     let cleanupError: unknown;
+    onStage?.("local_control");
     try {
       await local.stop();
     } catch (error) {
       cleanupError = error;
     }
+    onStage?.("slack");
     try {
       await slack.stop();
     } catch (error) {
@@ -139,6 +143,7 @@ export async function startApplication(
     }
     unsubscribeOperator();
     health.markBackendDisposed();
+    onStage?.("backend");
     agent.dispose();
     if (cleanupError) throw cleanupError;
   };
@@ -175,11 +180,12 @@ export async function startApplication(
   let stopped = false;
   return {
     healthPort,
-    async stop() {
+    async stop(onStage) {
       if (stopped) return;
       stopped = true;
+      onStage?.("health_server");
       healthServer.stop(true);
-      await disposeRuntime();
+      await disposeRuntime(onStage);
     },
   };
 }

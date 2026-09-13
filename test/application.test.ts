@@ -76,8 +76,10 @@ describe("application startup", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ status: "ready" });
 
+    const shutdownStages: string[] = [];
+    await application.stop((stage) => shutdownStages.push(stage));
     await application.stop();
-    await application.stop();
+    expect(shutdownStages).toEqual(["health_server", "local_control", "slack", "backend"]);
     expect(slackStop).toHaveBeenCalledTimes(1);
     expect(agent.dispose).toHaveBeenCalledTimes(1);
   });

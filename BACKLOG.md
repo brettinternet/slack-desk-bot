@@ -15,16 +15,6 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 
 Findings from the September 2025 audit, grouped by theme and ordered by priority within each group.
 
-### Robustness
-
-#### SDB-036: Bound shutdown time
-
-**Why:** `index.ts` waits on `application.stop()` with no deadline. A hung Slack disconnect or backend disposal prevents exit until launchd force-kills the process, delaying restarts.
-
-**Scope:** Race `stop()` against a fixed deadline (for example 15 s), log which stage timed out, and exit nonzero.
-
-**Done:** A test with a stalling dependency shows the process exits within the deadline.
-
 ### Code design
 
 #### SDB-037: Extract shared CLI backend plumbing
@@ -102,6 +92,12 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 **Done:** CI shows the Seatbelt tests executing on macOS.
 
 ## Completed items
+
+### SDB-036: Bound shutdown time
+
+**Resolution:** Shutdown now races application cleanup against a fixed 15-second deadline, tracks the active cleanup stage, and exits nonzero with a stage-specific error on timeout or failure. Duplicate signals cannot start overlapping shutdowns.
+
+**Verified:** Focused tests cover a stalling dependency, successful shutdown, and cleanup failure; application lifecycle tests and type checking pass.
 
 ### SDB-032: Single source of truth for sensitive path patterns
 
