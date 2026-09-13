@@ -15,17 +15,13 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 
 Findings from the September 2025 audit, grouped by theme and ordered by priority within each group.
 
-### Ergonomics and ease of use
-
-#### SDB-047: Run Seatbelt tests on a macOS CI runner
-
-**Why:** The Codex and Claude sandbox tests are `skipIf(process.platform !== "darwin")` and CI runs on Ubuntu, so the security boundary that SDB-026/027 required to be proven by a real process is never verified in CI.
-
-**Scope:** Add a `macos-latest` job that runs only the Seatbelt-tagged tests (they need `sandbox-exec` but not the Codex or Claude binaries for profile-only checks). Keep the Ubuntu job as the primary gate.
-
-**Done:** CI shows the Seatbelt tests executing on macOS.
-
 ## Completed items
+
+### SDB-047: Run Seatbelt tests on a macOS CI runner
+
+**Resolution:** Added a dedicated `macos-latest` CI job that installs the project dependencies and runs only `test/seatbelt.test.ts`, while the existing Ubuntu check remains the primary full-suite gate.
+
+**Verified:** Configuration tests assert that the macOS job runs the focused Seatbelt suite.
 
 ### SDB-045: Consistent structured operator logging
 

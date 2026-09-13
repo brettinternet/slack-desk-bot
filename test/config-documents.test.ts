@@ -8,6 +8,14 @@ async function yaml(path: string): Promise<Record<string, any>> {
 }
 
 describe("configuration documents", () => {
+  test("CI runs the Seatbelt suite on macOS", async () => {
+    const workflow = await yaml(".github/workflows/ci.yaml");
+    expect(workflow.jobs?.seatbelt).toMatchObject({
+      "runs-on": "macos-latest",
+      steps: expect.arrayContaining([{ run: "bun test test/seatbelt.test.ts" }]),
+    });
+  });
+
   test("Slack manifest enables the required Socket Mode events and scopes", async () => {
     const manifest = await yaml("slack-app-manifest.yaml");
     expect(manifest.settings?.socket_mode_enabled).toBe(true);
