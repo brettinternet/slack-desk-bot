@@ -460,9 +460,84 @@ describe("SlackAgent transport", () => {
     await Bun.sleep(0);
 
     expect(slack.files.info).toHaveBeenCalledTimes(1);
-    expect(slack.chat.postMessage.mock.calls.length).toBeLessThanOrEqual(8);
+    expect(slack.chat.postMessage).toHaveBeenCalledTimes(20);
+    expect(
+      slack.chat.postMessage.mock.calls.filter(
+        ([message]) =>
+          message.text === "The agent is at capacity. Try again after another request finishes.",
+      ),
+    ).toHaveLength(12);
     held.resolve("response");
     await Promise.all(handling);
+  });
+
+  test("replies once per conversation and reacts when Slack response capacity is full", async () => {
+    const held = deferred<string>();
+    const run = mock(async () => held.promise);
+    createAgent(run);
+    const slack = client();
+    const mention = app.handlers.get("app_mention")!;
+
+    const active = Array.from({ length: 8 }, (_, index) =>
+      mention({
+        body: { event_id: `E_ACTIVE_${index}` },
+        event: {
+          user: "U_ALLOWED",
+          text: "request",
+          channel: `C${index}`,
+          ts: String(index + 1),
+        },
+        client: slack,
+      }),
+    );
+    await Bun.sleep(0);
+
+    await mention({
+      body: { event_id: "E_CAPACITY_9" },
+      event: {
+        user: "U_ALLOWED",
+        text: "ninth",
+        channel: "C_OVERFLOW",
+        ts: "9",
+        thread_ts: "overflow-thread",
+      },
+      client: slack,
+    });
+    await mention({
+      body: { event_id: "E_CAPACITY_10" },
+      event: {
+        user: "U_ALLOWED",
+        text: "tenth",
+        channel: "C_OVERFLOW",
+        ts: "10",
+        thread_ts: "overflow-thread",
+      },
+      client: slack,
+    });
+
+    expect(run).toHaveBeenCalledTimes(8);
+    expect(
+      slack.chat.postMessage.mock.calls.filter(
+        ([message]) =>
+          message.text === "The agent is at capacity. Try again after another request finishes.",
+      ),
+    ).toHaveLength(1);
+    expect(slack.chat.postMessage).toHaveBeenCalledWith({
+      channel: "C_OVERFLOW",
+      thread_ts: "overflow-thread",
+      text: "The agent is at capacity. Try again after another request finishes.",
+    });
+    expect(
+      slack.reactions.add.mock.calls.filter(
+        ([reaction]) => reaction.name === "x" && reaction.channel === "C_OVERFLOW",
+      ),
+    ).toEqual([
+      [{ channel: "C_OVERFLOW", timestamp: "9", name: "x" }],
+      [{ channel: "C_OVERFLOW", timestamp: "10", name: "x" }],
+    ]);
+
+    held.resolve("response");
+    await Promise.all(active);
   });
 
   test("handles help and unknown commands without invoking the backend", async () => {

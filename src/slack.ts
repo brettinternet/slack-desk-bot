@@ -135,6 +135,7 @@ export class SlackAgent {
   private readonly app: App;
   private readonly events = new EventDeduplicator();
   private readonly denials = new EventDeduplicator();
+  private readonly capacityReplies = new EventDeduplicator();
   private readonly missingConversations = new Map<string, number>();
   private readonly ownedChannelThreads = new Set<string>();
   private readonly receiver: SocketModeReceiver;
@@ -401,6 +402,7 @@ export class SlackAgent {
         );
         this.responseCapacityWarningLogged = true;
       }
+      await this.reportCapacityDrop(client, message);
       return;
     }
 
@@ -413,6 +415,28 @@ export class SlackAgent {
         this.responseCapacityWarningLogged = false;
       }
     }
+  }
+
+  private async reportCapacityDrop(
+    client: App["client"],
+    message: InboundSlackMessage,
+  ): Promise<void> {
+    await this.bestEffortSlackOperation(
+      client.reactions.add({
+        channel: message.channel,
+        timestamp: message.messageTs,
+        name: "x",
+      }),
+    );
+    const id = conversationId(message.channel, message.threadTs);
+    if (!this.capacityReplies.accept([`capacity:${id}`])) return;
+    await this.bestEffortChatOperation(() =>
+      client.chat.postMessage({
+        channel: message.channel,
+        thread_ts: message.threadTs,
+        text: "The agent is at capacity. Try again after another request finishes.",
+      }),
+    );
   }
 
   private async respond(client: App["client"], message: InboundSlackMessage): Promise<void> {

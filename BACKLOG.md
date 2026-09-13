@@ -17,14 +17,6 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 ### Ergonomics and ease of use
 
-#### SDB-042: Tell users when a request is dropped at capacity
-
-**Why:** `respondWithinLimit` silently drops messages once eight Slack responses are active. The user sees no reaction or reply, which looks like the bot is down.
-
-**Scope:** Post one deduplicated capacity reply per conversation (reuse `EventDeduplicator`) and add an `x` reaction. Consider whether the limit should be derived from queue limits rather than a separate constant.
-
-**Done:** Test asserts a reply and reaction on the ninth concurrent request and no duplicate reply on the tenth.
-
 #### SDB-043: Pass instructions as system prompts for Codex and Claude
 
 **Why:** For CLI backends, `SLACK_AGENT_INSTRUCTIONS` is prepended to every user prompt. It is weaker than a system prompt, repeats in history on every turn, and inflates context and cost. Pi uses `appendSystemPrompt`.
@@ -58,6 +50,12 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 **Done:** CI shows the Seatbelt tests executing on macOS.
 
 ## Completed items
+
+### SDB-042: Tell users when a request is dropped at capacity
+
+**Resolution:** Requests dropped when eight Slack responses are active now receive an `x` reaction and a capacity reply. Capacity replies are deduplicated per conversation with `EventDeduplicator`, while each dropped message retains its own failure reaction.
+
+**Verified:** The Slack transport test holds eight concurrent responses, asserts the ninth request receives the reply and reaction, and proves the tenth request in the same conversation does not produce a duplicate reply. Focused Slack tests and type checking pass.
 
 ### SDB-041: Index Pi sessions instead of scanning the session directory
 
