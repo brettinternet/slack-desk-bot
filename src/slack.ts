@@ -91,6 +91,18 @@ function errorType(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
 
+function slackDestination(conversation: string): { channel: string; thread_ts?: string } {
+  if (conversation.startsWith("dm:")) return { channel: conversation.slice(3) };
+  const separator = conversation.indexOf(":");
+  if (separator < 1 || separator === conversation.length - 1) {
+    throw new Error("Invalid Slack conversation ID");
+  }
+  return {
+    channel: conversation.slice(0, separator),
+    thread_ts: conversation.slice(separator + 1),
+  };
+}
+
 export class SlackAgent {
   private readonly app: App;
   private readonly events = new EventDeduplicator();
@@ -207,9 +219,30 @@ export class SlackAgent {
   }
 
   async stop(): Promise<void> {
-    this.options.health?.markBackendDisposed();
-    this.options.agent.dispose();
     await this.app.stop();
+  }
+
+  async publishOperatorExchange(
+    conversation: string,
+    prompt: string,
+    response: string,
+  ): Promise<void> {
+    const destination = slackDestination(conversation);
+    await this.chatOperation(() =>
+      this.app.client.chat.postMessage({
+        ...destination,
+        text: `*Local operator:* ${prompt}`,
+      }),
+    );
+    const [first, ...rest] = splitSlackMessage(response);
+    for (const [index, text] of [first, ...rest].entries()) {
+      await this.chatOperation(() =>
+        this.app.client.chat.postMessage({
+          ...destination,
+          text: index === 0 ? `*Agent (operator request):* ${text}` : text,
+        }),
+      );
+    }
   }
 
   private async ownsChannelThread(id: string): Promise<boolean> {

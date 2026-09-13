@@ -11,7 +11,7 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 - Keep prompts, file contents, tokens, and credentials out of logs.
 - Add focused tests for every behavior change and keep `task check` and `task test` passing.
 
-## Active items
+## Completed items
 
 ### SDB-025: Add a local operator connection to live conversations
 
@@ -61,6 +61,8 @@ The attached client can watch new turns, submit an operator turn, show status, a
 - Integration tests cover list/attach, status, operator cancellation, reconnect after client disconnect, malformed and oversized frames, unauthorized socket access where testable, backpressure, startup collision, and clean shutdown.
 - A real smoke test demonstrates Slack and `slack-desk attach` alternating turns against one Pi SDK session without a second process opening its JSONL file.
 - README documents the terminal workflow, security boundary, recovery-only offline resume procedure, and why concurrent `pi --session` access is unsupported.
+
+## Active items
 
 ### SDB-026: Add a Codex CLI backend
 

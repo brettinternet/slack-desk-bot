@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
-import { access, readFile, stat } from "node:fs/promises";
-import { createServer } from "node:net";
+import { access, lstat, readFile, stat } from "node:fs/promises";
+import { createConnection, createServer } from "node:net";
 import { dirname, join } from "node:path";
 import {
   getAgentDir,
@@ -34,6 +34,7 @@ export interface DoctorResult {
 interface DoctorDependencies {
   slackAuth?: (token: string) => Promise<{ user_id?: string }>;
   portAvailable?: (port: number) => Promise<boolean>;
+  socketAvailable?: (path: string) => Promise<boolean>;
   piReady?: (workspace: string) => Promise<string>;
 }
 
@@ -80,6 +81,30 @@ async function checkSessionPath(config: Config): Promise<void> {
   const metadata = await stat(existing);
   if (!metadata.isDirectory()) throw new Error("an existing path component is not a directory");
   await access(existing, constants.W_OK | constants.X_OK);
+}
+
+export async function isLocalSocketAvailable(path: string): Promise<boolean> {
+  const parent = await nearestExistingPath(dirname(path));
+  await access(parent, constants.W_OK | constants.X_OK);
+  try {
+    const metadata = await lstat(path);
+    if (!metadata.isSocket() || metadata.uid !== process.getuid?.()) return false;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return true;
+    throw error;
+  }
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(path);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      socket.destroy();
+      if (error.code === "ECONNREFUSED" || error.code === "ENOENT") resolve(true);
+      else reject(error);
+    });
+  });
 }
 
 export async function isPortAvailable(port: number): Promise<boolean> {
@@ -256,6 +281,27 @@ export async function runDoctor(
     );
   } catch {
     diagnostic(diagnostics, "fail", "Health port", "Health port availability could not be checked");
+  }
+
+  try {
+    const available = await (dependencies.socketAvailable ?? isLocalSocketAvailable)(
+      config.socketPath,
+    );
+    diagnostic(
+      diagnostics,
+      available ? "pass" : "fail",
+      "Local control socket",
+      available
+        ? "Local control socket path is available"
+        : "Local control socket path is occupied or unsafe",
+    );
+  } catch {
+    diagnostic(
+      diagnostics,
+      "fail",
+      "Local control socket",
+      "Local control socket parent must be writable and owner-controlled",
+    );
   }
 
   if (config.slackBotToken.startsWith("xoxb-")) {

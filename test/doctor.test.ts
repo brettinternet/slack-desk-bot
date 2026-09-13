@@ -13,6 +13,7 @@ function dependencies() {
   return {
     slackAuth: mock(async () => ({ user_id: "U_BOT" })),
     portAvailable: mock(async () => true),
+    socketAvailable: mock(async () => true),
     piReady: mock(async () => "Pi model test/model is available"),
   };
 }
@@ -29,12 +30,14 @@ describe("runDoctor", () => {
         ["pass", "SLACK_AGENT_CWD access"],
         ["pass", "Session storage"],
         ["pass", "Health port"],
+        ["pass", "Local control socket"],
         ["pass", "Slack authentication"],
         ["pass", "Pi readiness"],
       ]),
     );
     expect(checks.slackAuth).toHaveBeenCalledWith("xoxb-test-secret");
     expect(checks.portAvailable).toHaveBeenCalledWith(3210);
+    expect(checks.socketAvailable).toHaveBeenCalledTimes(1);
     expect(checks.piReady).toHaveBeenCalledWith(process.cwd());
   });
 
@@ -54,6 +57,7 @@ describe("runDoctor", () => {
     expect(result.diagnostics.filter(({ status }) => status === "fail")).toHaveLength(4);
     expect(checks.slackAuth).not.toHaveBeenCalled();
     expect(checks.portAvailable).not.toHaveBeenCalled();
+    expect(checks.socketAvailable).not.toHaveBeenCalled();
     expect(checks.piReady).not.toHaveBeenCalled();
   });
 

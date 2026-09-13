@@ -1,5 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { QueueSnapshot } from "../src/agent.ts";
 import { startApplication } from "../src/application.ts";
 import type { Config } from "../src/config.ts";
@@ -37,6 +39,7 @@ function config(): Config {
     maxActiveSessions: 32,
     sessionIdleMs: 3_600_000,
     healthPort: 0,
+    socketPath: join(tmpdir(), `slack-desk-application-${process.pid}`, "control.sock"),
   };
 }
 
@@ -73,6 +76,7 @@ describe("application startup", () => {
     await application.stop();
     await application.stop();
     expect(slackStop).toHaveBeenCalledTimes(1);
+    expect(agent.dispose).toHaveBeenCalledTimes(1);
   });
 
   test("fails before creating runtime resources when Pi is not ready", async () => {

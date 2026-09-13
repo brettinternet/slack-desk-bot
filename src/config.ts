@@ -1,5 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import type { QueueLimits } from "./agent.ts";
 
 export type AgentMode = "read-only" | "read-write";
@@ -18,6 +19,7 @@ export interface Config {
   maxActiveSessions: number;
   sessionIdleMs: number;
   healthPort: number;
+  socketPath: string;
 }
 
 const DEFAULTS = {
@@ -60,6 +62,14 @@ function port(environment: NodeJS.ProcessEnv, name: string, fallback: number): n
   return value;
 }
 
+export function defaultSocketPath(environment: NodeJS.ProcessEnv = process.env): string {
+  const base =
+    process.platform === "darwin"
+      ? join(homedir(), "Library", "Application Support", "SlackDeskBot")
+      : environment.XDG_RUNTIME_DIR?.trim() || join(homedir(), ".local", "state", "slack-desk-bot");
+  return join(base, "control.sock");
+}
+
 function loadInstructions(environment: NodeJS.ProcessEnv): string | undefined {
   const inline = optional(environment, "SLACK_AGENT_INSTRUCTIONS");
   const file = optional(environment, "SLACK_AGENT_INSTRUCTIONS_FILE");
@@ -99,6 +109,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
   );
   const agentMode = environment.SLACK_AGENT_MODE?.trim() || "read-only";
   const configuredSessionDir = environment.SLACK_AGENT_SESSION_DIR?.trim();
+  const socketPath =
+    optional(environment, "SLACK_AGENT_SOCKET_PATH") ?? defaultSocketPath(environment);
 
   if (allowedUserIds.size === 0) {
     throw new Error("SLACK_ALLOWED_USER_IDS must contain at least one user ID");
@@ -119,6 +131,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
   }
   if (configuredSessionDir && !isAbsolute(configuredSessionDir)) {
     throw new Error("SLACK_AGENT_SESSION_DIR must be an absolute path");
+  }
+  if (!isAbsolute(socketPath)) {
+    throw new Error("SLACK_AGENT_SOCKET_PATH must be an absolute path");
   }
 
   const configuredMaxConcurrentConversations = positiveInteger(
@@ -179,5 +194,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
       DEFAULTS.sessionIdleMs,
     ),
     healthPort: port(environment, "SLACK_AGENT_HEALTH_PORT", DEFAULTS.healthPort),
+    socketPath: resolve(socketPath),
   };
 }

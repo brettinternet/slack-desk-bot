@@ -31,8 +31,18 @@ export interface AgentRunObserver {
   onToolUse(): void;
 }
 
+export type ConversationStateName = "queued" | "running" | "idle" | "inactive";
+
+export interface ConversationSummary {
+  conversationId: string;
+  sessionId: string;
+  state: ConversationStateName;
+  lastActiveAt: number;
+}
+
 export interface AgentBackend {
   hasConversation?(conversationId: string): Promise<boolean>;
+  listConversations?(): Promise<ConversationSummary[]>;
   run(request: AgentRequest, observer?: AgentRunObserver): Promise<string>;
   sessionCommand?(conversationId: string, command: SessionCommand): Promise<string>;
   dispose(): void;
@@ -187,6 +197,18 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
 
   hasConversation(conversationId: string): Promise<boolean> {
     return this.backend.hasConversation?.(conversationId) ?? Promise.resolve(false);
+  }
+
+  async listConversations(): Promise<ConversationSummary[]> {
+    const summaries = await this.backend.listConversations?.();
+    if (!summaries) throw new Error("Agent backend does not support conversation listing");
+    return summaries.map((summary) => {
+      const queue = this.conversations.get(summary.conversationId);
+      return {
+        ...summary,
+        state: queue?.active ? "running" : queue?.queue.length ? "queued" : summary.state,
+      };
+    });
   }
 
   run(

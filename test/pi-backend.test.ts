@@ -256,6 +256,29 @@ describe("Pi session management", () => {
     backend.dispose();
   });
 
+  test("lists safe conversation metadata and excludes reset archives", async () => {
+    const backend = new PiBackend(process.cwd(), {
+      sessionDir: "/tmp",
+      sessionLister: async () => [
+        sessionInfo(),
+        sessionInfo({
+          id: "archived-session-id",
+          name: "slack-agent:thread:reset:123",
+        }),
+      ],
+    });
+
+    expect(await backend.listConversations()).toEqual([
+      {
+        conversationId: "thread",
+        sessionId: "persisted-session-id",
+        state: "inactive",
+        lastActiveAt: new Date("2025-01-02T00:00:00Z").getTime(),
+      },
+    ]);
+    backend.dispose();
+  });
+
   test("bounds live sessions with LRU eviction", async () => {
     const controls: FakeSessionControls = { disposed: [], names: [] };
     const created: string[] = [];

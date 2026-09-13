@@ -16,6 +16,7 @@ import type {
   AgentBackend,
   AgentRequest,
   AgentRunObserver,
+  ConversationSummary,
   SessionCommand,
 } from "./agent.ts";
 import type { AgentMode } from "./config.ts";
@@ -160,6 +161,34 @@ export class PiBackend implements AgentBackend {
     return this.sessions.has(conversationId) || Boolean(await this.findSession(conversationId));
   }
 
+  async listConversations(): Promise<ConversationSummary[]> {
+    const summaries = new Map<string, ConversationSummary>();
+    for (const session of await this.listSessionInfo()) {
+      if (!session.name?.startsWith(SESSION_NAME_PREFIX)) continue;
+      const conversationId = session.name.slice(SESSION_NAME_PREFIX.length);
+      if (conversationId.includes(":reset:")) continue;
+      const existing = summaries.get(conversationId);
+      if (!existing || existing.lastActiveAt < session.modified.getTime()) {
+        summaries.set(conversationId, {
+          conversationId,
+          sessionId: session.id,
+          state: "inactive",
+          lastActiveAt: session.modified.getTime(),
+        });
+      }
+    }
+    for (const [conversationId, entry] of this.sessions) {
+      const session = await entry.ready;
+      summaries.set(conversationId, {
+        conversationId,
+        sessionId: session.sessionId,
+        state: entry.activeRuns > 0 ? "running" : "idle",
+        lastActiveAt: entry.lastUsedAt,
+      });
+    }
+    return [...summaries.values()].sort((left, right) => right.lastActiveAt - left.lastActiveAt);
+  }
+
   async run(
     { conversationId, prompt, attachments, signal }: AgentRequest,
     observer?: AgentRunObserver,
@@ -268,7 +297,7 @@ export class PiBackend implements AgentBackend {
     return session;
   }
 
-  private async listSessions(): Promise<SessionInfo[]> {
+  private async listSessionInfo(): Promise<SessionInfo[]> {
     return this.options.sessionLister
       ? this.options.sessionLister()
       : SessionManager.list(this.workspace, this.sessionDir);
@@ -276,7 +305,7 @@ export class PiBackend implements AgentBackend {
 
   private async findSession(conversationId: string): Promise<SessionInfo | undefined> {
     const name = this.sessionName(conversationId);
-    return (await this.listSessions())
+    return (await this.listSessionInfo())
       .filter((session) => session.name === name)
       .sort((left, right) => right.modified.getTime() - left.modified.getTime())[0];
   }

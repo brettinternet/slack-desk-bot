@@ -1,11 +1,19 @@
 import { type CancellableAgentBackend, type QueueSnapshot, QueuedAgentBackend } from "./agent.ts";
 import type { Config } from "./config.ts";
+import { ConversationCoordinator } from "./conversation-coordinator.ts";
 import { checkPiReadiness } from "./doctor.ts";
 import { HealthState, startHealthServer } from "./health.ts";
+import { LocalControlServer } from "./local-control.ts";
 import { PiBackend } from "./pi-backend.ts";
 import { SlackAgent } from "./slack.ts";
 
 interface SlackLifecycle {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  publishOperatorExchange?(conversationId: string, prompt: string, response: string): Promise<void>;
+}
+
+interface LocalControlLifecycle {
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -31,6 +39,10 @@ interface ApplicationDependencies {
     port: number,
     options: Parameters<typeof startHealthServer>[1],
   ) => HealthServer;
+  createLocalControl?: (options: {
+    socketPath: string;
+    coordinator: ConversationCoordinator;
+  }) => LocalControlLifecycle;
 }
 
 export interface RunningApplication {
@@ -68,7 +80,8 @@ export async function startApplication(
   await (dependencies.piReady ?? checkPiReadiness)(config.workspace);
 
   const health = new HealthState();
-  const agent = (dependencies.createBackend ?? defaultBackend)(config);
+  const backend = (dependencies.createBackend ?? defaultBackend)(config);
+  const agent = new ConversationCoordinator(backend);
   const slack = (
     dependencies.createSlackAgent ??
     (({ config, agent, health }) =>
@@ -81,6 +94,32 @@ export async function startApplication(
         health,
       }))
   )({ config, agent, health });
+  const local = (dependencies.createLocalControl ?? ((options) => new LocalControlServer(options)))(
+    {
+      socketPath: config.socketPath,
+      coordinator: agent,
+    },
+  );
+  const unsubscribeOperator = agent.onOperatorExchange((exchange) =>
+    slack.publishOperatorExchange?.(exchange.conversationId, exchange.prompt, exchange.response),
+  );
+  const disposeRuntime = async (): Promise<void> => {
+    let cleanupError: unknown;
+    try {
+      await local.stop();
+    } catch (error) {
+      cleanupError = error;
+    }
+    try {
+      await slack.stop();
+    } catch (error) {
+      cleanupError ??= error;
+    }
+    unsubscribeOperator();
+    health.markBackendDisposed();
+    agent.dispose();
+    if (cleanupError) throw cleanupError;
+  };
 
   let healthServer: HealthServer;
   try {
@@ -96,17 +135,18 @@ export async function startApplication(
   }
 
   try {
+    await local.start();
     await slack.start();
   } catch (error) {
     healthServer.stop(true);
-    agent.dispose();
+    await disposeRuntime().catch(() => {});
     throw error;
   }
 
   const healthPort = healthServer.port;
   if (healthPort === undefined) {
     healthServer.stop(true);
-    await slack.stop();
+    await disposeRuntime();
     throw new Error("Health server did not report its listening port");
   }
 
@@ -117,7 +157,7 @@ export async function startApplication(
       if (stopped) return;
       stopped = true;
       healthServer.stop(true);
-      await slack.stop();
+      await disposeRuntime();
     },
   };
 }

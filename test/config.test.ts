@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
 import { type AgentBackend, QueuedAgentBackend } from "../src/agent.ts";
-import { loadConfig, type AgentMode } from "../src/config.ts";
+import { defaultSocketPath, loadConfig, type AgentMode } from "../src/config.ts";
 
 const valid = {
   SLACK_BOT_TOKEN: "xoxb-test",
@@ -35,6 +35,7 @@ describe("loadConfig", () => {
       maxActiveSessions: 32,
       sessionIdleMs: 3_600_000,
       healthPort: 3_210,
+      socketPath: defaultSocketPath(valid),
     });
   });
 
@@ -51,6 +52,7 @@ describe("loadConfig", () => {
       SLACK_AGENT_MAX_CONCURRENT_CONVERSATIONS: "7",
       SLACK_AGENT_RATE_LIMIT_BURST: "4",
       SLACK_AGENT_HEALTH_PORT: "4321",
+      SLACK_AGENT_SOCKET_PATH: "/tmp/slack-desk-control.sock",
     });
 
     expect(config.allowedUserIds).toEqual(new Set(["U0123", "U0789"]));
@@ -61,6 +63,7 @@ describe("loadConfig", () => {
       maxActiveSessions: 8,
       sessionIdleMs: 300_000,
       healthPort: 4_321,
+      socketPath: "/tmp/slack-desk-control.sock",
       configuredMaxConcurrentConversations: 7,
       queueLimits: {
         timeoutMs: 100,
@@ -160,6 +163,9 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...valid, SLACK_AGENT_CWD: "." })).toThrow("absolute path");
     expect(() => loadConfig({ ...valid, SLACK_AGENT_SESSION_DIR: ".sessions" })).toThrow(
       "SLACK_AGENT_SESSION_DIR",
+    );
+    expect(() => loadConfig({ ...valid, SLACK_AGENT_SOCKET_PATH: "control.sock" })).toThrow(
+      "SLACK_AGENT_SOCKET_PATH",
     );
     expect(() => loadConfig({ ...valid, SLACK_AGENT_MAX_ACTIVE_SESSIONS: "0" })).toThrow(
       "positive integer",

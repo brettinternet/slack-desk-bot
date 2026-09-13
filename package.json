@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "slack-desk": "src/local-cli.ts"
+  },
   "scripts": {
     "check": "tsc --noEmit",
     "start": "bun src/index.ts",

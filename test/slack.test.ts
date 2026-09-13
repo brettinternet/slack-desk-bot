@@ -58,6 +58,9 @@ class MockSlackApp {
   readonly receiver: MockSocketModeReceiver;
   readonly client = {
     auth: { test: mock(async (): Promise<{ user_id?: string }> => ({ user_id: "U_BOT" })) },
+    chat: {
+      postMessage: mock(async () => ({ ts: "operator-message" })),
+    },
   };
   readonly start = mock(async () => {});
   readonly stop = mock(async () => {});
@@ -174,6 +177,28 @@ describe("SlackAgent transport", () => {
     app.client.auth.test.mockImplementationOnce(async () => ({}));
     await expect(incomplete.start()).rejects.toBeInstanceOf(SlackAuthenticationError);
     expect(app.start).not.toHaveBeenCalled();
+  });
+
+  test("publishes attributed local operator exchanges to the originating Slack thread", async () => {
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+    });
+
+    await agent.publishOperatorExchange("C123:100.1", "check the build", "It passes.");
+
+    expect(app.client.chat.postMessage).toHaveBeenNthCalledWith(1, {
+      channel: "C123",
+      thread_ts: "100.1",
+      text: "*Local operator:* check the build",
+    });
+    expect(app.client.chat.postMessage).toHaveBeenNthCalledWith(2, {
+      channel: "C123",
+      thread_ts: "100.1",
+      text: "*Agent (operator request):* It passes.",
+    });
   });
 
   test("tracks Socket Mode connection lifecycle transitions", () => {

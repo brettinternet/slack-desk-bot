@@ -51,6 +51,20 @@ Mention the bot in a channel to start a conversation. Further replies in that th
 
 Commands are case-insensitive exact messages. An unsupported `!`-prefixed message points back to `!help`.
 
+## Local terminal attachment
+
+SlackDeskBot remains the sole owner of mutable agent sessions. A local client joins the running service over an owner-only Unix socket instead of opening Pi's JSONL file:
+
+```sh
+bun link                 # once, from this checkout
+slack-desk sessions
+slack-desk attach f82ab719
+```
+
+Inside an attachment, enter prompts normally or use `/status`, `/cancel`, and `/quit`. Slack and local prompts use the same per-conversation queue. Local operator prompts and replies are posted back to the originating Slack thread with attribution; disconnecting the terminal does not stop the session or an active request.
+
+The socket defaults to `~/Library/Application Support/SlackDeskBot/control.sock` on macOS. Override it for both service and client with an absolute `SLACK_AGENT_SOCKET_PATH`. The versioned newline-delimited JSON control protocol is local-only, bounds frames, clients, pending requests, subscriptions, and buffered output, and exposes only session ID, canonical conversation ID, state, and last-active time during discovery.
+
 ### Custom instructions
 
 ```dotenv
@@ -140,6 +154,8 @@ tar -C "$HOME/Library/Application Support/SlackDeskBot" -czf "slackdeskbot-sessi
 
 Restore: stop, move existing sessions aside, extract the archive, verify permissions, run `task doctor`, then `task service:install`. Never merge two session directories or run two instances against one.
 
+Offline resume is recovery-only: stop SlackDeskBot first, then open a copied or exclusively owned session with `pi --session <file>`. Never run `pi --session` against a live SlackDeskBot session. Pi session JSONL has one owning process; concurrent access does not attach to in-memory state and can corrupt or fork history.
+
 ### Upgrade and rollback
 
 ```sh
@@ -161,6 +177,7 @@ Rollback: unload LaunchAgent, check out the previous tag/commit, rerun the insta
 2. `task doctor` passes.
 3. `task service:install`, then `hum status` reports ready and `/readyz` returns 200.
 4. Send `!help` in a DM, then send a prompt and confirm a reply.
+5. Run `slack-desk sessions`, attach to that session, and alternate one Slack turn and one terminal turn. Confirm both replies appear in the same Pi session and Slack thread without another process opening its JSONL file.
 
 ## Security
 
@@ -172,7 +189,7 @@ Rollback: unload LaunchAgent, check out the previous tag/commit, rerun the insta
 
 **Tool paths** are confined to `SLACK_AGENT_CWD`. The target repository is treated as an untrusted Pi project: its `.pi/` directory cannot inject extensions, settings, or system prompts. User-level Pi extensions (`~/.pi/agent`) run as trusted code outside this policy.
 
-**Sessions** are JSONL files designed for one process. Do not share across instances without external locking.
+**Sessions** are JSONL files designed for one process. The service is their sole mutable owner. The local socket is owner-only, has no TCP fallback, and does not expose session file paths, prompts, tokens, user names, or file contents in discovery or logs. Do not share session files across instances without external locking.
 
 ## Adding another backend
 
