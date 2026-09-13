@@ -147,11 +147,21 @@ export function filterSensitiveToolOutput(
   };
 }
 
-export function workspacePolicy(workspace: string): InlineExtension {
+export function workspacePolicy(
+  workspace: string,
+  allowedTools?: readonly string[],
+): InlineExtension {
+  const allowed = allowedTools ? new Set(allowedTools) : undefined;
   return {
     name: "slack-workspace-policy",
     factory: (pi) => {
       pi.on("tool_call", (event) => {
+        if (allowed && !allowed.has(event.toolName)) {
+          return {
+            block: true,
+            reason: `Tool is not allowed for the Slack service: ${event.toolName}`,
+          };
+        }
         if (!PATH_TOOLS.has(event.toolName)) return;
         const input = event.input as { path?: unknown };
         const path = typeof input.path === "string" ? input.path : ".";

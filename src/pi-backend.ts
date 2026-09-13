@@ -23,6 +23,8 @@ import type { AgentMode } from "./config.ts";
 import { workspacePolicy } from "./workspace-policy.ts";
 
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
+export const PI_RESOURCE_POLICY_DESCRIPTION =
+  "User extensions, skills, and prompt templates are disabled; only mode-approved tools are allowed";
 
 export function toolsForMode(mode: AgentMode): string[] {
   return mode === "read-write" ? [...READ_ONLY_TOOLS, "edit", "write"] : READ_ONLY_TOOLS;
@@ -118,22 +120,31 @@ export function defaultSessionDirectory(workspace: string): string {
 }
 
 /**
- * Loads Pi resources for the workspace with the project marked untrusted, so `.pi/` settings,
- * extensions, skills, prompts, and `SYSTEM.md` inside `SLACK_AGENT_CWD` never run as service code.
- * User-level (`~/.pi/agent`) resources still load. The returned settings manager must be passed to
- * `createAgentSession` so the session honors the same trust state.
+ * Loads Pi settings and credentials from the configured agent directory while disabling discovered
+ * extensions, skills, and prompt templates. The workspace is also untrusted, so project resources
+ * never run as service code. The inline policy remains enabled to enforce the service tool allowlist.
  */
-export function createPiResources(workspace: string, instructions?: string) {
-  const agentDir = getAgentDir();
+interface PiResourceOptions {
+  instructions?: string;
+  mode?: AgentMode;
+  agentDir?: string;
+}
+
+export function createPiResources(workspace: string, options: PiResourceOptions = {}) {
+  const agentDir = options.agentDir ?? getAgentDir();
+  const allowedTools = toolsForMode(options.mode ?? "read-only");
   const settingsManager = SettingsManager.create(workspace, agentDir, { projectTrusted: false });
   const resourceLoader = new DefaultResourceLoader({
     cwd: workspace,
     agentDir,
     settingsManager,
-    appendSystemPrompt: instructions ? [instructions] : [],
-    extensionFactories: [workspacePolicy(workspace)],
+    appendSystemPrompt: options.instructions ? [options.instructions] : [],
+    extensionFactories: [workspacePolicy(workspace, allowedTools)],
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
   });
-  return { settingsManager, resourceLoader };
+  return { agentDir, settingsManager, resourceLoader };
 }
 
 export class PiBackend implements AgentBackend {
@@ -282,17 +293,18 @@ export class PiBackend implements AgentBackend {
   private async createSession(sessionManager: SessionManager): Promise<AgentSession> {
     if (this.options.sessionFactory) return this.options.sessionFactory(sessionManager);
 
-    const { settingsManager, resourceLoader } = createPiResources(
-      this.workspace,
-      this.options.instructions,
-    );
+    const mode = this.options.mode ?? "read-only";
+    const { settingsManager, resourceLoader } = createPiResources(this.workspace, {
+      instructions: this.options.instructions,
+      mode,
+    });
     await resourceLoader.reload();
     const { session } = await createAgentSession({
       cwd: this.workspace,
       resourceLoader,
       settingsManager,
       sessionManager,
-      tools: toolsForMode(this.options.mode ?? "read-only"),
+      tools: toolsForMode(mode),
     });
     return session;
   }

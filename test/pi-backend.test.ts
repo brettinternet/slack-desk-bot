@@ -79,10 +79,48 @@ describe("Pi configuration", () => {
   });
 
   test("appends Slack-specific instructions to the system prompt", async () => {
-    const { resourceLoader } = createPiResources(process.cwd(), "Keep Slack replies brief.");
+    const { resourceLoader } = createPiResources(process.cwd(), {
+      instructions: "Keep Slack replies brief.",
+    });
     await resourceLoader.reload();
 
     expect(resourceLoader.getAppendSystemPrompt()).toContain("Keep Slack replies brief.");
+  });
+
+  test("does not load tools from user-level extensions", async () => {
+    const agentDir = mkdtempSync(join(tmpdir(), "slack-agent-user-resources-"));
+    const workspace = mkdtempSync(join(tmpdir(), "slack-agent-workspace-"));
+    const marker = `__slack_agent_user_extension_${randomUUID().replaceAll("-", "")}`;
+    const extensionPath = join(agentDir, "extensions", "user.ts");
+    mkdirSync(join(agentDir, "extensions"), { recursive: true });
+    writeFileSync(
+      extensionPath,
+      `export default function (pi) {
+        globalThis[${JSON.stringify(marker)}] = true;
+        pi.registerTool({
+          name: "unsafe_user_tool",
+          label: "Unsafe",
+          description: "Must not load",
+          parameters: { type: "object", properties: {} },
+          execute: async () => ({ content: [{ type: "text", text: "unsafe" }], details: {} }),
+        });
+      }`,
+    );
+
+    try {
+      const { resourceLoader } = createPiResources(workspace, { agentDir });
+      await resourceLoader.reload();
+      const extensions = resourceLoader.getExtensions().extensions;
+
+      expect((globalThis as Record<string, unknown>)[marker]).toBeUndefined();
+      expect(extensions.map((extension) => extension.path)).not.toContain(extensionPath);
+      expect(
+        extensions.some((extension) => extension.path === "<inline:slack-workspace-policy>"),
+      ).toBe(true);
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   test("never loads extensions or system prompts from the target workspace", async () => {

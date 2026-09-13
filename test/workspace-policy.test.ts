@@ -7,11 +7,33 @@ import {
   filterSensitiveToolOutput,
   isPathInWorkspace,
   isSensitiveWorkspacePath,
+  workspacePolicy,
 } from "../src/workspace-policy.ts";
 
 const workspace = process.cwd();
 
 describe("workspace policy", () => {
+  test("blocks every tool outside the service allowlist", async () => {
+    let toolCall: ((event: { toolName: string; input: unknown }) => unknown) | undefined;
+    const policy = workspacePolicy(workspace, ["read"]);
+    if (typeof policy === "function") throw new Error("Expected a named policy extension");
+    await policy.factory({
+      on: (eventName: string, handler: typeof toolCall) => {
+        if (eventName === "tool_call") toolCall = handler;
+      },
+    } as never);
+
+    expect(toolCall?.({ toolName: "read", input: { path: "README.md" } })).toBeUndefined();
+    expect(toolCall?.({ toolName: "write", input: { path: "output.txt" } })).toEqual({
+      block: true,
+      reason: "Tool is not allowed for the Slack service: write",
+    });
+    expect(toolCall?.({ toolName: "extension_shell", input: {} })).toEqual({
+      block: true,
+      reason: "Tool is not allowed for the Slack service: extension_shell",
+    });
+  });
+
   test("allows existing and prospective paths inside the workspace", () => {
     expect(isPathInWorkspace("package.json", workspace)).toBe(true);
     expect(isPathInWorkspace("future/directory/file.ts", workspace)).toBe(true);

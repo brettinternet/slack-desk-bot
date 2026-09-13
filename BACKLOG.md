@@ -17,14 +17,6 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 ### Security
 
-#### SDB-030: Isolate the Pi service from desktop user-level extensions
-
-**Why:** `createPiResources` loads `~/.pi/agent` resources with `projectTrusted: false`, but user-level extensions, skills, prompt templates, and MCP configuration from the operator's desktop Pi still load into the Slack service as trusted code. An extension that registers a shell or network tool bypasses `toolsForMode`, because `workspacePolicy` only guards the six built-in path tools. The trust boundary therefore depends on whatever the operator has installed for interactive use.
-
-**Scope:** Give the service its own agent directory (for example `~/Library/Application Support/SlackDeskBot/pi`) or pass `noExtensions`, `noSkills`, and `noPromptTemplates` to `DefaultResourceLoader` unless an explicit allowlist is configured. Credentials and `models.json` must still be readable; document how to share or copy `auth.json` if a dedicated agent directory is used. Block any tool not in `toolsForMode` at the `tool_call` hook as a second line of defense.
-
-**Done:** A test loads a fake user-level extension that registers a tool and shows it is not available to the Slack session; doctor reports which agent directory and extension policy are in effect.
-
 #### SDB-031: Warn when the workspace or environment exposes service credentials
 
 **Why:** Nothing stops `SLACK_AGENT_CWD` from being `$HOME` or a parent of `~/.pi/agent`, `~/.config/slack-desk-bot/service.env`, the Codex/Claude homes, or `~/Library/Keychains`. The path policy and both Seatbelt profiles exempt the workspace, so the agent could read `auth.json` or `service.env`. Separately, `checkCodexReadiness` spawns `codex login status` with `{ ...process.env }`, passing `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` to a third-party CLI, unlike the runtime spawn which passes a minimal environment.
@@ -128,6 +120,14 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 **Done:** CI shows the Seatbelt tests executing on macOS.
 
 ## Completed items
+
+### SDB-030: Isolate the Pi service from desktop user-level extensions
+
+**Why:** Pi sessions previously shared trusted user-level extensions, skills, and prompt templates with desktop Pi, allowing a registered custom tool to bypass the built-in tool selection.
+
+**Resolution:** Pi continues to read settings, models, and credentials from the normal agent directory, but `DefaultResourceLoader` now disables discovered extensions, skills, and prompt templates. The inline workspace policy enforces the mode-specific tool allowlist at every `tool_call`, including custom tools. Doctor reports the effective Pi agent directory and resource policy, and README documents that desktop authentication remains shared without loading desktop executable resources.
+
+**Verified:** A fake user-level extension that registers a tool is not loaded while the inline policy remains active; focused tests cover unknown-tool blocking and doctor output. `task test` and `task check` pass.
 
 ### SDB-048: Fix external CLI backend sandbox, auth, and robustness defects
 

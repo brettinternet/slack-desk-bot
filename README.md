@@ -40,7 +40,9 @@ hum up
 
 ### Agent backend
 
-`SLACK_AGENT_BACKEND=pi` is the default. To use Codex CLI instead:
+`SLACK_AGENT_BACKEND=pi` is the default. It reads model settings, `models.json`, and `auth.json` from the Pi agent directory reported by `task doctor`, but does not load that directory's extensions, skills, or prompt templates. Slack sessions allow only the tools selected by `SLACK_AGENT_MODE`; the same allowlist is enforced again at tool-call time. Authenticate with desktop Pi as usual—no credential copy is required.
+
+To use Codex CLI instead:
 
 ```sh
 mise use -g codex@latest

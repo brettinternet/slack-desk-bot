@@ -21,7 +21,7 @@ import { codexSandboxProfile, defaultCodexHome } from "./codex-backend.ts";
 import { claudeSandboxProfile, defaultClaudeHome } from "./claude-backend.ts";
 import { loadConfig, type Config } from "./config.ts";
 import { isConversationStoreCorrupt } from "./conversation-store.ts";
-import { defaultSessionDirectory } from "./pi-backend.ts";
+import { defaultSessionDirectory, PI_RESOURCE_POLICY_DESCRIPTION } from "./pi-backend.ts";
 
 export type DoctorStatus = "pass" | "fail" | "warning";
 
@@ -478,6 +478,15 @@ export async function runDoctor(
         "Slack auth.test failed; verify SLACK_BOT_TOKEN and reinstall the app if needed",
       );
     }
+  }
+
+  if (config.agentBackend === "pi") {
+    diagnostic(
+      diagnostics,
+      "pass",
+      "Pi resources",
+      `Agent directory: ${getAgentDir()}. ${PI_RESOURCE_POLICY_DESCRIPTION}`,
+    );
   }
 
   const readinessCheck =

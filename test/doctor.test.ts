@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { runDoctor } from "../src/doctor.ts";
 
 const valid = {
@@ -37,6 +38,7 @@ describe("runDoctor", () => {
         ["pass", "Health port"],
         ["pass", "Local control socket"],
         ["pass", "Slack authentication"],
+        ["pass", "Pi resources"],
         ["pass", "Pi readiness"],
       ]),
     );
@@ -44,6 +46,11 @@ describe("runDoctor", () => {
     expect(checks.portAvailable).toHaveBeenCalledWith(3210);
     expect(checks.socketAvailable).toHaveBeenCalledTimes(1);
     expect(checks.piReady).toHaveBeenCalledWith(process.cwd());
+    expect(result.diagnostics).toContainEqual({
+      status: "pass",
+      check: "Pi resources",
+      message: `Agent directory: ${getAgentDir()}. User extensions, skills, and prompt templates are disabled; only mode-approved tools are allowed`,
+    });
   });
 
   test("runs only Codex readiness for the Codex backend", async () => {
