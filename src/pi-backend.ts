@@ -19,6 +19,7 @@ import type {
   ConversationSummary,
   SessionCommand,
 } from "./agent.ts";
+import { prepareTextPrompt } from "./agent-prompt.ts";
 import type { AgentMode } from "./config.ts";
 import { workspacePolicy } from "./workspace-policy.ts";
 
@@ -54,15 +55,6 @@ export interface PiBackendOptions {
 }
 
 export function preparePiPrompt(prompt: string, attachments: readonly AgentAttachment[] = []) {
-  const textFiles = attachments
-    .filter((attachment) => attachment.kind === "text")
-    .map((attachment) =>
-      [
-        `<slack-file name=${JSON.stringify(attachment.name)} media-type=${JSON.stringify(attachment.mediaType)}>`,
-        attachment.text,
-        "</slack-file>",
-      ].join("\n"),
-    );
   const images = attachments
     .filter((attachment) => attachment.kind === "image")
     .map((attachment) => ({
@@ -70,9 +62,8 @@ export function preparePiPrompt(prompt: string, attachments: readonly AgentAttac
       data: attachment.data,
       mimeType: attachment.mediaType,
     }));
-  const text = [prompt.trim(), ...textFiles].filter(Boolean).join("\n\n");
   return {
-    text: text || "Review the attached Slack file(s).",
+    text: prepareTextPrompt([prompt], attachments, "Review the attached Slack file(s)."),
     images,
   };
 }

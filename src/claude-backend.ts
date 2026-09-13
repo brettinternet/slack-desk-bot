@@ -3,8 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { createInterface } from "node:readline";
-import { writePromptAndCapture } from "./cli-process.ts";
+import { prepareTextPrompt } from "./agent-prompt.ts";
+import { runSandboxedJsonl } from "./cli-process.ts";
 import { ConversationStore } from "./conversation-store.ts";
 import { seatbeltProfile } from "./seatbelt.ts";
 import { claudeSensitiveReadPermissions } from "./sensitive-paths.ts";
@@ -83,19 +83,7 @@ export function prepareClaudePrompt(
       "The Claude backend does not support image attachments without writing them to disk.",
     );
   }
-  const files = attachments
-    .filter((attachment) => attachment.kind === "text")
-    .map((attachment) =>
-      [
-        `<slack-file name=${JSON.stringify(attachment.name)} media-type=${JSON.stringify(attachment.mediaType)}>`,
-        attachment.text,
-        "</slack-file>",
-      ].join("\n"),
-    );
-  return (
-    [instructions?.trim(), prompt.trim(), ...files].filter(Boolean).join("\n\n") ||
-    "Respond to the Slack message."
-  );
+  return prepareTextPrompt([instructions, prompt], attachments, "Respond to the Slack message.");
 }
 
 export function defaultClaudeHome(workspace: string): string {
@@ -238,82 +226,61 @@ export class ClaudeBackend implements AgentBackend {
       ...(existing ? ["--resume", existing.sessionId] : ["--session-id", generatedSessionId]),
     ];
     mkdirSync(join(this.home, "tmp"), { recursive: true, mode: 0o700 });
-    const child = this.spawnProcess(
-      "/usr/bin/sandbox-exec",
-      ["-f", this.sandboxPath, this.executable, ...claudeArguments],
-      {
-        cwd: this.workspace,
-        env: claudeProcessEnvironment(this.home),
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    ) as ChildProcessWithoutNullStreams;
-    this.active.set(request.conversationId, { process: child });
-    const streams = writePromptAndCapture(child, prompt);
-    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
-    const abort = () => {
-      child.kill("SIGTERM");
-      forceKillTimer ??= setTimeout(() => child.kill("SIGKILL"), 5_000);
-      forceKillTimer.unref();
-    };
-    request.signal?.addEventListener("abort", abort, { once: true });
     let sessionId: string | undefined = existing?.sessionId;
     let finalResponse = "";
     let providerError = false;
-    let parseError: Error | undefined;
-    const lines = createInterface({ input: child.stdout });
-    lines.on("line", (line) => {
-      if (!line.trim() || parseError) return;
-      try {
-        const event = JSON.parse(line) as Record<string, unknown>;
-        if (typeof event.session_id === "string") sessionId = event.session_id;
-        if (event.type === "assistant") {
-          const message = event.message as Record<string, unknown> | undefined;
-          const content = Array.isArray(message?.content) ? message.content : [];
-          for (const block of content) {
-            if (
-              block &&
-              typeof block === "object" &&
-              (block as Record<string, unknown>).type === "tool_use"
-            )
-              observer?.onToolUse();
-            if (
-              block &&
-              typeof block === "object" &&
-              (block as Record<string, unknown>).type === "text" &&
-              typeof (block as Record<string, unknown>).text === "string"
-            )
-              finalResponse = String((block as Record<string, unknown>).text).trim();
-          }
-        } else if (event.type === "result") {
-          if (
-            event.is_error === true ||
-            (typeof event.subtype === "string" && event.subtype !== "success")
-          )
-            providerError = true;
-          if (typeof event.result === "string" && !providerError)
-            finalResponse = event.result.trim();
-        }
-      } catch {
-        parseError = new ClaudeOutputError("Claude Code emitted malformed JSONL output");
-        child.kill("SIGTERM");
-      }
-    });
     try {
-      const exit = await new Promise<{ code: number | null }>((resolveExit, reject) => {
-        child.once("error", reject);
-        child.once("close", (code) => resolveExit({ code }));
+      const exit = await runSandboxedJsonl({
+        profile: this.sandboxPath,
+        executable: this.executable,
+        arguments: claudeArguments,
+        cwd: this.workspace,
+        env: claudeProcessEnvironment(this.home),
+        prompt,
+        signal: request.signal,
+        spawnProcess: this.spawnProcess,
+        onSpawn: (process) => this.active.set(request.conversationId, { process }),
+        malformedOutputError: () =>
+          new ClaudeOutputError("Claude Code emitted malformed JSONL output"),
+        onEvent: (event) => {
+          if (typeof event.session_id === "string") sessionId = event.session_id;
+          if (event.type === "assistant") {
+            const message = event.message as Record<string, unknown> | undefined;
+            const content = Array.isArray(message?.content) ? message.content : [];
+            for (const block of content) {
+              if (
+                block &&
+                typeof block === "object" &&
+                (block as Record<string, unknown>).type === "tool_use"
+              )
+                observer?.onToolUse();
+              if (
+                block &&
+                typeof block === "object" &&
+                (block as Record<string, unknown>).type === "text" &&
+                typeof (block as Record<string, unknown>).text === "string"
+              )
+                finalResponse = String((block as Record<string, unknown>).text).trim();
+            }
+          } else if (event.type === "result") {
+            if (
+              event.is_error === true ||
+              (typeof event.subtype === "string" && event.subtype !== "success")
+            )
+              providerError = true;
+            if (typeof event.result === "string" && !providerError)
+              finalResponse = event.result.trim();
+          }
+        },
       });
-      if (request.signal?.aborted) throw request.signal.reason;
-      if (parseError) throw parseError;
-      const stdinFailure = streams.failure();
-      if (stdinFailure)
+      if (exit.stdinFailure)
         throw new ClaudeOutputError(
-          `Claude Code did not accept the prompt: ${stdinFailure.message}`,
+          `Claude Code did not accept the prompt: ${exit.stdinFailure.message}`,
         );
       if (exit.code !== 0)
         throw new ClaudeOutputError(
           `Claude Code exited unsuccessfully${exit.code == null ? "" : ` (code ${exit.code})`}` +
-            (streams.stderrTail() ? `: ${streams.stderrTail()}` : ""),
+            (exit.stderrTail ? `: ${exit.stderrTail}` : ""),
         );
       if (providerError) throw new ClaudeProviderError();
       if (!sessionId) throw new ClaudeOutputError("Claude Code did not report a session ID");
@@ -323,9 +290,6 @@ export class ClaudeBackend implements AgentBackend {
       this.saveMappings();
       return finalResponse;
     } finally {
-      request.signal?.removeEventListener("abort", abort);
-      if (forceKillTimer) clearTimeout(forceKillTimer);
-      lines.close();
       this.active.delete(request.conversationId);
     }
   }

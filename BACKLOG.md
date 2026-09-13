@@ -17,14 +17,6 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 ### Code design
 
-#### SDB-037: Extract shared CLI backend plumbing
-
-**Why:** `codex-backend.ts` and `claude-backend.ts` still duplicate the sandboxed spawn with SIGTERM-then-SIGKILL cancellation, JSONL line handling with parse-error abort, executable discovery, prompt preparation with `<slack-file>` inlining, and the `reset`/`status` text. SDB-048 already extracted the Seatbelt profile (`seatbelt.ts`), the mapping store (`conversation-store.ts`), and stdin/stderr handling (`cli-process.ts`), so roughly 120 lines remain copied.
-
-**Scope:** Introduce a `runSandboxedJsonl` helper that returns the exit result and streams parsed events to a per-backend callback. Keep event interpretation, arguments, and profile construction in each adapter. Move `<slack-file>` inlining to one function shared with `preparePiPrompt`. This resolves the "premature framework" caveat from SDB-027 now that two consumers exist.
-
-**Done:** Adapter files shrink to argument construction and event translation; existing tests pass unchanged.
-
 #### SDB-038: Replace backend-kind ternaries with a backend table
 
 **Why:** `application.ts` and `doctor.ts` branch on `config.agentBackend` in five places with nested ternaries (factory, readiness check, session path, storage label, readiness label). Adding a backend requires editing all five.
@@ -92,6 +84,12 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 **Done:** CI shows the Seatbelt tests executing on macOS.
 
 ## Completed items
+
+### SDB-037: Extract shared CLI backend plumbing
+
+**Resolution:** Added a shared Seatbelt JSONL runner that owns process spawning, prompt I/O, JSONL parsing, cancellation escalation, and cleanup while leaving arguments and event translation in each adapter. Text attachment formatting is shared by Pi, Codex, and Claude without changing their image handling or fallback prompts.
+
+**Verified:** Existing Codex, Claude, and Pi backend tests pass unchanged, along with the full test suite and type and formatting checks.
 
 ### SDB-036: Bound shutdown time
 

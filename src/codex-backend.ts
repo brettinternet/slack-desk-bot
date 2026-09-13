@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { createInterface } from "node:readline";
-import { writePromptAndCapture } from "./cli-process.ts";
+import { prepareTextPrompt } from "./agent-prompt.ts";
+import { runSandboxedJsonl } from "./cli-process.ts";
 import { ConversationStore } from "./conversation-store.ts";
 import { seatbeltProfile } from "./seatbelt.ts";
 import type {
@@ -64,19 +64,7 @@ export function prepareCodexPrompt(
       "The Codex backend does not support image attachments without writing them to disk.",
     );
   }
-  const files = attachments
-    .filter((attachment) => attachment.kind === "text")
-    .map((attachment) =>
-      [
-        `<slack-file name=${JSON.stringify(attachment.name)} media-type=${JSON.stringify(attachment.mediaType)}>`,
-        attachment.text,
-        "</slack-file>",
-      ].join("\n"),
-    );
-  return (
-    [instructions?.trim(), prompt.trim(), ...files].filter(Boolean).join("\n\n") ||
-    "Respond to the Slack message."
-  );
+  return prepareTextPrompt([instructions, prompt], attachments, "Respond to the Slack message.");
 }
 
 export function defaultCodexHome(workspace: string): string {
@@ -190,79 +178,56 @@ export class CodexBackend implements AgentBackend {
     const codexArguments = existing
       ? ["exec", "resume", ...common, "-c", 'sandbox_mode="read-only"', existing.threadId, "-"]
       : ["exec", ...common, "--sandbox", "read-only", "-"];
-    const processArguments = ["-f", this.sandboxPath, this.executable, ...codexArguments];
     mkdirSync(join(this.home, "tmp"), { recursive: true, mode: 0o700 });
-    const child = this.spawnProcess("/usr/bin/sandbox-exec", processArguments, {
-      cwd: this.workspace,
-      env: codexProcessEnvironment(this.home),
-      stdio: ["pipe", "pipe", "pipe"],
-    }) as ChildProcessWithoutNullStreams;
-    this.active.set(request.conversationId, { process: child });
-
-    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
-    const abort = () => {
-      child.kill("SIGTERM");
-      forceKillTimer ??= setTimeout(() => child.kill("SIGKILL"), 5_000);
-      forceKillTimer.unref();
-    };
-    request.signal?.addEventListener("abort", abort, { once: true });
-    const streams = writePromptAndCapture(child, prompt);
-
     let threadId = existing?.threadId;
     let finalResponse = "";
     let providerError: string | undefined;
-    let parseError: Error | undefined;
-    const lines = createInterface({ input: child.stdout });
-    lines.on("line", (line) => {
-      if (!line.trim() || parseError) return;
-      try {
-        const event = JSON.parse(line) as Record<string, unknown>;
-        if (event.type === "thread.started" && typeof event.thread_id === "string") {
-          threadId = event.thread_id;
-          this.mappings.set(request.conversationId, {
-            threadId,
-            lastActiveAt: this.now(),
-          });
-          this.saveMappings();
-        } else if (event.type === "item.started") {
-          const item = event.item as Record<string, unknown> | undefined;
-          if (item?.type === "command_execution") observer?.onToolUse();
-        } else if (event.type === "item.completed") {
-          const item = event.item as Record<string, unknown> | undefined;
-          if (item?.type === "agent_message" && typeof item.text === "string") {
-            finalResponse = item.text.trim();
-          } else if (item?.type === "error" && typeof item.message === "string") {
-            providerError = item.message;
-          }
-        } else if (event.type === "turn.failed" || event.type === "error") {
-          const error = event.error as Record<string, unknown> | undefined;
-          providerError =
-            (typeof error?.message === "string" && error.message) ||
-            (typeof event.message === "string" && event.message) ||
-            "Codex provider request failed";
-        }
-      } catch {
-        parseError = new CodexOutputError("Codex emitted malformed JSONL output");
-        child.kill("SIGTERM");
-      }
-    });
     try {
-      const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-        (resolveExit, reject) => {
-          child.once("error", reject);
-          child.once("close", (code, signal) => resolveExit({ code, signal }));
+      const exit = await runSandboxedJsonl({
+        profile: this.sandboxPath,
+        executable: this.executable,
+        arguments: codexArguments,
+        cwd: this.workspace,
+        env: codexProcessEnvironment(this.home),
+        prompt,
+        signal: request.signal,
+        spawnProcess: this.spawnProcess,
+        onSpawn: (process) => this.active.set(request.conversationId, { process }),
+        malformedOutputError: () => new CodexOutputError("Codex emitted malformed JSONL output"),
+        onEvent: (event) => {
+          if (event.type === "thread.started" && typeof event.thread_id === "string") {
+            threadId = event.thread_id;
+            this.mappings.set(request.conversationId, {
+              threadId,
+              lastActiveAt: this.now(),
+            });
+            this.saveMappings();
+          } else if (event.type === "item.started") {
+            const item = event.item as Record<string, unknown> | undefined;
+            if (item?.type === "command_execution") observer?.onToolUse();
+          } else if (event.type === "item.completed") {
+            const item = event.item as Record<string, unknown> | undefined;
+            if (item?.type === "agent_message" && typeof item.text === "string") {
+              finalResponse = item.text.trim();
+            } else if (item?.type === "error" && typeof item.message === "string") {
+              providerError = item.message;
+            }
+          } else if (event.type === "turn.failed" || event.type === "error") {
+            const error = event.error as Record<string, unknown> | undefined;
+            providerError =
+              (typeof error?.message === "string" && error.message) ||
+              (typeof event.message === "string" && event.message) ||
+              "Codex provider request failed";
+          }
         },
-      );
-      if (request.signal?.aborted) throw request.signal.reason;
-      if (parseError) throw parseError;
-      const stdinFailure = streams.failure();
-      if (stdinFailure) {
-        throw new CodexOutputError(`Codex did not accept the prompt: ${stdinFailure.message}`);
+      });
+      if (exit.stdinFailure) {
+        throw new CodexOutputError(`Codex did not accept the prompt: ${exit.stdinFailure.message}`);
       }
       if (exit.code !== 0) {
         throw new CodexOutputError(
           `Codex exited unsuccessfully${exit.code == null ? "" : ` (code ${exit.code})`}` +
-            (streams.stderrTail() ? `: ${streams.stderrTail()}` : ""),
+            (exit.stderrTail ? `: ${exit.stderrTail}` : ""),
         );
       }
       if (providerError) throw new CodexProviderError();
@@ -272,9 +237,6 @@ export class CodexBackend implements AgentBackend {
       this.saveMappings();
       return finalResponse;
     } finally {
-      request.signal?.removeEventListener("abort", abort);
-      if (forceKillTimer) clearTimeout(forceKillTimer);
-      lines.close();
       this.active.delete(request.conversationId);
     }
   }
