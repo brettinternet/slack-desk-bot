@@ -17,14 +17,6 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 ### Security
 
-#### SDB-031: Warn when the workspace or environment exposes service credentials
-
-**Why:** Nothing stops `SLACK_AGENT_CWD` from being `$HOME` or a parent of `~/.pi/agent`, `~/.config/slack-desk-bot/service.env`, the Codex/Claude homes, or `~/Library/Keychains`. The path policy and both Seatbelt profiles exempt the workspace, so the agent could read `auth.json` or `service.env`. Separately, `checkCodexReadiness` spawns `codex login status` with `{ ...process.env }`, passing `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` to a third-party CLI, unlike the runtime spawn which passes a minimal environment.
-
-**Scope:** Doctor fails when the workspace contains or equals the home directory, the Pi agent directory, any configured session/backend home, the socket directory, or the service environment file. Add `auth.json`, `.codex`, `.claude`, `.pi/agent`, and `Library/Keychains` to the sensitive path definitions. Pass the same minimal environment in doctor as in the runtime spawn.
-
-**Done:** Tests cover each overlap case in doctor and assert doctor's Codex/Claude child environment contains no `SLACK_*` variables.
-
 #### SDB-032: Single source of truth for sensitive path patterns
 
 **Why:** Sensitive path rules exist four times: `workspace-policy.ts` (structured), `codexSandboxProfile` (regex), `claudeSandboxProfile` (regex), and `claudeSettings` (Claude permission globs, which omit `.netrc`, `.npmrc`, `.pypirc`, `.p12`, `.pfx`, Docker and gcloud credentials). They have already drifted and will drift further.
@@ -120,6 +112,12 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 **Done:** CI shows the Seatbelt tests executing on macOS.
 
 ## Completed items
+
+### SDB-031: Warn when the workspace or environment exposes service credentials
+
+**Resolution:** Doctor now rejects workspaces that contain or equal the user home, Pi agent directory, default credential directories, macOS keychains, configured session/backend homes, local socket directory, or service environment file. Pi, Seatbelt, and Claude permission checks also block `auth.json`, `.codex`, `.claude`, `.pi/agent`, and `Library/Keychains`. Codex and Claude readiness use the same explicit minimal environments as their runtime processes, including executable discovery and authentication checks.
+
+**Verified:** Doctor tests cover every overlap class, including a credential directory used as the workspace root, and assert every CLI readiness child receives no `SLACK_*` variables. Focused policy and real Seatbelt tests cover the added sensitive paths; `task test` and `task check` pass.
 
 ### SDB-030: Isolate the Pi service from desktop user-level extensions
 

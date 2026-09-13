@@ -45,8 +45,9 @@ export function seatbeltProfile(options: SeatbeltOptions): string {
   ];
   const pattern = escapedRegex(workspace);
   const sensitive = [
-    `${pattern}/(.*/)?(\\.git|\\.ssh)(/|$)`,
-    `${pattern}/(.*/)?(\\.env(\\..*)?|\\.netrc|\\.npmrc|\\.pypirc|id_(rsa|dsa|ecdsa|ed25519)|[^/]+\\.(key|pem|p12|pfx))$`,
+    `${pattern}/(.*/)?(\\.git|\\.ssh|\\.codex|\\.claude)(/|$)`,
+    `${pattern}/(.*/)?(\\.pi/agent|Library/Keychains)(/|$)`,
+    `${pattern}/(.*/)?(auth\\.json|\\.env(\\..*)?|\\.netrc|\\.npmrc|\\.pypirc|id_(rsa|dsa|ecdsa|ed25519)|[^/]+\\.(key|pem|p12|pfx))$`,
     `${pattern}/(.*/)?(\\.aws/credentials|gcloud/application_default_credentials\\.json|\\.docker/config\\.json)$`,
   ].join("|");
 

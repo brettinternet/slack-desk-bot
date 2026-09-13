@@ -102,6 +102,17 @@ export function defaultClaudeHome(workspace: string): string {
   return join(homedir(), "Library", "Application Support", "SlackDeskBot", "claude", key);
 }
 
+export function claudeProcessEnvironment(home: string): NodeJS.ProcessEnv {
+  return {
+    CLAUDE_CONFIG_DIR: home,
+    HOME: home,
+    LANG: process.env.LANG,
+    LC_ALL: process.env.LC_ALL,
+    PATH: process.env.PATH,
+    TMPDIR: join(home, "tmp"),
+  };
+}
+
 function findClaudeExecutable(configured?: string): string {
   const executable =
     configured ?? execFileSync("/usr/bin/which", ["claude"], { encoding: "utf8" }).trim();
@@ -128,6 +139,11 @@ function claudeSettings(mode: AgentMode): string {
           "Read(.env)",
           "Read(.env.*)",
           "Read(.git/**)",
+          "Read(**/auth.json)",
+          "Read(**/.codex/**)",
+          "Read(**/.claude/**)",
+          "Read(**/.pi/agent/**)",
+          "Read(**/Library/Keychains/**)",
           "Read(~/.ssh/**)",
           "Read(~/.aws/**)",
           "Read(**/*.pem)",
@@ -237,14 +253,7 @@ export class ClaudeBackend implements AgentBackend {
       ["-f", this.sandboxPath, this.executable, ...claudeArguments],
       {
         cwd: this.workspace,
-        env: {
-          CLAUDE_CONFIG_DIR: this.home,
-          HOME: this.home,
-          LANG: process.env.LANG,
-          LC_ALL: process.env.LC_ALL,
-          PATH: process.env.PATH,
-          TMPDIR: join(this.home, "tmp"),
-        },
+        env: claudeProcessEnvironment(this.home),
         stdio: ["pipe", "pipe", "pipe"],
       },
     ) as ChildProcessWithoutNullStreams;

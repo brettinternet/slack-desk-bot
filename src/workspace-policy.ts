@@ -35,7 +35,19 @@ function isSensitiveRelativePath(path: string): boolean {
   const name = parts.at(-1);
   if (!name) return false;
 
-  if (parts.includes(".ssh") || parts.includes(".git")) return true;
+  if (
+    parts.includes(".ssh") ||
+    parts.includes(".git") ||
+    parts.includes(".codex") ||
+    parts.includes(".claude")
+  ) {
+    return true;
+  }
+  if (parts.some((part, index) => part === ".pi" && parts[index + 1] === "agent")) return true;
+  if (parts.some((part, index) => part === "library" && parts[index + 1] === "keychains")) {
+    return true;
+  }
+  if (name === "auth.json") return true;
   if (name === "credentials" && parts.includes(".aws")) return true;
   if (name === "application_default_credentials.json" && parts.includes("gcloud")) return true;
   if (name === "config.json" && parts.includes(".docker")) return true;

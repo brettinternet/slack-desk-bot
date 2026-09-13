@@ -69,6 +69,11 @@ describe("workspace policy", () => {
       ".config/gcloud/application_default_credentials.json",
       ".docker/config.json",
       ".npmrc",
+      "auth.json",
+      ".codex/config.toml",
+      ".claude/settings.json",
+      ".pi/agent/auth.json",
+      "Library/Keychains/login.keychain-db",
       "id_ed25519",
     ];
     for (const path of sensitivePaths) {

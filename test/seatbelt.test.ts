@@ -15,6 +15,11 @@ function fixture() {
   mkdirSync(home);
   writeFileSync(join(workspace, "public.txt"), "public");
   writeFileSync(join(workspace, ".env"), "secret");
+  writeFileSync(join(workspace, "auth.json"), "secret");
+  for (const directory of [".codex", ".claude", ".pi/agent", "Library/Keychains"]) {
+    mkdirSync(join(workspace, directory), { recursive: true });
+    writeFileSync(join(workspace, directory, "secret"), "secret");
+  }
   writeFileSync(join(root, "outside.txt"), "outside");
   writeFileSync(join(home, "auth.json"), "token");
   return { root, workspace, home };
@@ -49,6 +54,11 @@ describe("shared Seatbelt boundary", () => {
           "cat public.txt",
           "cat ../outside.txt 2>/dev/null || echo outside-blocked",
           "cat .env 2>/dev/null || echo credential-blocked",
+          "cat auth.json 2>/dev/null || echo auth-blocked",
+          "cat .codex/secret 2>/dev/null || echo codex-blocked",
+          "cat .claude/secret 2>/dev/null || echo claude-blocked",
+          "cat .pi/agent/secret 2>/dev/null || echo pi-agent-blocked",
+          "cat Library/Keychains/secret 2>/dev/null || echo keychain-blocked",
           `cat ${home}/auth.json >/dev/null 2>&1 && echo home-readable || echo home-blocked`,
           "touch write-test 2>/dev/null || echo write-blocked",
           `touch ${home}/state 2>/dev/null && echo home-writable || echo home-write-blocked`,
@@ -57,6 +67,11 @@ describe("shared Seatbelt boundary", () => {
       expect(output).toContain("public");
       expect(output).toContain("outside-blocked");
       expect(output).toContain("credential-blocked");
+      expect(output).toContain("auth-blocked");
+      expect(output).toContain("codex-blocked");
+      expect(output).toContain("claude-blocked");
+      expect(output).toContain("pi-agent-blocked");
+      expect(output).toContain("keychain-blocked");
       expect(output).toContain("home-readable");
       expect(output).toContain("write-blocked");
       expect(output).toContain("home-writable");

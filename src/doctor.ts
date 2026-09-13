@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
 import { constants, realpathSync } from "node:fs";
 import { access, lstat, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { createConnection, createServer } from "node:net";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   getAgentDir,
   ModelRuntime,
@@ -17,8 +18,12 @@ import type {
   CredentialStore,
 } from "@earendil-works/pi-ai";
 import { WebClient } from "@slack/web-api";
-import { codexSandboxProfile, defaultCodexHome } from "./codex-backend.ts";
-import { claudeSandboxProfile, defaultClaudeHome } from "./claude-backend.ts";
+import { codexProcessEnvironment, codexSandboxProfile, defaultCodexHome } from "./codex-backend.ts";
+import {
+  claudeProcessEnvironment,
+  claudeSandboxProfile,
+  defaultClaudeHome,
+} from "./claude-backend.ts";
 import { loadConfig, type Config } from "./config.ts";
 import { isConversationStoreCorrupt } from "./conversation-store.ts";
 import { defaultSessionDirectory, PI_RESOURCE_POLICY_DESCRIPTION } from "./pi-backend.ts";
@@ -43,6 +48,8 @@ interface DoctorDependencies {
   piReady?: (workspace: string) => Promise<string>;
   codexReady?: (config: Config) => Promise<string>;
   claudeReady?: (config: Config) => Promise<string>;
+  homeDirectory?: string;
+  agentDirectory?: string;
 }
 
 const REQUIRED_SETTINGS = [
@@ -80,6 +87,47 @@ async function checkWorkspace(config: Config): Promise<void> {
   const permissions =
     constants.R_OK | constants.X_OK | (config.agentMode === "read-write" ? constants.W_OK : 0);
   await access(config.workspace, permissions);
+}
+
+async function canonicalPotentialPath(path: string): Promise<string> {
+  const absolute = resolve(path);
+  const existing = await nearestExistingPath(absolute);
+  return resolve(realpathSync(existing), relative(existing, absolute));
+}
+
+async function workspaceContains(workspace: string, protectedPath: string): Promise<boolean> {
+  const nested = relative(
+    await canonicalPotentialPath(workspace),
+    await canonicalPotentialPath(protectedPath),
+  );
+  return nested === "" || (!nested.startsWith("..") && !isAbsolute(nested));
+}
+
+async function workspaceCredentialOverlap(
+  config: Config,
+  homeDirectory = homedir(),
+  agentDirectory = getAgentDir(),
+): Promise<string | undefined> {
+  const protectedPaths: Array<[string, string]> = [
+    ["the user home directory", homeDirectory],
+    ["the Pi agent directory", agentDirectory],
+    ["the Codex credential directory", join(homeDirectory, ".codex")],
+    ["the Claude credential directory", join(homeDirectory, ".claude")],
+    ["the default Pi agent directory", join(homeDirectory, ".pi", "agent")],
+    ["the macOS keychain directory", join(homeDirectory, "Library", "Keychains")],
+    ["SLACK_AGENT_SESSION_DIR", config.sessionDir ?? defaultSessionDirectory(config.workspace)],
+    ["SLACK_CODEX_HOME", config.codexHome ?? defaultCodexHome(config.workspace)],
+    ["SLACK_CLAUDE_HOME", config.claudeHome ?? defaultClaudeHome(config.workspace)],
+    ["the local control socket directory", dirname(config.socketPath)],
+    [
+      "the service environment file",
+      join(homeDirectory, ".config", "slack-desk-bot", "service.env"),
+    ],
+  ];
+  for (const [label, path] of protectedPaths) {
+    if (await workspaceContains(config.workspace, path)) return label;
+  }
+  return undefined;
 }
 
 const BACKEND_LABELS: Record<Config["agentBackend"], string> = {
@@ -191,6 +239,11 @@ class ReadOnlyPiCredentials implements CredentialStore {
 
 const executeFile = promisify(execFile);
 
+interface CliReadinessDependencies {
+  executeFile?: typeof executeFile;
+  platform?: NodeJS.Platform;
+}
+
 /**
  * `sandbox-exec -p` truncates long profiles, so readiness checks the same way
  * the backends run: from a profile file inside the backend-owned home.
@@ -202,46 +255,45 @@ async function writeProfile(home: string, profile: string): Promise<string> {
   return path;
 }
 
-export async function checkCodexReadiness(config: Config): Promise<string> {
-  if (process.platform !== "darwin") {
+export async function checkCodexReadiness(
+  config: Config,
+  dependencies: CliReadinessDependencies = {},
+): Promise<string> {
+  const run = dependencies.executeFile ?? executeFile;
+  if ((dependencies.platform ?? process.platform) !== "darwin") {
     throw new Error("Codex requires macOS Seatbelt sandboxing; this platform is unsupported");
   }
   if (config.agentMode !== "read-only") {
     throw new Error("Codex currently supports read-only mode only");
   }
+  const home = config.codexHome ?? defaultCodexHome(config.workspace);
+  await mkdir(join(home, "tmp"), { recursive: true, mode: 0o700 });
+  const environment = codexProcessEnvironment(home);
   let executable = config.codexExecutable;
   if (!executable) {
     try {
-      executable = (await executeFile("/usr/bin/which", ["codex"])).stdout.trim();
+      executable = (await run("/usr/bin/which", ["codex"], { env: environment })).stdout.trim();
     } catch {
       throw new Error("Codex CLI is not installed or is not on PATH");
     }
   }
   try {
     executable = realpathSync(executable);
-    await executeFile(executable, ["--version"], { timeout: 10_000 });
+    await run(executable, ["--version"], { timeout: 10_000, env: environment });
   } catch {
     throw new Error("Codex CLI could not be executed; verify SLACK_CODEX_EXECUTABLE");
   }
-  const home = config.codexHome ?? defaultCodexHome(config.workspace);
   try {
-    await executeFile(executable, ["login", "status"], {
-      timeout: 10_000,
-      env: { PATH: process.env.PATH, CODEX_HOME: home, HOME: home },
-    });
+    await run(executable, ["login", "status"], { timeout: 10_000, env: environment });
   } catch {
     throw new Error(`Codex authentication is missing; run \`CODEX_HOME=${home} codex login\``);
   }
   try {
     const profile = codexSandboxProfile(config.workspace, home, executable);
-    await executeFile(
+    await run(
       "/usr/bin/sandbox-exec",
       ["-f", await writeProfile(home, profile), executable, "--version"],
-      {
-        timeout: 20_000,
-        cwd: config.workspace,
-        env: { PATH: process.env.PATH, CODEX_HOME: home, HOME: home },
-      },
+      { timeout: 20_000, cwd: config.workspace, env: environment },
     );
   } catch {
     throw new Error("Codex process confinement is unavailable; macOS Seatbelt must be enabled");
@@ -249,33 +301,33 @@ export async function checkCodexReadiness(config: Config): Promise<string> {
   return "Codex CLI authentication and read-only process confinement are available";
 }
 
-export async function checkClaudeReadiness(config: Config): Promise<string> {
-  if (process.platform !== "darwin") {
+export async function checkClaudeReadiness(
+  config: Config,
+  dependencies: CliReadinessDependencies = {},
+): Promise<string> {
+  const run = dependencies.executeFile ?? executeFile;
+  if ((dependencies.platform ?? process.platform) !== "darwin") {
     throw new Error("Claude Code requires macOS Seatbelt sandboxing; this platform is unsupported");
   }
+  const home = config.claudeHome ?? defaultClaudeHome(config.workspace);
+  await mkdir(join(home, "tmp"), { recursive: true, mode: 0o700 });
+  const environment = claudeProcessEnvironment(home);
   let executable = config.claudeExecutable;
   if (!executable) {
     try {
-      executable = (await executeFile("/usr/bin/which", ["claude"])).stdout.trim();
+      executable = (await run("/usr/bin/which", ["claude"], { env: environment })).stdout.trim();
     } catch {
       throw new Error("Claude Code CLI is not installed or is not on PATH");
     }
   }
   try {
     executable = realpathSync(executable);
-    await executeFile(executable, ["--version"], {
-      timeout: 10_000,
-      env: { PATH: process.env.PATH },
-    });
+    await run(executable, ["--version"], { timeout: 10_000, env: environment });
   } catch {
     throw new Error("Claude Code CLI could not be executed; verify SLACK_CLAUDE_EXECUTABLE");
   }
-  const home = config.claudeHome ?? defaultClaudeHome(config.workspace);
   try {
-    await executeFile(executable, ["auth", "status"], {
-      timeout: 10_000,
-      env: { CLAUDE_CONFIG_DIR: home, HOME: home, PATH: process.env.PATH },
-    });
+    await run(executable, ["auth", "status"], { timeout: 10_000, env: environment });
   } catch {
     throw new Error(
       `Claude Code authentication is missing; run \`CLAUDE_CONFIG_DIR=${home} claude auth login\``,
@@ -283,14 +335,10 @@ export async function checkClaudeReadiness(config: Config): Promise<string> {
   }
   try {
     const profile = claudeSandboxProfile(config.workspace, home, executable, config.agentMode);
-    await executeFile(
+    await run(
       "/usr/bin/sandbox-exec",
       ["-f", await writeProfile(home, profile), executable, "--version"],
-      {
-        timeout: 20_000,
-        cwd: config.workspace,
-        env: { CLAUDE_CONFIG_DIR: home, HOME: home, PATH: process.env.PATH },
-      },
+      { timeout: 20_000, cwd: config.workspace, env: environment },
     );
   } catch {
     throw new Error("Claude process confinement is unavailable; macOS Seatbelt must be enabled");
@@ -397,6 +445,29 @@ export async function runDoctor(
       "fail",
       "SLACK_AGENT_CWD access",
       `SLACK_AGENT_CWD lacks permissions required for ${config.agentMode} mode`,
+    );
+  }
+
+  try {
+    const overlap = await workspaceCredentialOverlap(
+      config,
+      dependencies.homeDirectory,
+      dependencies.agentDirectory,
+    );
+    diagnostic(
+      diagnostics,
+      overlap ? "fail" : "pass",
+      "Workspace credential isolation",
+      overlap
+        ? `SLACK_AGENT_CWD contains ${overlap}; choose a workspace that cannot expose service credentials`
+        : "Workspace does not contain service credential or state paths",
+    );
+  } catch {
+    diagnostic(
+      diagnostics,
+      "fail",
+      "Workspace credential isolation",
+      "Workspace credential overlap could not be checked",
     );
   }
 

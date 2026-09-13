@@ -84,6 +84,25 @@ export function defaultCodexHome(workspace: string): string {
   return join(homedir(), "Library", "Application Support", "SlackDeskBot", "codex", key);
 }
 
+export function codexProcessEnvironment(home: string): NodeJS.ProcessEnv {
+  return {
+    CODEX_HOME: home,
+    HOME: home,
+    LANG: process.env.LANG,
+    LC_ALL: process.env.LC_ALL,
+    NO_PROXY: process.env.NO_PROXY,
+    PATH: process.env.PATH,
+    SSL_CERT_DIR: process.env.SSL_CERT_DIR,
+    SSL_CERT_FILE: process.env.SSL_CERT_FILE,
+    TMPDIR: join(home, "tmp"),
+    http_proxy: process.env.http_proxy,
+    https_proxy: process.env.https_proxy,
+    no_proxy: process.env.no_proxy,
+    HTTP_PROXY: process.env.HTTP_PROXY,
+    HTTPS_PROXY: process.env.HTTPS_PROXY,
+  };
+}
+
 function findCodexExecutable(configured?: string): string {
   const executable =
     configured ?? execFileSync("/usr/bin/which", ["codex"], { encoding: "utf8" }).trim();
@@ -175,22 +194,7 @@ export class CodexBackend implements AgentBackend {
     mkdirSync(join(this.home, "tmp"), { recursive: true, mode: 0o700 });
     const child = this.spawnProcess("/usr/bin/sandbox-exec", processArguments, {
       cwd: this.workspace,
-      env: {
-        CODEX_HOME: this.home,
-        HOME: this.home,
-        LANG: process.env.LANG,
-        LC_ALL: process.env.LC_ALL,
-        NO_PROXY: process.env.NO_PROXY,
-        PATH: process.env.PATH,
-        SSL_CERT_DIR: process.env.SSL_CERT_DIR,
-        SSL_CERT_FILE: process.env.SSL_CERT_FILE,
-        TMPDIR: join(this.home, "tmp"),
-        http_proxy: process.env.http_proxy,
-        https_proxy: process.env.https_proxy,
-        no_proxy: process.env.no_proxy,
-        HTTP_PROXY: process.env.HTTP_PROXY,
-        HTTPS_PROXY: process.env.HTTPS_PROXY,
-      },
+      env: codexProcessEnvironment(this.home),
       stdio: ["pipe", "pipe", "pipe"],
     }) as ChildProcessWithoutNullStreams;
     this.active.set(request.conversationId, { process: child });
