@@ -15,6 +15,7 @@ function dependencies() {
     portAvailable: mock(async () => true),
     socketAvailable: mock(async () => true),
     piReady: mock(async () => "Pi model test/model is available"),
+    codexReady: mock(async () => "Codex CLI is ready"),
   };
 }
 
@@ -39,6 +40,28 @@ describe("runDoctor", () => {
     expect(checks.portAvailable).toHaveBeenCalledWith(3210);
     expect(checks.socketAvailable).toHaveBeenCalledTimes(1);
     expect(checks.piReady).toHaveBeenCalledWith(process.cwd());
+  });
+
+  test("runs only Codex readiness for the Codex backend", async () => {
+    const checks = dependencies();
+    const result = await runDoctor(
+      {
+        ...valid,
+        SLACK_AGENT_BACKEND: "codex",
+        SLACK_CODEX_HOME: process.cwd(),
+        SLACK_CODEX_EXECUTABLE: "/usr/bin/true",
+      },
+      checks,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.diagnostics).toContainEqual({
+      status: "pass",
+      check: "Codex readiness",
+      message: "Codex CLI is ready",
+    });
+    expect(checks.codexReady).toHaveBeenCalledTimes(1);
+    expect(checks.piReady).not.toHaveBeenCalled();
   });
 
   test("uses the same trimmed Slack token as production", async () => {

@@ -1,7 +1,8 @@
 import { type CancellableAgentBackend, type QueueSnapshot, QueuedAgentBackend } from "./agent.ts";
 import type { Config } from "./config.ts";
+import { CodexBackend } from "./codex-backend.ts";
 import { ConversationCoordinator } from "./conversation-coordinator.ts";
-import { checkPiReadiness } from "./doctor.ts";
+import { checkCodexReadiness, checkPiReadiness } from "./doctor.ts";
 import { HealthState, startHealthServer } from "./health.ts";
 import { LocalControlServer } from "./local-control.ts";
 import { PiBackend } from "./pi-backend.ts";
@@ -29,6 +30,7 @@ interface RuntimeBackend extends CancellableAgentBackend {
 
 interface ApplicationDependencies {
   piReady?: (workspace: string) => Promise<string>;
+  codexReady?: (config: Config) => Promise<string>;
   createBackend?: (config: Config) => RuntimeBackend;
   createSlackAgent?: (options: {
     config: Config;
@@ -51,23 +53,28 @@ export interface RunningApplication {
 }
 
 function defaultBackend(config: Config): RuntimeBackend {
-  return new QueuedAgentBackend(
-    new PiBackend(config.workspace, {
-      mode: config.agentMode,
-      instructions: config.instructions,
-      sessionDir: config.sessionDir,
-      maxActiveSessions: config.maxActiveSessions,
-      sessionIdleMs: config.sessionIdleMs,
-    }),
-    config.queueLimits,
-  );
+  const backend =
+    config.agentBackend === "codex"
+      ? new CodexBackend(config.workspace, {
+          executable: config.codexExecutable,
+          home: config.codexHome,
+          instructions: config.instructions,
+        })
+      : new PiBackend(config.workspace, {
+          mode: config.agentMode,
+          instructions: config.instructions,
+          sessionDir: config.sessionDir,
+          maxActiveSessions: config.maxActiveSessions,
+          sessionIdleMs: config.sessionIdleMs,
+        });
+  return new QueuedAgentBackend(backend, config.queueLimits);
 }
 
 export async function startApplication(
   config: Config,
   dependencies: ApplicationDependencies = {},
 ): Promise<RunningApplication> {
-  console.log(`SlackDeskBot mode: ${config.agentMode}`);
+  console.log(`SlackDeskBot backend: ${config.agentBackend}; mode: ${config.agentMode}`);
   if (
     config.queueLimits.maxConcurrentConversations !== config.configuredMaxConcurrentConversations
   ) {
@@ -77,7 +84,11 @@ export async function startApplication(
     );
   }
 
-  await (dependencies.piReady ?? checkPiReadiness)(config.workspace);
+  if (config.agentBackend === "codex") {
+    await (dependencies.codexReady ?? checkCodexReadiness)(config);
+  } else {
+    await (dependencies.piReady ?? checkPiReadiness)(config.workspace);
+  }
 
   const health = new HealthState();
   const backend = (dependencies.createBackend ?? defaultBackend)(config);

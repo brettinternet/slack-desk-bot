@@ -1,5 +1,7 @@
-import { constants } from "node:fs";
+import { execFile } from "node:child_process";
+import { constants, realpathSync } from "node:fs";
 import { access, lstat, readFile, stat } from "node:fs/promises";
+import { promisify } from "node:util";
 import { createConnection, createServer } from "node:net";
 import { dirname, join } from "node:path";
 import {
@@ -15,6 +17,7 @@ import type {
   CredentialStore,
 } from "@earendil-works/pi-ai";
 import { WebClient } from "@slack/web-api";
+import { codexSandboxProfile, defaultCodexHome } from "./codex-backend.ts";
 import { loadConfig, type Config } from "./config.ts";
 import { defaultSessionDirectory } from "./pi-backend.ts";
 
@@ -36,6 +39,7 @@ interface DoctorDependencies {
   portAvailable?: (port: number) => Promise<boolean>;
   socketAvailable?: (path: string) => Promise<boolean>;
   piReady?: (workspace: string) => Promise<string>;
+  codexReady?: (config: Config) => Promise<string>;
 }
 
 const REQUIRED_SETTINGS = [
@@ -76,7 +80,10 @@ async function checkWorkspace(config: Config): Promise<void> {
 }
 
 async function checkSessionPath(config: Config): Promise<void> {
-  const sessionPath = config.sessionDir ?? defaultSessionDirectory(config.workspace);
+  const sessionPath =
+    config.agentBackend === "codex"
+      ? (config.codexHome ?? defaultCodexHome(config.workspace))
+      : (config.sessionDir ?? defaultSessionDirectory(config.workspace));
   const existing = await nearestExistingPath(sessionPath);
   const metadata = await stat(existing);
   if (!metadata.isDirectory()) throw new Error("an existing path component is not a directory");
@@ -153,6 +160,55 @@ class ReadOnlyPiCredentials implements CredentialStore {
   async delete(): Promise<void> {
     throw new Error("Doctor credential storage is read-only");
   }
+}
+
+const executeFile = promisify(execFile);
+
+export async function checkCodexReadiness(config: Config): Promise<string> {
+  if (process.platform !== "darwin") {
+    throw new Error("Codex requires macOS Seatbelt sandboxing; this platform is unsupported");
+  }
+  if (config.agentMode !== "read-only") {
+    throw new Error("Codex currently supports read-only mode only");
+  }
+  let executable = config.codexExecutable;
+  if (!executable) {
+    try {
+      executable = (await executeFile("/usr/bin/which", ["codex"])).stdout.trim();
+    } catch {
+      throw new Error("Codex CLI is not installed or is not on PATH");
+    }
+  }
+  try {
+    executable = realpathSync(executable);
+    await executeFile(executable, ["--version"], { timeout: 10_000 });
+  } catch {
+    throw new Error("Codex CLI could not be executed; verify SLACK_CODEX_EXECUTABLE");
+  }
+  const home = config.codexHome ?? defaultCodexHome(config.workspace);
+  try {
+    await executeFile(
+      executable,
+      ["-c", 'cli_auth_credentials_store="keyring"', "login", "status"],
+      {
+        timeout: 10_000,
+        env: { ...process.env, CODEX_HOME: home },
+      },
+    );
+  } catch {
+    throw new Error(
+      `Codex authentication is missing; run \`CODEX_HOME=${home} codex -c cli_auth_credentials_store=keyring login\``,
+    );
+  }
+  try {
+    const profile = codexSandboxProfile(config.workspace, home, executable);
+    await executeFile("/usr/bin/sandbox-exec", ["-p", profile, "/usr/bin/true"], {
+      timeout: 10_000,
+    });
+  } catch {
+    throw new Error("Codex process confinement is unavailable; macOS Seatbelt must be enabled");
+  }
+  return "Codex CLI authentication and read-only process confinement are available";
 }
 
 export async function checkPiReadiness(workspace: string): Promise<string> {
@@ -259,7 +315,12 @@ export async function runDoctor(
 
   try {
     await checkSessionPath(config);
-    diagnostic(diagnostics, "pass", "Session storage", "Pi session storage is writable");
+    diagnostic(
+      diagnostics,
+      "pass",
+      "Session storage",
+      `${config.agentBackend === "codex" ? "Codex" : "Pi"} session storage is writable`,
+    );
   } catch {
     diagnostic(
       diagnostics,
@@ -322,15 +383,19 @@ export async function runDoctor(
     }
   }
 
+  const readinessCheck = config.agentBackend === "codex" ? "Codex readiness" : "Pi readiness";
   try {
-    const message = await (dependencies.piReady ?? checkPiReadiness)(config.workspace);
-    diagnostic(diagnostics, "pass", "Pi readiness", message);
+    const message =
+      config.agentBackend === "codex"
+        ? await (dependencies.codexReady ?? checkCodexReadiness)(config)
+        : await (dependencies.piReady ?? checkPiReadiness)(config.workspace);
+    diagnostic(diagnostics, "pass", readinessCheck, message);
   } catch (error) {
     diagnostic(
       diagnostics,
       "fail",
-      "Pi readiness",
-      error instanceof Error ? error.message : "Pi model readiness could not be checked",
+      readinessCheck,
+      error instanceof Error ? error.message : `${readinessCheck} could not be checked`,
     );
   }
 

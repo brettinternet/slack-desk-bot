@@ -38,6 +38,29 @@ hum up
 
 `hum status`, `hum logs agent`, and `hum down` inspect and control the service.
 
+### Agent backend
+
+`SLACK_AGENT_BACKEND=pi` is the default. To use Codex CLI instead:
+
+```sh
+mise use -g codex@latest
+mkdir -p "$HOME/Library/Application Support/SlackDeskBot/codex"
+CODEX_HOME="$HOME/Library/Application Support/SlackDeskBot/codex" \
+  codex -c cli_auth_credentials_store=keyring login
+```
+
+Then set:
+
+```dotenv
+SLACK_AGENT_BACKEND=codex
+SLACK_AGENT_MODE=read-only
+SLACK_CODEX_HOME=/Users/you/Library/Application Support/SlackDeskBot/codex
+# Optional when codex is not on the LaunchAgent PATH:
+SLACK_CODEX_EXECUTABLE=/absolute/path/to/codex
+```
+
+Run `task doctor` after switching. Codex mode requires macOS, Keychain-backed authentication, and the Seatbelt process sandbox. Read-write mode is intentionally unsupported. Codex thread mappings and transcripts are retained below `SLACK_CODEX_HOME`, so Slack and `slack-desk attach` resume the exact thread after a service restart.
+
 ## Slack interaction
 
 Mention the bot in a channel to start a conversation. Further replies in that thread do not need a mention, including after restarts. DMs work without a mention. Only user IDs in `SLACK_ALLOWED_USER_IDS` can invoke the app.
@@ -100,7 +123,7 @@ Restart after changes. These apply only to SlackDeskBot sessions; the target rep
 | Text types        | plain text, Markdown, JSON, XML |
 | Image types       | PNG, JPEG, GIF, WebP            |
 
-Files are downloaded from Slack into memory only and are never written to disk.
+Files are downloaded from Slack into memory only and are never written to disk. Pi accepts the listed text and image types. Codex inlines text attachments but returns a capability error for images because its CLI requires an image file path.
 
 See [`.env.example`](.env.example) for all tunable `SLACK_AGENT_*` settings.
 
@@ -146,7 +169,7 @@ hum down
 
 ### Backup and restore
 
-Sessions are the only data requiring backup. Stop the service first.
+Session data is the only data requiring backup. Stop the service first. Pi uses `SLACK_AGENT_SESSION_DIR`; Codex uses `SLACK_CODEX_HOME`.
 
 ```sh
 tar -C "$HOME/Library/Application Support/SlackDeskBot" -czf "slackdeskbot-sessions-$(date +%Y%m%d).tgz" sessions
@@ -154,7 +177,7 @@ tar -C "$HOME/Library/Application Support/SlackDeskBot" -czf "slackdeskbot-sessi
 
 Restore: stop, move existing sessions aside, extract the archive, verify permissions, run `task doctor`, then `task service:install`. Never merge two session directories or run two instances against one.
 
-Offline resume is recovery-only: stop SlackDeskBot first, then open a copied or exclusively owned session with `pi --session <file>`. Never run `pi --session` against a live SlackDeskBot session. Pi session JSONL has one owning process; concurrent access does not attach to in-memory state and can corrupt or fork history.
+Offline resume is recovery-only: stop SlackDeskBot first. For Pi, open a copied or exclusively owned session with `pi --session <file>`. Never run `pi --session` against a live SlackDeskBot session. For Codex, use `CODEX_HOME=<configured-home> codex resume <thread-id>` only while SlackDeskBot is stopped. Concurrent access does not attach to the service's in-memory queue and can fork history.
 
 ### Upgrade and rollback
 
@@ -177,7 +200,7 @@ Rollback: unload LaunchAgent, check out the previous tag/commit, rerun the insta
 2. `task doctor` passes.
 3. `task service:install`, then `hum status` reports ready and `/readyz` returns 200.
 4. Send `!help` in a DM, then send a prompt and confirm a reply.
-5. Run `slack-desk sessions`, attach to that session, and alternate one Slack turn and one terminal turn. Confirm both replies appear in the same Pi session and Slack thread without another process opening its JSONL file.
+5. Run `slack-desk sessions`, attach to that session, and alternate one Slack turn and one terminal turn. Confirm both replies appear in the same backend session/thread and Slack thread without another process opening the session.
 
 ## Security
 
@@ -187,9 +210,11 @@ Rollback: unload LaunchAgent, check out the previous tag/commit, rerun the insta
 
 **Path policy** blocks `.env` files (except templates), `.ssh`, `.git` contents, private keys, cloud credentials, `.netrc`, `.npmrc`, `.pypirc`. Applies in both modes, follows symlinks, normalizes `~`, `@`, and `file://` paths. This is path-based only, not secret detection. Use a dedicated checkout without secrets.
 
-**Tool paths** are confined to `SLACK_AGENT_CWD`. The target repository is treated as an untrusted Pi project: its `.pi/` directory cannot inject extensions, settings, or system prompts. User-level Pi extensions (`~/.pi/agent`) run as trusted code outside this policy.
+**Tool paths** are confined to `SLACK_AGENT_CWD`. With Pi, a backend policy allows only the selected file tools and blocks sensitive paths. The target repository is treated as an untrusted Pi project: its `.pi/` directory cannot inject extensions, settings, or system prompts. User-level Pi extensions (`~/.pi/agent`) run as trusted code outside this policy.
 
-**Sessions** are JSONL files designed for one process. The service is their sole mutable owner. The local socket is owner-only, has no TCP fallback, and does not expose session file paths, prompts, tokens, user names, or file contents in discovery or logs. Do not share session files across instances without external locking.
+**Codex security differs from Pi.** Codex receives a read-only native sandbox and also runs inside a SlackDeskBot-owned macOS Seatbelt boundary. The boundary permits workspace reads, denies workspace writes and sensitive paths, and blocks reads of other user and temporary data; only system runtime files, the Codex executable, and its dedicated control/session home are exceptions. Codex commands inherit no service environment. Authentication is stored in macOS Keychain rather than a readable `auth.json`. Read-write mode, image attachments, Linux service deployment, MCP/connectors, and unrestricted command networking are not supported by this adapter.
+
+**Sessions** are designed for one service owner. The service is their sole mutable owner. The local socket is owner-only, has no TCP fallback, and does not expose session file paths, prompts, tokens, user names, or file contents in discovery or logs. Do not share session files across instances without external locking.
 
 ## Adding another backend
 

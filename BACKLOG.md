@@ -62,8 +62,6 @@ The attached client can watch new turns, submit an operator turn, show status, a
 - A real smoke test demonstrates Slack and `slack-desk attach` alternating turns against one Pi SDK session without a second process opening its JSONL file.
 - README documents the terminal workflow, security boundary, recovery-only offline resume procedure, and why concurrent `pi --session` access is unsupported.
 
-## Active items
-
 ### SDB-026: Add a Codex CLI backend
 
 **Depends on:** SDB-025, so local operator session discovery and control are backend-neutral before another session implementation is introduced.
@@ -85,6 +83,8 @@ The attached client can watch new turns, submit an operator turn, show status, a
 - Security tests demonstrate read confinement and blocked writes/credential paths using the actual Codex process boundary, not only mocked command arguments.
 - Integration and smoke tests show Slack and `slack-desk attach` alternating turns in one Codex thread.
 - Doctor and README document installation, authentication, supported modes and attachments, session behavior, and security differences from Pi.
+
+## Active items
 
 ### SDB-027: Add a Claude Code CLI backend
 

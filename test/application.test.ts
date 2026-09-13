@@ -22,8 +22,11 @@ function config(): Config {
     workspace: process.cwd(),
     allowedUserIds: new Set(["U_TEST"]),
     operatorUserIds: new Set(),
+    agentBackend: "pi",
     agentMode: "read-only",
     instructions: undefined,
+    codexExecutable: undefined,
+    codexHome: undefined,
     queueLimits: {
       timeoutMs: 300_000,
       queueWaitMs: 600_000,
@@ -77,6 +80,26 @@ describe("application startup", () => {
     await application.stop();
     expect(slackStop).toHaveBeenCalledTimes(1);
     expect(agent.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  test("uses Codex readiness without checking Pi", async () => {
+    const createBackend = mock(() => backend());
+    const piReady = mock(async () => "Pi ready");
+    const codexReady = mock(async () => "Codex ready");
+    const application = await startApplication(
+      { ...config(), agentBackend: "codex" },
+      {
+        piReady,
+        codexReady,
+        createBackend,
+        createSlackAgent: () => ({ start: async () => {}, stop: async () => {} }),
+      },
+    );
+
+    expect(codexReady).toHaveBeenCalledTimes(1);
+    expect(piReady).not.toHaveBeenCalled();
+    expect(createBackend).toHaveBeenCalledTimes(1);
+    await application.stop();
   });
 
   test("fails before creating runtime resources when Pi is not ready", async () => {
