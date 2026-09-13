@@ -17,14 +17,6 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 ### Code design
 
-#### SDB-038: Replace backend-kind ternaries with a backend table
-
-**Why:** `application.ts` and `doctor.ts` branch on `config.agentBackend` in five places with nested ternaries (factory, readiness check, session path, storage label, readiness label). Adding a backend requires editing all five.
-
-**Scope:** Define one record per backend kind with `create`, `checkReady`, `sessionHome`, and `label`, and index it from both modules. This is a lookup table, not a plugin system.
-
-**Done:** Adding a backend touches `config.ts` and one table entry; tests still cover each path.
-
 #### SDB-039: Pass an inbound message object through the Slack handler
 
 **Why:** `respondWithinLimit`, `respond`, and `respondAdmitted` thread eight positional parameters through three layers, and `respondAdmitted` is about 200 lines mixing status updates, file ingestion, command dispatch, delivery, reactions, and logging.
@@ -84,6 +76,12 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 **Done:** CI shows the Seatbelt tests executing on macOS.
 
 ## Completed items
+
+### SDB-038: Replace backend-kind ternaries with a backend table
+
+**Resolution:** Added one exhaustive backend table that owns construction, readiness selection, session-home resolution, storage labels, and conversation-store behavior. Application startup and doctor now index the selected backend instead of repeating backend-kind branches, while workspace credential isolation derives every backend state path from the same table.
+
+**Verified:** Application and doctor tests cover Pi, Codex, and Claude readiness and storage paths; focused tests and `task check` pass.
 
 ### SDB-037: Extract shared CLI backend plumbing
 

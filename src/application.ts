@@ -1,12 +1,10 @@
 import { type CancellableAgentBackend, type QueueSnapshot, QueuedAgentBackend } from "./agent.ts";
+import { BACKENDS } from "./backend-table.ts";
 import type { Config } from "./config.ts";
-import { CodexBackend } from "./codex-backend.ts";
-import { ClaudeBackend } from "./claude-backend.ts";
 import { ConversationCoordinator } from "./conversation-coordinator.ts";
 import { checkClaudeReadiness, checkCodexReadiness, checkPiReadiness } from "./doctor.ts";
 import { HealthState, startHealthServer } from "./health.ts";
 import { LocalControlServer } from "./local-control.ts";
-import { PiBackend } from "./pi-backend.ts";
 import { SlackAgent } from "./slack.ts";
 
 interface SlackLifecycle {
@@ -57,28 +55,7 @@ export interface RunningApplication {
 }
 
 function defaultBackend(config: Config): RuntimeBackend {
-  const backend =
-    config.agentBackend === "codex"
-      ? new CodexBackend(config.workspace, {
-          executable: config.codexExecutable,
-          home: config.codexHome,
-          instructions: config.instructions,
-        })
-      : config.agentBackend === "claude"
-        ? new ClaudeBackend(config.workspace, {
-            executable: config.claudeExecutable,
-            home: config.claudeHome,
-            instructions: config.instructions,
-            mode: config.agentMode,
-          })
-        : new PiBackend(config.workspace, {
-            mode: config.agentMode,
-            instructions: config.instructions,
-            sessionDir: config.sessionDir,
-            maxActiveSessions: config.maxActiveSessions,
-            sessionIdleMs: config.sessionIdleMs,
-          });
-  return new QueuedAgentBackend(backend, config.queueLimits);
+  return new QueuedAgentBackend(BACKENDS[config.agentBackend].create(config), config.queueLimits);
 }
 
 export async function startApplication(
@@ -95,13 +72,11 @@ export async function startApplication(
     );
   }
 
-  if (config.agentBackend === "codex") {
-    await (dependencies.codexReady ?? checkCodexReadiness)(config);
-  } else if (config.agentBackend === "claude") {
-    await (dependencies.claudeReady ?? checkClaudeReadiness)(config);
-  } else {
-    await (dependencies.piReady ?? checkPiReadiness)(config.workspace);
-  }
+  await BACKENDS[config.agentBackend].checkReady(config, {
+    pi: dependencies.piReady ?? checkPiReadiness,
+    codex: dependencies.codexReady ?? checkCodexReadiness,
+    claude: dependencies.claudeReady ?? checkClaudeReadiness,
+  });
 
   const health = new HealthState();
   const backend = (dependencies.createBackend ?? defaultBackend)(config);

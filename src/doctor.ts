@@ -18,6 +18,7 @@ import type {
   CredentialStore,
 } from "@earendil-works/pi-ai";
 import { WebClient } from "@slack/web-api";
+import { BACKENDS } from "./backend-table.ts";
 import { codexProcessEnvironment, codexSandboxProfile, defaultCodexHome } from "./codex-backend.ts";
 import {
   claudeProcessEnvironment,
@@ -115,9 +116,10 @@ async function workspaceCredentialOverlap(
     ["the Claude credential directory", join(homeDirectory, ".claude")],
     ["the default Pi agent directory", join(homeDirectory, ".pi", "agent")],
     ["the macOS keychain directory", join(homeDirectory, "Library", "Keychains")],
-    ["SLACK_AGENT_SESSION_DIR", config.sessionDir ?? defaultSessionDirectory(config.workspace)],
-    ["SLACK_CODEX_HOME", config.codexHome ?? defaultCodexHome(config.workspace)],
-    ["SLACK_CLAUDE_HOME", config.claudeHome ?? defaultClaudeHome(config.workspace)],
+    ...Object.values(BACKENDS).map((backend): [string, string] => [
+      backend.storageSetting,
+      backend.sessionHome(config),
+    ]),
     ["the local control socket directory", dirname(config.socketPath)],
     [
       "the service environment file",
@@ -130,35 +132,16 @@ async function workspaceCredentialOverlap(
   return undefined;
 }
 
-const BACKEND_LABELS: Record<Config["agentBackend"], string> = {
-  pi: "Pi",
-  codex: "Codex",
-  claude: "Claude",
-};
-
-const SESSION_PATH_SETTINGS: Record<Config["agentBackend"], string> = {
-  pi: "SLACK_AGENT_SESSION_DIR",
-  codex: "SLACK_CODEX_HOME",
-  claude: "SLACK_CLAUDE_HOME",
-};
-
-function backendSessionPath(config: Config): string {
-  return config.agentBackend === "codex"
-    ? (config.codexHome ?? defaultCodexHome(config.workspace))
-    : config.agentBackend === "claude"
-      ? (config.claudeHome ?? defaultClaudeHome(config.workspace))
-      : (config.sessionDir ?? defaultSessionDirectory(config.workspace));
-}
-
-/** Only the external CLI backends keep a conversation mapping store. */
+/** Only backends with an external conversation mapping store return a path. */
 function backendStorePath(config: Config): string | undefined {
-  return config.agentBackend === "pi"
-    ? undefined
-    : join(backendSessionPath(config), "conversations.json");
+  const backend = BACKENDS[config.agentBackend];
+  return backend.hasConversationStore
+    ? join(backend.sessionHome(config), "conversations.json")
+    : undefined;
 }
 
 async function checkSessionPath(config: Config): Promise<void> {
-  const sessionPath = backendSessionPath(config);
+  const sessionPath = BACKENDS[config.agentBackend].sessionHome(config);
   const existing = await nearestExistingPath(sessionPath);
   const metadata = await stat(existing);
   if (!metadata.isDirectory()) throw new Error("an existing path component is not a directory");
@@ -471,20 +454,21 @@ export async function runDoctor(
     );
   }
 
+  const backend = BACKENDS[config.agentBackend];
   try {
     await checkSessionPath(config);
     diagnostic(
       diagnostics,
       "pass",
       "Session storage",
-      `${BACKEND_LABELS[config.agentBackend]} session storage is writable`,
+      `${backend.label} session storage is writable`,
     );
   } catch {
     diagnostic(
       diagnostics,
       "fail",
       "Session storage",
-      `${SESSION_PATH_SETTINGS[config.agentBackend]} must be a creatable, writable directory`,
+      `${backend.storageSetting} must be a creatable, writable directory`,
     );
   }
 
@@ -494,7 +478,7 @@ export async function runDoctor(
       diagnostics,
       "fail",
       "Session storage",
-      `${BACKEND_LABELS[config.agentBackend]} conversation store at ${storePath} is unreadable; restore it from backup or let the service quarantine it and start fresh`,
+      `${backend.label} conversation store at ${storePath} is unreadable; restore it from backup or let the service quarantine it and start fresh`,
     );
   }
 
@@ -560,19 +544,13 @@ export async function runDoctor(
     );
   }
 
-  const readinessCheck =
-    config.agentBackend === "codex"
-      ? "Codex readiness"
-      : config.agentBackend === "claude"
-        ? "Claude readiness"
-        : "Pi readiness";
+  const readinessCheck = `${backend.label} readiness`;
   try {
-    const message =
-      config.agentBackend === "codex"
-        ? await (dependencies.codexReady ?? checkCodexReadiness)(config)
-        : config.agentBackend === "claude"
-          ? await (dependencies.claudeReady ?? checkClaudeReadiness)(config)
-          : await (dependencies.piReady ?? checkPiReadiness)(config.workspace);
+    const message = await backend.checkReady(config, {
+      pi: dependencies.piReady ?? checkPiReadiness,
+      codex: dependencies.codexReady ?? checkCodexReadiness,
+      claude: dependencies.claudeReady ?? checkClaudeReadiness,
+    });
     diagnostic(diagnostics, "pass", readinessCheck, message);
   } catch (error) {
     diagnostic(
