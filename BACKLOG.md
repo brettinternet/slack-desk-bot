@@ -62,6 +62,50 @@ The attached client can watch new turns, submit an operator turn, show status, a
 - A real smoke test demonstrates Slack and `slack-desk attach` alternating turns against one Pi SDK session without a second process opening its JSONL file.
 - README documents the terminal workflow, security boundary, recovery-only offline resume procedure, and why concurrent `pi --session` access is unsupported.
 
+### SDB-026: Add a Codex CLI backend
+
+**Depends on:** SDB-025, so local operator session discovery and control are backend-neutral before another session implementation is introduced.
+
+**Why:** Codex CLI provides non-interactive JSONL execution, resumable thread IDs, and an explicit sandbox mode, making it a strong second implementation of `AgentBackend` and a useful portability test for the conversation control plane.
+
+**Scope:**
+
+- Add an explicit backend setting with Pi remaining the default. Backend selection, readiness checks, authentication diagnostics, and session storage must not leak into the Slack transport or local operator protocol.
+- Run Codex non-interactively in `SLACK_AGENT_CWD`, parse structured events into tool-use and final-response events, and persist the mapping from canonical conversation IDs to Codex thread IDs.
+- Resume the exact thread for subsequent Slack or local operator turns. Implement conversation lookup, reset, status where metadata is available, cancellation, process cleanup, and restoration after service restart.
+- Start with read-only mode. Use Codex's native sandbox plus an independently verified process boundary that prevents reads outside `SLACK_AGENT_CWD`, writes, unrestricted shell access, and access to blocked credential paths. Do not claim parity based on prompt instructions alone.
+- Do not enable read-write mode until it can preserve the existing workspace/path policy and single-writer guarantee without granting broader filesystem or shell permissions. Report the mode as unsupported if those guarantees cannot be enforced.
+- Inline text attachments. Support images only if Codex accepts them without weakening the current in-memory file guarantee; otherwise return a clear backend capability error.
+
+**Done:**
+
+- Focused adapter tests cover new and resumed threads, JSONL parsing, tool-use notification, final response and provider errors, cancellation, reset, restart restoration, malformed output, nonzero exit, timeout, and disposal.
+- Security tests demonstrate read confinement and blocked writes/credential paths using the actual Codex process boundary, not only mocked command arguments.
+- Integration and smoke tests show Slack and `slack-desk attach` alternating turns in one Codex thread.
+- Doctor and README document installation, authentication, supported modes and attachments, session behavior, and security differences from Pi.
+
+### SDB-027: Add a Claude Code CLI backend
+
+**Depends on:** SDB-025. Reuse backend-neutral conversation control behavior proven by the Codex adapter, but keep Claude-specific process and event handling in its own adapter rather than introducing a generalized CLI framework prematurely.
+
+**Why:** Claude Code supports headless execution, structured streaming output, explicit session IDs and resume, and granular tool controls. It provides a second external backend with different permission and session semantics.
+
+**Scope:**
+
+- Add Claude Code to the explicit backend setting, readiness checks, and doctor output without coupling Slack or the local operator protocol to Claude concepts.
+- Run `claude` in print mode with structured streaming output, capture the assigned session ID, and persist its mapping to the canonical conversation ID. Resume only that session for later turns.
+- Translate structured assistant and tool events into the existing observer lifecycle. Implement conversation lookup, reset, available status metadata, cancellation, subprocess cleanup, and restoration after service restart.
+- Disable Bash and every unneeded tool. Map read-only and read-write modes to the smallest Claude tool allowlist, and enforce `SLACK_AGENT_CWD` plus blocked credential paths with CLI-native policy/hooks and an independently verified sandbox boundary. Prompt instructions are not a security control.
+- Preserve the single-writer limit in read-write mode. If Claude Code cannot enforce equivalent path and tool restrictions for a mode, fail readiness rather than silently broadening access.
+- Inline text attachments. Support images only through an interface that preserves the current in-memory file guarantee; otherwise return a clear backend capability error.
+
+**Done:**
+
+- Focused adapter tests cover session creation/resume, stream parsing, tool-use notification, final response and provider errors, cancellation, reset, restart restoration, malformed output, nonzero exit, timeout, and disposal.
+- Security tests demonstrate that Bash, out-of-workspace reads/writes, and blocked credential paths are denied by the effective runtime policy.
+- Integration and smoke tests show Slack and `slack-desk attach` alternating turns in one Claude Code session.
+- Doctor and README document installation, authentication, supported modes and attachments, session behavior, and security differences from Pi and Codex.
+
 ## Later considerations
 
 These may be useful later, but are not currently justified as separate implementation work:
