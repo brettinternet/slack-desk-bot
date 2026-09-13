@@ -13,7 +13,54 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 
 ## Active items
 
-_None._
+### SDB-025: Add a local operator connection to live conversations
+
+**Why:** A Slack user can continue a persisted agent conversation, but the desktop operator cannot safely inspect or participate in that live conversation from a terminal. Starting `pi --session <file>` is not an attach mechanism: Pi session JSONL files are designed for one owning process, a second process would not share in-memory state or queueing, and concurrent writes could corrupt or fork history. Stopping the service and resuming a file is useful only for recovery.
+
+**User experience:** Keep SlackDeskBot as the sole owner of agent sessions and expose a local terminal client that joins through the running service:
+
+```text
+$ slack-desk sessions
+SESSION   CONVERSATION             STATE   LAST ACTIVE
+f82ab719  C0123:1726000000.000100  idle    2m
+
+$ slack-desk attach f82ab719
+Attached to C0123:1726000000.000100
+user> Can you inspect the failing build?
+agent> I found...
+operator> Check whether this started after the config change.
+agent> ...
+```
+
+The attached client can watch new turns, submit an operator turn, show status, and cancel an active request. Slack and local operator turns use the existing per-conversation queue. Operator prompts and resulting agent replies are also posted to the originating Slack thread, clearly attributed, so Slack retains a complete visible conversation. Disconnecting a client never stops the session or request.
+
+**Architecture:**
+
+- Add a local Unix domain socket owned by the SlackDeskBot process. The service remains the only process that opens mutable session files or calls an `AgentBackend`.
+- Put a small conversation coordinator above the transport adapters. Slack and the local socket submit the same backend-neutral request/command shape through `QueuedAgentBackend`; do not add Slack or terminal concepts to `AgentBackend`.
+- Publish bounded lifecycle events (`queued`, `started`, `tool-use`, final response, failure, cancellation) to attached local clients. Do not expose model deltas until streaming is separately justified.
+- Add only the backend capabilities required by the client: list known conversations/sessions with safe summary metadata, resolve a displayed session ID to its canonical conversation ID, run/status/cancel, and subscribe to live events.
+- Keep Slack delivery in the Slack adapter. The coordinator should emit an attributed operator turn/result for Slack to publish rather than accepting a Slack client dependency.
+- Use a versioned, newline-delimited JSON protocol with request IDs and explicit message types. Bound frame size, attached clients, subscriptions, and pending requests; a slow or disconnected client must not block Slack delivery or agent execution.
+- Start with a standalone `slack-desk` CLI. A later user-level Pi extension may provide `/desk sessions`, `/desk attach`, `/desk send`, and `/desk cancel` by speaking the same socket protocol. It must proxy to the service rather than open the Slack session file. Normal prompts in the desktop Pi session remain distinct unless an explicit `/desk send` command is used.
+
+**Security and operations:**
+
+- Default the socket below the user's application-support directory, create its parent and socket with owner-only permissions, reject non-owner peers where macOS exposes peer credentials, and remove only a verified stale socket owned by this service.
+- The socket is local-only and has no TCP fallback. Do not put tokens, prompts, file contents, session file paths, or Slack user names in discovery output or logs.
+- Treat the local client as an operator identity. It may participate only in existing conversations and may cancel any active request, but it must not bypass tool mode, workspace policy, queue limits, or backend disposal.
+- Add readiness/doctor checks for socket path validity and collision. Shutdown stops accepting clients, closes them, then disposes the backend exactly once.
+
+**Backend portability:** The socket protocol is a conversation control plane, not a Pi protocol. It should work with future Claude Code, Codex, or other `AgentBackend` adapters if they implement persistent conversation lookup, request/response execution, status, and cancellation. The socket does not itself provide those adapters and cannot attach to another product's native TUI; subprocess/RPC lifecycle, event translation, persistence, and cancellation remain backend-specific. Keep optional capabilities explicit so a backend can report unsupported status or session listing without leaking transport-specific behavior.
+
+**Herdr:** Herdr is not required for session ownership, IPC, queueing, or the first CLI. It may later launch the attach client in a visible pane or associate a conversation with an isolated workspace/worktree, but the socket protocol and service must work without Herdr. Do not make Herdr a runtime dependency.
+
+**Done:**
+
+- Integration test: a Slack turn followed by a local operator turn reaches the same fake backend conversation in order, and both results are delivered to the correct subscribers/Slack thread.
+- Integration tests cover list/attach, status, operator cancellation, reconnect after client disconnect, malformed and oversized frames, unauthorized socket access where testable, backpressure, startup collision, and clean shutdown.
+- A real smoke test demonstrates Slack and `slack-desk attach` alternating turns against one Pi SDK session without a second process opening its JSONL file.
+- README documents the terminal workflow, security boundary, recovery-only offline resume procedure, and why concurrent `pi --session` access is unsupported.
 
 ## Later considerations
 
