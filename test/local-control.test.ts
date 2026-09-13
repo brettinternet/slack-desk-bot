@@ -76,6 +76,10 @@ class ProtocolClient {
     );
   }
 
+  event(type: string): Promise<any> {
+    return this.waitFor((message) => message.type === "event" && message.event.type === type);
+  }
+
   private waitFor(predicate: (message: any) => boolean): Promise<any> {
     const index = this.messages.findIndex(predicate);
     if (index >= 0) return Promise.resolve(this.messages.splice(index, 1)[0]);
@@ -140,12 +144,28 @@ describe("local conversation control", () => {
     const slack = coordinator.run({
       conversationId: "C123:100.1",
       requesterId: "U123",
-      prompt: "from Slack",
+      prompt: `from Slack\n${"x".repeat(220)}`,
+    });
+    expect((await client.event("queued")).event).toEqual({
+      type: "queued",
+      conversationId: "C123:100.1",
+      requesterKind: "slack",
+      promptExcerpt: `from Slack ${"x".repeat(188)}…`,
+    });
+    expect((await client.event("started")).event).toEqual({
+      type: "started",
+      conversationId: "C123:100.1",
+      requesterKind: "slack",
+      promptExcerpt: `from Slack ${"x".repeat(188)}…`,
     });
     client.send("run", "run", { prompt: "from terminal" });
-    expect(await slack).toBe("answer:from Slack");
+    expect(await slack).toBe(`answer:from Slack\n${"x".repeat(220)}`);
+    expect((await client.event("queued")).event).toMatchObject({
+      requesterKind: "operator",
+      promptExcerpt: "from terminal",
+    });
     expect((await client.response("run")).result).toEqual({ response: "answer:from terminal" });
-    expect(calls).toEqual(["from Slack", "from terminal"]);
+    expect(calls).toEqual([`from Slack\n${"x".repeat(220)}`, "from terminal"]);
     expect(exchanges).toEqual([
       {
         conversationId: "C123:100.1",

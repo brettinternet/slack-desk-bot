@@ -12,9 +12,13 @@ import { LOCAL_OPERATOR_ID } from "./local-protocol.ts";
 export type ConversationEventType =
   "queued" | "started" | "tool-use" | "response" | "failure" | "cancellation";
 
+export type ConversationRequesterKind = "slack" | "operator";
+
 export interface ConversationEvent {
   type: ConversationEventType;
   conversationId: string;
+  requesterKind?: ConversationRequesterKind;
+  promptExcerpt?: string;
   response?: string;
   error?: string;
 }
@@ -55,7 +59,7 @@ export class ConversationCoordinator implements CancellableAgentBackend {
     observer?: AgentRunObserver,
     admission?: AgentAdmission,
   ): Promise<string> {
-    const lifecycle = this.observer(request.conversationId, observer);
+    const lifecycle = this.observer(request, observer);
     const result = admission
       ? this.backend.run(request, lifecycle, admission)
       : this.backend.run(request, lifecycle);
@@ -69,7 +73,10 @@ export class ConversationCoordinator implements CancellableAgentBackend {
     observer?: AgentRunObserver,
     admission?: AgentAdmission,
   ): Promise<string> {
-    const lifecycle = this.observer(conversationId, observer);
+    const lifecycle = this.observer(
+      { conversationId, requesterId, prompt: `!${command}` },
+      observer,
+    );
     const result = admission
       ? this.backend.handleCommand(conversationId, requesterId, command, lifecycle, admission)
       : this.backend.handleCommand(conversationId, requesterId, command, lifecycle);
@@ -139,15 +146,23 @@ export class ConversationCoordinator implements CancellableAgentBackend {
     await Promise.allSettled([...this.operatorListeners].map((listener) => listener(exchange)));
   }
 
-  private observer(conversationId: string, downstream?: AgentRunObserver): AgentRunObserver {
+  private observer(
+    request: Pick<AgentRequest, "conversationId" | "requesterId" | "prompt">,
+    downstream?: AgentRunObserver,
+  ): AgentRunObserver {
+    const { conversationId } = request;
+    const lifecycleDetails = {
+      requesterKind: requesterKind(request.requesterId),
+      promptExcerpt: boundedPromptExcerpt(request.prompt),
+    };
     return {
       onQueued: () => {
         downstream?.onQueued?.();
-        this.emit({ type: "queued", conversationId });
+        this.emit({ type: "queued", conversationId, ...lifecycleDetails });
       },
       onStarted: () => {
         downstream?.onStarted?.();
-        this.emit({ type: "started", conversationId });
+        this.emit({ type: "started", conversationId, ...lifecycleDetails });
       },
       onToolUse: () => {
         downstream?.onToolUse();
@@ -178,6 +193,18 @@ export class ConversationCoordinator implements CancellableAgentBackend {
       } catch {}
     }
   }
+}
+
+function requesterKind(requesterId: string): ConversationRequesterKind {
+  return requesterId === LOCAL_OPERATOR_ID ? "operator" : "slack";
+}
+
+function boundedPromptExcerpt(prompt: string): string {
+  const maxCharacters = 200;
+  const singleLine = prompt.replace(/\s+/g, " ").trim();
+  return singleLine.length <= maxCharacters
+    ? singleLine
+    : `${singleLine.slice(0, maxCharacters - 1)}…`;
 }
 
 function boundedEventText(text: string): string {

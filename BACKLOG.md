@@ -17,14 +17,6 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 ### Ergonomics and ease of use
 
-#### SDB-044: Show Slack prompts in attached terminal sessions
-
-**Why:** The README example shows `user>` lines, but `started` and `queued` events carry no prompt, so an attached operator sees `agent> Working…` followed by a response with no idea what was asked.
-
-**Scope:** Include a bounded prompt excerpt and requester kind (`slack` or `operator`, never a Slack user name) in `queued`/`started` events and print it as `user>` or `operator>` in the CLI. Add a `--socket` flag to `slack-desk`, and print the full conversation ID rather than a 28-character truncation.
-
-**Done:** Local control test asserts the event shape; CLI has at least one test for frame parsing and formatting.
-
 #### SDB-045: Consistent structured operator logging
 
 **Why:** Only `agent_request_completed` is structured JSON; startup, denials, capacity drops, operator errors, and delivery failures use `console.log`/`console.warn` strings, and Bolt logs at INFO in its own format. `hum logs agent` output is therefore hard to filter.
@@ -42,6 +34,12 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 **Done:** CI shows the Seatbelt tests executing on macOS.
 
 ## Completed items
+
+### SDB-044: Show Slack prompts in attached terminal sessions
+
+**Resolution:** Queued and started local lifecycle events now include a single-line, 200-character prompt excerpt and only the requester kind (`slack` or `operator`). The terminal client prints attributed `user>` or `operator>` lines without duplicating a prompt across its queued and started events, while a client attached after queueing still sees the prompt when execution starts. Session listings show the full conversation ID. The existing `--socket` override remains supported.
+
+**Verified:** Local control tests assert bounded Slack and operator event metadata without Slack user names. CLI tests cover protocol frame validation, attributed lifecycle formatting, queued/started deduplication, and full conversation IDs. `task test` and `task check` pass.
 
 ### SDB-043: Pass instructions as system prompts for Codex and Claude
 

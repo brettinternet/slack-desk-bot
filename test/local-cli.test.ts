@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseArguments } from "../src/local-cli.ts";
+import { ConversationEventFormatter, formatSessions, parseArguments } from "../src/local-cli.ts";
 import { isLocalServerMessage, LOCAL_PROTOCOL_VERSION } from "../src/local-protocol.ts";
 
 describe("slack-desk argument parsing", () => {
@@ -23,6 +23,45 @@ describe("slack-desk argument parsing", () => {
     expect(() => parseArguments(["bogus"])).toThrow("Usage");
     expect(() => parseArguments(["attach"])).toThrow("Usage");
     expect(() => parseArguments(["--socket"])).toThrow("--socket requires a path");
+  });
+});
+
+describe("slack-desk output formatting", () => {
+  test("prints full conversation IDs and attributed lifecycle prompts", () => {
+    const conversationId = "C0123456789:1726000000.000100-extra-long-conversation-id";
+    expect(
+      formatSessions(
+        [
+          {
+            sessionId: "f82ab719-full-session-id",
+            conversationId,
+            state: "idle",
+            lastActiveAt: 1_700_000_000_000,
+          },
+        ],
+        1_700_000_120_000,
+      )[1],
+    ).toContain(conversationId);
+
+    const formatter = new ConversationEventFormatter();
+    const queued = {
+      type: "queued" as const,
+      conversationId: "C1:1",
+      requesterKind: "slack" as const,
+      promptExcerpt: "Inspect the failing build",
+    };
+    expect(formatter.format(queued)).toEqual(["user> Inspect the failing build"]);
+    expect(formatter.format({ ...queued, type: "started" })).toEqual(["agent> Working…"]);
+
+    const attachedAfterQueue = new ConversationEventFormatter();
+    expect(
+      attachedAfterQueue.format({
+        ...queued,
+        type: "started",
+        requesterKind: "operator",
+        promptExcerpt: "Retry the check",
+      }),
+    ).toEqual(["operator> Retry the check", "agent> Working…"]);
   });
 });
 

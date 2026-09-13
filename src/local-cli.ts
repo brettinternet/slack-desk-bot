@@ -86,32 +86,71 @@ class LocalClient {
 const USAGE =
   "Usage: slack-desk [--socket <path>] sessions | slack-desk [--socket <path>] attach <session-id>";
 
-function formatAge(timestamp: number): string {
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1_000));
+function formatAge(timestamp: number, now: number): string {
+  const seconds = Math.max(0, Math.floor((now - timestamp) / 1_000));
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3_600) return `${Math.floor(seconds / 60)}m`;
   if (seconds < 86_400) return `${Math.floor(seconds / 3_600)}h`;
   return `${Math.floor(seconds / 86_400)}d`;
 }
 
-function printSessions(sessions: ConversationSummary[]): void {
-  console.log("SESSION   CONVERSATION                 STATE      LAST ACTIVE");
-  for (const session of sessions) {
-    console.log(
-      `${session.sessionId.slice(0, 8).padEnd(9)} ${session.conversationId.slice(0, 28).padEnd(28)} ${session.state.padEnd(10)} ${formatAge(session.lastActiveAt)}`,
-    );
+export function formatSessions(sessions: ConversationSummary[], now = Date.now()): string[] {
+  const conversationWidth = Math.max(
+    "CONVERSATION".length,
+    ...sessions.map(({ conversationId }) => conversationId.length),
+  );
+  return [
+    `SESSION   ${"CONVERSATION".padEnd(conversationWidth)} STATE      LAST ACTIVE`,
+    ...sessions.map(
+      (session) =>
+        `${session.sessionId.slice(0, 8).padEnd(9)} ${session.conversationId.padEnd(conversationWidth)} ${session.state.padEnd(10)} ${formatAge(session.lastActiveAt, now)}`,
+    ),
+  ];
+}
+
+export class ConversationEventFormatter {
+  private readonly queuedPrompts = new Map<string, number>();
+
+  format(event: ConversationEvent): string[] {
+    if (event.type === "response") return [`agent> ${event.response ?? ""}`];
+    if (event.type === "failure") return [`agent error> ${event.error ?? "request failed"}`];
+    if (event.type !== "queued" && event.type !== "started") return [];
+
+    const prompt = this.promptLine(event);
+    if (!prompt) return event.type === "started" ? ["agent> Working…"] : [];
+    const key = `${event.requesterKind}\0${event.promptExcerpt}`;
+    if (event.type === "queued") {
+      this.queuedPrompts.set(key, (this.queuedPrompts.get(key) ?? 0) + 1);
+      return [prompt];
+    }
+
+    const queued = this.queuedPrompts.get(key) ?? 0;
+    if (queued <= 1) this.queuedPrompts.delete(key);
+    else this.queuedPrompts.set(key, queued - 1);
+    return queued > 0 ? ["agent> Working…"] : [prompt, "agent> Working…"];
   }
+
+  private promptLine(event: ConversationEvent): string | undefined {
+    if (!event.requesterKind || event.promptExcerpt === undefined) return undefined;
+    const label = event.requesterKind === "operator" ? "operator" : "user";
+    return `${label}> ${event.promptExcerpt}`;
+  }
+}
+
+function printSessions(sessions: ConversationSummary[]): void {
+  for (const line of formatSessions(sessions)) console.log(line);
 }
 
 async function attach(client: LocalClient, sessionId: string): Promise<void> {
   const session = (await client.request("attach", { sessionId })) as ConversationSummary;
   console.log(`Attached to ${session.conversationId}`);
   console.log("Enter a prompt, /status, /cancel, or /quit.");
+  const formatter = new ConversationEventFormatter();
   client.onEvent = (event) => {
-    if (event.type === "response") console.log(`agent> ${event.response ?? ""}`);
-    else if (event.type === "failure")
-      console.error(`agent error> ${event.error ?? "request failed"}`);
-    else if (event.type === "started") console.log("agent> Working…");
+    for (const line of formatter.format(event)) {
+      if (event.type === "failure") console.error(line);
+      else console.log(line);
+    }
   };
 
   const input = createInterface({
