@@ -17,14 +17,6 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 ### Code design
 
-#### SDB-039: Pass an inbound message object through the Slack handler
-
-**Why:** `respondWithinLimit`, `respond`, and `respondAdmitted` thread eight positional parameters through three layers, and `respondAdmitted` is about 200 lines mixing status updates, file ingestion, command dispatch, delivery, reactions, and logging.
-
-**Scope:** Introduce an `InboundSlackMessage` value (`requestId`, `channel`, `messageTs`, `threadTs`, `requesterId`, `prompt`, `files`) and split `respondAdmitted` into status-message management, execution, and delivery. Behavior must not change.
-
-**Done:** `slack.test.ts` passes unchanged; no method exceeds roughly 60 lines.
-
 #### SDB-041: Index Pi sessions instead of scanning the session directory
 
 **Why:** `PiBackend.findSession` and `listConversations` call `SessionManager.list`, which reads every session file header in the directory. `hasConversation` runs on each unowned channel-thread message (with only a 60 s negative cache), and `!reset` archives grow the directory indefinitely, so lookup cost grows with history.
@@ -76,6 +68,12 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 **Done:** CI shows the Seatbelt tests executing on macOS.
 
 ## Completed items
+
+### SDB-039: Pass an inbound message object through the Slack handler
+
+**Resolution:** Slack event handlers now build one `InboundSlackMessage` that flows through capacity admission, command admission, execution, and delivery. The former monolithic response method is split into bounded status, execution, delivery, reaction, and logging methods, and event registration is split out of the constructor.
+
+**Verified:** `test/slack.test.ts` passes unchanged; all Slack handler methods are roughly 60 lines or fewer; `task check` passes.
 
 ### SDB-038: Replace backend-kind ternaries with a backend table
 

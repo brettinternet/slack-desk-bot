@@ -8,6 +8,9 @@ import {
   RateLimitError,
   RequesterLimitError,
   type AgentAdmission,
+  type AgentAttachment,
+  type AgentCommand,
+  type AgentRunObserver,
   type CancellableAgentBackend,
 } from "./agent.ts";
 import { EventDeduplicator } from "./event-deduplicator.ts";
@@ -56,6 +59,30 @@ interface DeliveryResult {
 
 interface SlackFileReference {
   id?: string;
+}
+
+interface InboundSlackMessage {
+  requestId: string;
+  channel: string;
+  messageTs: string;
+  threadTs: string | undefined;
+  requesterId: string;
+  prompt: string;
+  files: readonly SlackFileReference[];
+}
+
+interface RequestStatus {
+  statusTs: string | undefined;
+  observer: AgentRunObserver;
+  toolCount(): number;
+  finish(): Promise<void>;
+}
+
+interface ExecutionResult {
+  outcome: "success" | "cancelled" | "error";
+  finalOutput?: string;
+  delivery?: DeliveryResult;
+  cancelledBy?: string;
 }
 
 function eventFiles(event: object): SlackFileReference[] {
@@ -134,6 +161,11 @@ export class SlackAgent {
       logLevel: LogLevel.INFO,
     });
 
+    this.registerAppMentionHandler();
+    this.registerMessageHandler();
+  }
+
+  private registerAppMentionHandler(): void {
     this.app.event("app_mention", async ({ body, event, client }) => {
       if (!event.user || event.bot_id) return;
       const threadTs = event.thread_ts ?? event.ts;
@@ -149,21 +181,21 @@ export class SlackAgent {
       )
         return;
       this.ownedChannelThreads.add(conversationId(event.channel, threadTs));
-      await this.respondWithinLimit(
-        client,
-        body.event_id,
-        event.channel,
-        event.ts,
+      await this.respondWithinLimit(client, {
+        requestId: body.event_id,
+        channel: event.channel,
+        messageTs: event.ts,
         threadTs,
-        event.user,
+        requesterId: event.user,
         prompt,
         files,
-      );
+      });
     });
+  }
 
+  private registerMessageHandler(): void {
     this.app.event("message", async ({ body, event, client }) => {
       if (!("user" in event) || !event.user || ("bot_id" in event && event.bot_id)) return;
-
       const directMessage = event.channel_type === "im";
       if (
         !(directMessage
@@ -173,34 +205,31 @@ export class SlackAgent {
         return;
       const threadTs = "thread_ts" in event ? event.thread_ts : undefined;
       if (!directMessage) {
-        if (!threadTs) return;
-        const id = conversationId(event.channel, threadTs);
-        if (!(await this.ownsChannelThread(id))) return;
+        if (!threadTs || !(await this.ownsChannelThread(conversationId(event.channel, threadTs))))
+          return;
       }
       if (!this.options.allowedUserIds.has(event.user)) {
         await this.deny(client, event.channel, threadTs, event.user);
         return;
       }
-
       const rawText = "text" in event ? (event.text ?? "") : "";
-      const text = directMessage ? rawText : stripBotMention(rawText, this.botUserId);
+      const prompt = directMessage ? rawText : stripBotMention(rawText, this.botUserId);
       const files = eventFiles(event);
       const clientMessageId = "client_msg_id" in event ? event.client_msg_id : undefined;
       if (
-        (!text && files.length === 0) ||
+        (!prompt && files.length === 0) ||
         !this.acceptEvent(body.event_id, event.channel, event.ts, clientMessageId)
       )
         return;
-      await this.respondWithinLimit(
-        client,
-        body.event_id,
-        event.channel,
-        event.ts,
+      await this.respondWithinLimit(client, {
+        requestId: body.event_id,
+        channel: event.channel,
+        messageTs: event.ts,
         threadTs,
-        event.user,
-        text,
+        requesterId: event.user,
+        prompt,
         files,
-      );
+      });
     });
   }
 
@@ -363,13 +392,7 @@ export class SlackAgent {
 
   private async respondWithinLimit(
     client: App["client"],
-    requestId: string,
-    channel: string,
-    messageTs: string,
-    threadTs: string | undefined,
-    requesterId: string,
-    prompt: string,
-    files: readonly SlackFileReference[],
+    message: InboundSlackMessage,
   ): Promise<void> {
     if (this.activeResponses >= MAX_CONCURRENT_RESPONSES) {
       if (!this.responseCapacityWarningLogged) {
@@ -383,16 +406,7 @@ export class SlackAgent {
 
     this.activeResponses++;
     try {
-      await this.respond(
-        client,
-        requestId,
-        channel,
-        messageTs,
-        threadTs,
-        requesterId,
-        prompt,
-        files,
-      );
+      await this.respond(client, message);
     } finally {
       this.activeResponses--;
       if (this.activeResponses < MAX_CONCURRENT_RESPONSES) {
@@ -401,22 +415,13 @@ export class SlackAgent {
     }
   }
 
-  private async respond(
-    client: App["client"],
-    requestId: string,
-    channel: string,
-    messageTs: string,
-    threadTs: string | undefined,
-    requesterId: string,
-    prompt: string,
-    files: readonly SlackFileReference[],
-  ): Promise<void> {
-    const command = files.length === 0 ? parseSlackCommand(prompt) : undefined;
+  private async respond(client: App["client"], message: InboundSlackMessage): Promise<void> {
+    const command = message.files.length === 0 ? parseSlackCommand(message.prompt) : undefined;
     if (command?.kind === "help" || command?.kind === "unknown") {
       await this.chatOperation(() =>
         client.chat.postMessage({
-          channel,
-          thread_ts: threadTs,
+          channel: message.channel,
+          thread_ts: message.threadTs,
           text:
             command.kind === "help"
               ? HELP_MESSAGE
@@ -430,208 +435,288 @@ export class SlackAgent {
     const agentCommand = command?.kind === "agent" ? command.command : undefined;
     if (agentCommand !== "status" && agentCommand !== "cancel") {
       try {
-        admission = this.options.agent.admit?.(requesterId);
+        admission = this.options.agent.admit?.(message.requesterId);
       } catch (error) {
-        await this.bestEffortChatOperation(() =>
-          client.chat.postMessage({
-            channel,
-            thread_ts: threadTs,
-            text: userFacingAgentError(error, requestId),
-          }),
-        );
+        await this.postAdmissionError(client, message, error);
         return;
       }
     }
 
     try {
-      await this.respondAdmitted(
-        client,
-        requestId,
-        channel,
-        messageTs,
-        threadTs,
-        requesterId,
-        prompt,
-        files,
-        command,
-        admission,
-      );
+      await this.respondAdmitted(client, message, command, admission);
     } finally {
       admission?.release();
     }
   }
 
+  private async postAdmissionError(
+    client: App["client"],
+    message: InboundSlackMessage,
+    error: unknown,
+  ): Promise<void> {
+    await this.bestEffortChatOperation(() =>
+      client.chat.postMessage({
+        channel: message.channel,
+        thread_ts: message.threadTs,
+        text: userFacingAgentError(error, message.requestId),
+      }),
+    );
+  }
+
   private async respondAdmitted(
     client: App["client"],
-    requestId: string,
-    channel: string,
-    messageTs: string,
-    threadTs: string | undefined,
-    requesterId: string,
-    prompt: string,
-    files: readonly SlackFileReference[],
+    message: InboundSlackMessage,
     command: ReturnType<typeof parseSlackCommand>,
     admission: AgentAdmission | undefined,
   ): Promise<void> {
-    const id = conversationId(channel, threadTs);
     const startedAt = performance.now();
-    let runStartedAt = startedAt;
-    let toolCount = 0;
-    let executionOutcome: "success" | "cancelled" | "error" = "error";
-    let delivery: DeliveryResult = { outcome: "failure", publishedMessages: 0 };
-    let finalOutput: string | undefined;
-    let cancelledBy: string | undefined;
-    let feedbackTimer: ReturnType<typeof setInterval> | undefined;
+    const status = await this.createRequestStatus(client, message);
+    const execution = await this.executeRequest(client, message, command, admission, status);
+    const delivery = await this.deliverRequest(client, message, status, execution);
+    this.recordRequest(message, status, execution, delivery, startedAt);
+  }
 
+  private async createRequestStatus(
+    client: App["client"],
+    message: InboundSlackMessage,
+  ): Promise<RequestStatus> {
     await this.bestEffortSlackOperation(
-      client.reactions.add({ channel, timestamp: messageTs, name: "eyes" }),
+      client.reactions.add({
+        channel: message.channel,
+        timestamp: message.messageTs,
+        name: "eyes",
+      }),
     );
-    const status = await this.bestEffortChatOperation(() =>
-      client.chat.postMessage({ channel, thread_ts: threadTs, text: "Queued…" }),
+    const response = await this.bestEffortChatOperation(() =>
+      client.chat.postMessage({
+        channel: message.channel,
+        thread_ts: message.threadTs,
+        text: "Queued…",
+      }),
     );
-    const statusTs = status?.ts;
+    const statusTs = response?.ts;
     let statusUpdates = Promise.resolve();
-    const updateStatus = (text: string): void => {
+    let feedbackTimer: ReturnType<typeof setInterval> | undefined;
+    let runStartedAt = performance.now();
+    let toolCount = 0;
+    const update = (text: string): void => {
       if (!statusTs) return;
       statusUpdates = statusUpdates.then(async () => {
         await this.bestEffortChatOperation(() =>
-          client.chat.update({ channel, ts: statusTs, text }),
+          client.chat.update({ channel: message.channel, ts: statusTs, text }),
         );
       });
     };
-    const observer = {
-      onQueued: () => {},
-      onStarted: () => {
-        runStartedAt = performance.now();
-        updateStatus("Working…");
-        feedbackTimer = setInterval(() => {
-          const elapsedSeconds = Math.max(
-            1,
-            Math.floor((performance.now() - runStartedAt) / 1_000),
-          );
-          updateStatus(
-            `Working… ${elapsedSeconds}s elapsed · ${toolCount} tool ${toolCount === 1 ? "use" : "uses"}`,
-          );
-        }, this.options.statusUpdateIntervalMs ?? 30_000);
-        feedbackTimer.unref();
+    return {
+      statusTs,
+      observer: {
+        onQueued: () => {},
+        onStarted: () => {
+          runStartedAt = performance.now();
+          update("Working…");
+          feedbackTimer = setInterval(() => {
+            const elapsed = Math.max(1, Math.floor((performance.now() - runStartedAt) / 1_000));
+            update(
+              `Working… ${elapsed}s elapsed · ${toolCount} tool ${toolCount === 1 ? "use" : "uses"}`,
+            );
+          }, this.options.statusUpdateIntervalMs ?? 30_000);
+          feedbackTimer.unref();
+        },
+        onToolUse: () => toolCount++,
       },
-      onToolUse: () => toolCount++,
+      toolCount: () => toolCount,
+      finish: async () => {
+        if (feedbackTimer) clearInterval(feedbackTimer);
+        await statusUpdates;
+      },
     };
+  }
 
+  private async executeRequest(
+    client: App["client"],
+    message: InboundSlackMessage,
+    command: ReturnType<typeof parseSlackCommand>,
+    admission: AgentAdmission | undefined,
+    status: RequestStatus,
+  ): Promise<ExecutionResult> {
     try {
-      const { attachments, warnings } = await ingestSlackFiles(
-        client,
-        this.options.botToken,
-        files,
-        this.options.fetch,
-      );
-      for (const warning of warnings) {
-        await this.chatOperation(() =>
-          client.chat.postMessage({ channel, thread_ts: threadTs, text: warning }),
-        );
-      }
-      if (!prompt && attachments.length === 0) {
-        if (statusTs) {
-          await this.bestEffortSlackOperation(client.chat.delete({ channel, ts: statusTs }));
-        }
-        executionOutcome = "success";
-        delivery = { outcome: "success", publishedMessages: 0 };
-      } else {
-        const agentCommand =
-          attachments.length === 0 && command?.kind === "agent" ? command.command : undefined;
-        if (agentCommand === "cancel") {
-          observer.onStarted();
-          const cancelled = this.options.agent.cancelActive(
-            id,
-            requesterId,
-            this.options.operatorUserIds?.has(requesterId),
-          );
-          if (cancelled) cancelledBy = requesterId;
-          finalOutput = cancelled
-            ? `<@${requesterId}> cancelled the active request.`
-            : "There is no active request to cancel.";
-        } else if (agentCommand) {
-          finalOutput = escapeSlackText(
-            admission
-              ? await this.options.agent.handleCommand(
-                  id,
-                  requesterId,
-                  agentCommand,
-                  observer,
-                  admission,
-                )
-              : await this.options.agent.handleCommand(id, requesterId, agentCommand, observer),
-          );
-        } else {
-          const request = {
-            conversationId: id,
-            requesterId,
-            prompt,
-            ...(attachments.length > 0 ? { attachments } : {}),
-          };
-          finalOutput = escapeSlackText(
-            admission
-              ? await this.options.agent.run(request, observer, admission)
-              : await this.options.agent.run(request, observer),
-          );
-        }
-        executionOutcome = "success";
-      }
+      return await this.performRequest(client, message, command, admission, status);
     } catch (error) {
       const cancelled = error instanceof AgentCancelledError;
-      executionOutcome = cancelled ? "cancelled" : "error";
-      const expected =
-        cancelled ||
-        error instanceof ConversationQueueFullError ||
-        error instanceof GlobalQueueFullError ||
-        error instanceof RequesterLimitError ||
-        error instanceof RateLimitError ||
-        error instanceof AgentTimeoutError ||
-        error instanceof QueueWaitTimeoutError;
+      const expected = cancelled || this.isExpectedAgentError(error);
       if (!expected) {
-        this.reportOperatorError("Unexpected agent request failure", requestId, errorType(error));
+        this.reportOperatorError(
+          "Unexpected agent request failure",
+          message.requestId,
+          errorType(error),
+        );
       }
-      finalOutput = userFacingAgentError(error, requestId);
+      return {
+        outcome: cancelled ? "cancelled" : "error",
+        finalOutput: userFacingAgentError(error, message.requestId),
+      };
     } finally {
-      if (feedbackTimer) clearInterval(feedbackTimer);
-      await statusUpdates;
+      await status.finish();
     }
+  }
 
-    if (finalOutput !== undefined) {
-      delivery = await this.publishResult(client, channel, threadTs, statusTs, finalOutput);
+  private async performRequest(
+    client: App["client"],
+    message: InboundSlackMessage,
+    command: ReturnType<typeof parseSlackCommand>,
+    admission: AgentAdmission | undefined,
+    status: RequestStatus,
+  ): Promise<ExecutionResult> {
+    const { attachments, warnings } = await ingestSlackFiles(
+      client,
+      this.options.botToken,
+      message.files,
+      this.options.fetch,
+    );
+    for (const warning of warnings) {
+      await this.chatOperation(() =>
+        client.chat.postMessage({
+          channel: message.channel,
+          thread_ts: message.threadTs,
+          text: warning,
+        }),
+      );
+    }
+    if (!message.prompt && attachments.length === 0) {
+      if (status.statusTs) {
+        await this.bestEffortSlackOperation(
+          client.chat.delete({ channel: message.channel, ts: status.statusTs }),
+        );
+      }
+      return {
+        outcome: "success",
+        delivery: { outcome: "success", publishedMessages: 0 },
+      };
+    }
+    const agentCommand =
+      attachments.length === 0 && command?.kind === "agent" ? command.command : undefined;
+    return this.invokeAgent(message, attachments, agentCommand, admission, status.observer);
+  }
+
+  private async invokeAgent(
+    message: InboundSlackMessage,
+    attachments: readonly AgentAttachment[],
+    command: AgentCommand | undefined,
+    admission: AgentAdmission | undefined,
+    observer: AgentRunObserver,
+  ): Promise<ExecutionResult> {
+    const id = conversationId(message.channel, message.threadTs);
+    if (command === "cancel") {
+      observer.onStarted?.();
+      const cancelled = this.options.agent.cancelActive(
+        id,
+        message.requesterId,
+        this.options.operatorUserIds?.has(message.requesterId),
+      );
+      return {
+        outcome: "success",
+        finalOutput: cancelled
+          ? `<@${message.requesterId}> cancelled the active request.`
+          : "There is no active request to cancel.",
+        ...(cancelled ? { cancelledBy: message.requesterId } : {}),
+      };
+    }
+    if (command) {
+      const output = admission
+        ? await this.options.agent.handleCommand(
+            id,
+            message.requesterId,
+            command,
+            observer,
+            admission,
+          )
+        : await this.options.agent.handleCommand(id, message.requesterId, command, observer);
+      return { outcome: "success", finalOutput: escapeSlackText(output) };
+    }
+    const request = {
+      conversationId: id,
+      requesterId: message.requesterId,
+      prompt: message.prompt,
+      ...(attachments.length > 0 ? { attachments } : {}),
+    };
+    const output = admission
+      ? await this.options.agent.run(request, observer, admission)
+      : await this.options.agent.run(request, observer);
+    return { outcome: "success", finalOutput: escapeSlackText(output) };
+  }
+
+  private isExpectedAgentError(error: unknown): boolean {
+    return (
+      error instanceof ConversationQueueFullError ||
+      error instanceof GlobalQueueFullError ||
+      error instanceof RequesterLimitError ||
+      error instanceof RateLimitError ||
+      error instanceof AgentTimeoutError ||
+      error instanceof QueueWaitTimeoutError
+    );
+  }
+
+  private async deliverRequest(
+    client: App["client"],
+    message: InboundSlackMessage,
+    status: RequestStatus,
+    execution: ExecutionResult,
+  ): Promise<DeliveryResult> {
+    let delivery = execution.delivery ?? { outcome: "failure", publishedMessages: 0 };
+    if (execution.finalOutput !== undefined) {
+      delivery = await this.publishResult(
+        client,
+        message.channel,
+        message.threadTs,
+        status.statusTs,
+        execution.finalOutput,
+      );
       if (delivery.outcome !== "success") {
         this.reportOperatorError(
           "Slack result delivery failure",
-          requestId,
+          message.requestId,
           delivery.errorType ?? "UnknownDeliveryError",
         );
       }
     }
-
-    const successful = executionOutcome === "success" && delivery.outcome === "success";
+    const successful = execution.outcome === "success" && delivery.outcome === "success";
     if (delivery.outcome === "success") this.options.health?.recordSlackDeliverySuccess();
-    else if (finalOutput !== undefined) this.options.health?.recordSlackDeliveryFailure();
+    else if (execution.finalOutput !== undefined) this.options.health?.recordSlackDeliveryFailure();
     await this.bestEffortSlackOperation(
       client.reactions.add({
-        channel,
-        timestamp: messageTs,
+        channel: message.channel,
+        timestamp: message.messageTs,
         name: successful ? "white_check_mark" : "x",
       }),
     );
     await this.bestEffortSlackOperation(
-      client.reactions.remove({ channel, timestamp: messageTs, name: "eyes" }),
+      client.reactions.remove({
+        channel: message.channel,
+        timestamp: message.messageTs,
+        name: "eyes",
+      }),
     );
+    return delivery;
+  }
+
+  private recordRequest(
+    message: InboundSlackMessage,
+    status: RequestStatus,
+    execution: ExecutionResult,
+    delivery: DeliveryResult,
+    startedAt: number,
+  ): void {
     (this.options.log ?? writeStructuredLog)({
       event: "agent_request_completed",
-      request_id: requestId,
-      user: requesterId,
-      conversation: id,
+      request_id: message.requestId,
+      user: message.requesterId,
+      conversation: conversationId(message.channel, message.threadTs),
       duration_ms: Math.round(performance.now() - startedAt),
-      tool_count: toolCount,
-      execution_outcome: executionOutcome,
+      tool_count: status.toolCount(),
+      execution_outcome: execution.outcome,
       delivery_outcome: delivery.outcome,
       published_messages: delivery.publishedMessages,
-      ...(cancelledBy ? { cancelled_by: cancelledBy } : {}),
+      ...(execution.cancelledBy ? { cancelled_by: execution.cancelledBy } : {}),
     });
   }
 
