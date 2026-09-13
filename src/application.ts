@@ -5,6 +5,7 @@ import { ConversationCoordinator } from "./conversation-coordinator.ts";
 import { checkClaudeReadiness, checkCodexReadiness, checkPiReadiness } from "./doctor.ts";
 import { HealthState, startHealthServer } from "./health.ts";
 import { LocalControlServer } from "./local-control.ts";
+import { type LogWriter, writeStructuredLog } from "./log.ts";
 import { SlackAgent } from "./slack.ts";
 
 interface SlackLifecycle {
@@ -28,6 +29,7 @@ interface RuntimeBackend extends CancellableAgentBackend {
 }
 
 interface ApplicationDependencies {
+  log?: LogWriter;
   piReady?: (workspace: string) => Promise<string>;
   codexReady?: (config: Config) => Promise<string>;
   claudeReady?: (config: Config) => Promise<string>;
@@ -62,15 +64,16 @@ export async function startApplication(
   config: Config,
   dependencies: ApplicationDependencies = {},
 ): Promise<RunningApplication> {
-  console.log(`SlackDeskBot backend: ${config.agentBackend}; mode: ${config.agentMode}`);
-  if (
-    config.queueLimits.maxConcurrentConversations !== config.configuredMaxConcurrentConversations
-  ) {
-    console.log(
-      `Read-write mode limits concurrent conversations to ${config.queueLimits.maxConcurrentConversations} ` +
-        `(configured: ${config.configuredMaxConcurrentConversations}) to protect the shared checkout.`,
-    );
-  }
+  const log = dependencies.log ?? writeStructuredLog;
+  log({
+    event: "startup",
+    component: "application",
+    outcome: "starting",
+    backend: config.agentBackend,
+    mode: config.agentMode,
+    max_concurrent: config.queueLimits.maxConcurrentConversations,
+    configured_max_concurrent: config.configuredMaxConcurrentConversations,
+  });
 
   await BACKENDS[config.agentBackend].checkReady(config, {
     pi: dependencies.piReady ?? checkPiReadiness,
@@ -91,6 +94,7 @@ export async function startApplication(
         operatorUserIds: config.operatorUserIds,
         agent,
         health,
+        operatorLog: log,
       }))
   )({ config, agent, health });
   const local = (dependencies.createLocalControl ?? ((options) => new LocalControlServer(options)))(

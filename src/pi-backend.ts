@@ -22,6 +22,7 @@ import type {
 import { prepareTextPrompt } from "./agent-prompt.ts";
 import type { AgentMode } from "./config.ts";
 import { ConversationStore } from "./conversation-store.ts";
+import { writeStructuredLog } from "./log.ts";
 import { workspacePolicy } from "./workspace-policy.ts";
 
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
@@ -175,10 +176,14 @@ export class PiBackend implements AgentBackend {
         typeof mapping.sessionFile === "string" &&
         Number.isFinite(mapping.lastActiveAt) &&
         Number.isFinite(mapping.messageCount),
-      ({ movedTo, reason }) =>
-        console.warn(
-          `Pi conversation store was unreadable (${reason}); moved to ${movedTo} and starting empty`,
-        ),
+      ({ movedTo }) =>
+        writeStructuredLog({
+          event: "operator_error",
+          component: "pi",
+          message: "Conversation store was unreadable; moved aside and started empty",
+          error_type: "CorruptConversationStore",
+          moved_to: movedTo,
+        }),
     );
     for (const [conversationId, mapping] of this.store.load()) {
       this.mappings.set(conversationId, mapping);

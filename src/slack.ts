@@ -15,7 +15,7 @@ import {
 } from "./agent.ts";
 import { EventDeduplicator } from "./event-deduplicator.ts";
 import { ingestSlackFiles } from "./slack-files.ts";
-import { type LogWriter, writeStructuredLog } from "./log.ts";
+import { type LogWriter, type RequestLogWriter, writeStructuredLog } from "./log.ts";
 import { type HealthState } from "./health.ts";
 import {
   conversationId,
@@ -35,7 +35,8 @@ interface SlackAgentOptions {
   operatorUserIds?: ReadonlySet<string>;
   agent: CancellableAgentBackend;
   fetch?: typeof fetch;
-  log?: LogWriter;
+  log?: RequestLogWriter;
+  operatorLog?: LogWriter;
   operatorError?: (message: string, context: { requestId: string; errorType: string }) => void;
   statusUpdateIntervalMs?: number;
   health?: HealthState;
@@ -246,7 +247,11 @@ export class SlackAgent {
     if (!authentication.user_id) throw new SlackAuthenticationError();
     this.botUserId = authentication.user_id;
     await this.app.start();
-    console.log("SlackDeskBot connected");
+    (this.options.operatorLog ?? writeStructuredLog)({
+      event: "startup",
+      component: "slack",
+      outcome: "connected",
+    });
   }
 
   async stop(): Promise<void> {
@@ -373,7 +378,7 @@ export class SlackAgent {
     threadTs: string | undefined,
     userId: string,
   ): Promise<void> {
-    console.warn(`Rejected unauthorized Slack request in channel ${channel}`);
+    (this.options.operatorLog ?? writeStructuredLog)({ event: "unauthorized", channel });
     if (!this.denials.accept([`deny:${conversationId(channel, threadTs)}:${userId}`])) return;
     await this.bestEffortChatOperation(() =>
       client.chat.postMessage({
@@ -385,9 +390,16 @@ export class SlackAgent {
   }
 
   private reportOperatorError(message: string, requestId: string, type: string): void {
-    (this.options.operatorError ?? ((text, context) => console.error(text, context)))(message, {
-      requestId,
-      errorType: type,
+    if (this.options.operatorError) {
+      this.options.operatorError(message, { requestId, errorType: type });
+      return;
+    }
+    (this.options.operatorLog ?? writeStructuredLog)({
+      event: "operator_error",
+      component: "slack",
+      message,
+      request_id: requestId,
+      error_type: type,
     });
   }
 
@@ -397,9 +409,11 @@ export class SlackAgent {
   ): Promise<void> {
     if (this.activeResponses >= MAX_CONCURRENT_RESPONSES) {
       if (!this.responseCapacityWarningLogged) {
-        console.warn(
-          `Dropped Slack request because ${MAX_CONCURRENT_RESPONSES} responses are active`,
-        );
+        (this.options.operatorLog ?? writeStructuredLog)({
+          event: "capacity_drop",
+          active_responses: this.activeResponses,
+          limit: MAX_CONCURRENT_RESPONSES,
+        });
         this.responseCapacityWarningLogged = true;
       }
       await this.reportCapacityDrop(client, message);

@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { prepareTextPrompt } from "./agent-prompt.ts";
 import { runSandboxedJsonl } from "./cli-process.ts";
 import { ConversationStore } from "./conversation-store.ts";
+import { writeStructuredLog } from "./log.ts";
 import { seatbeltProfile } from "./seatbelt.ts";
 import { claudeSensitiveReadPermissions } from "./sensitive-paths.ts";
 import type {
@@ -179,10 +180,14 @@ export class ClaudeBackend implements AgentBackend {
     this.store = new ConversationStore<StoredConversation>(
       join(this.home, STORE_FILE),
       (mapping) => typeof mapping.sessionId === "string" && Number.isFinite(mapping.lastActiveAt),
-      ({ movedTo, reason }) =>
-        console.warn(
-          `Claude conversation store was unreadable (${reason}); moved to ${movedTo} and starting empty`,
-        ),
+      ({ movedTo }) =>
+        writeStructuredLog({
+          event: "operator_error",
+          component: "claude",
+          message: "Conversation store was unreadable; moved aside and started empty",
+          error_type: "CorruptConversationStore",
+          moved_to: movedTo,
+        }),
     );
     this.sandboxPath = join(this.home, SANDBOX_PROFILE);
     this.settingsPath = join(this.home, SETTINGS_FILE);

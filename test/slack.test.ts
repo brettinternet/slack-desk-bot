@@ -13,7 +13,7 @@ import {
   type QueueLimits,
   QueuedAgentBackend,
 } from "../src/agent.ts";
-import type { RequestLog } from "../src/log.ts";
+import type { RequestLog, StructuredLog } from "../src/log.ts";
 import { SLACK_MESSAGE_LIMIT } from "../src/messages.ts";
 
 interface SlackEventHandler {
@@ -372,11 +372,13 @@ describe("SlackAgent transport", () => {
 
   test("rejects unauthorized mentions before invoking the backend", async () => {
     const run = mock(async () => "response");
+    const operatorLogs: StructuredLog[] = [];
     new SlackAgent({
       botToken: "xoxb-test",
       appToken: "xapp-test",
       allowedUserIds: new Set(["U_ALLOWED"]),
       agent: backend(run),
+      operatorLog: (record) => operatorLogs.push(record),
     });
     const slack = client();
 
@@ -412,6 +414,8 @@ describe("SlackAgent transport", () => {
     );
     expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
     expect(slack.files.info).not.toHaveBeenCalled();
+    expect(operatorLogs).toHaveLength(21);
+    expect(operatorLogs[0]).toEqual({ event: "unauthorized", channel: "C1" });
   });
 
   test("bounds Slack calls for a burst beyond requester admission", async () => {
@@ -999,10 +1003,7 @@ describe("SlackAgent transport", () => {
 
   test("reports unexpected failures without exposing backend details", async () => {
     const records: RequestLog[] = [];
-    const operatorErrors: Array<{
-      message: string;
-      context: { requestId: string; errorType: string };
-    }> = [];
+    const operatorLogs: StructuredLog[] = [];
     const run = mock(async (_request: unknown, observer?: AgentRunObserver) => {
       observer?.onToolUse();
       throw new Error("backend unavailable with secret-token");
@@ -1013,7 +1014,7 @@ describe("SlackAgent transport", () => {
       allowedUserIds: new Set(["U_ALLOWED"]),
       agent: backend(run),
       log: (record) => records.push(record),
-      operatorError: (message, context) => operatorErrors.push({ message, context }),
+      operatorLog: (record) => operatorLogs.push(record),
     });
     const slack = client();
 
@@ -1029,13 +1030,16 @@ describe("SlackAgent transport", () => {
       text: "The request failed unexpectedly. Try again or contact the operator with request ID `E_FAILURE`.",
     });
     expect(JSON.stringify(slack.chat.update.mock.calls)).not.toContain("secret-token");
-    expect(operatorErrors).toEqual([
+    expect(operatorLogs).toEqual([
       {
+        event: "operator_error",
+        component: "slack",
         message: "Unexpected agent request failure",
-        context: { requestId: "E_FAILURE", errorType: "Error" },
+        request_id: "E_FAILURE",
+        error_type: "Error",
       },
     ]);
-    expect(JSON.stringify(operatorErrors)).not.toContain("secret-token");
+    expect(JSON.stringify(operatorLogs)).not.toContain("secret-token");
     expect(slack.reactions.add).toHaveBeenCalledWith({
       channel: "C1",
       timestamp: "2",

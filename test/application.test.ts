@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { QueueSnapshot } from "../src/agent.ts";
 import { startApplication } from "../src/application.ts";
 import type { Config } from "../src/config.ts";
+import type { StructuredLog } from "../src/log.ts";
 import { SlackAuthenticationError } from "../src/slack.ts";
 
 const queue: QueueSnapshot = {
@@ -60,7 +61,9 @@ describe("application startup", () => {
   test("assembles startup, reports readiness, and shuts down gracefully", async () => {
     const agent = backend();
     const slackStop = mock(async () => {});
+    const records: StructuredLog[] = [];
     const application = await startApplication(config(), {
+      log: (record) => records.push(record),
       piReady: async () => "Pi model test/model is available",
       createBackend: () => agent,
       createSlackAgent: ({ health }) => ({
@@ -71,6 +74,18 @@ describe("application startup", () => {
         stop: slackStop,
       }),
     });
+
+    expect(records).toEqual([
+      {
+        event: "startup",
+        component: "application",
+        outcome: "starting",
+        backend: "pi",
+        mode: "read-only",
+        max_concurrent: 3,
+        configured_max_concurrent: 3,
+      },
+    ]);
 
     const response = await fetch(`http://127.0.0.1:${application.healthPort}/readyz`);
     expect(response.status).toBe(200);

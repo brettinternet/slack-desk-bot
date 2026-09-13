@@ -17,14 +17,6 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 ### Ergonomics and ease of use
 
-#### SDB-045: Consistent structured operator logging
-
-**Why:** Only `agent_request_completed` is structured JSON; startup, denials, capacity drops, operator errors, and delivery failures use `console.log`/`console.warn` strings, and Bolt logs at INFO in its own format. `hum logs agent` output is therefore hard to filter.
-
-**Scope:** Extend `log.ts` with a small set of event types (`startup`, `unauthorized`, `capacity_drop`, `operator_error`, `shutdown`) and route the existing ad-hoc calls through it. Keep prompts, tokens, and file contents out, as today.
-
-**Done:** Every non-Bolt log line is a single JSON object with `event` and `timestamp`.
-
 #### SDB-047: Run Seatbelt tests on a macOS CI runner
 
 **Why:** The Codex and Claude sandbox tests are `skipIf(process.platform !== "darwin")` and CI runs on Ubuntu, so the security boundary that SDB-026/027 required to be proven by a real process is never verified in CI.
@@ -34,6 +26,12 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 **Done:** CI shows the Seatbelt tests executing on macOS.
 
 ## Completed items
+
+### SDB-045: Consistent structured operator logging
+
+**Resolution:** Added typed `startup`, `unauthorized`, `capacity_drop`, `operator_error`, and `shutdown` events alongside request completion logs. Application and Slack startup, access denials, response-capacity drops, request and delivery failures, corrupt conversation stores, startup failures, and every shutdown outcome now use the shared JSON writer without including prompts, tokens, or file contents.
+
+**Verified:** Focused Slack tests cover structured unauthorized and operator-error metadata without sensitive backend details; application and shutdown tests cover startup and all shutdown outcomes. Type checking and the full test suite pass.
 
 ### SDB-044: Show Slack prompts in attached terminal sessions
 

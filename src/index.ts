@@ -1,12 +1,13 @@
 import { startApplication, type RunningApplication, type ShutdownStage } from "./application.ts";
 import { loadConfig } from "./config.ts";
+import { type LogWriter, writeStructuredLog } from "./log.ts";
 
 export const SHUTDOWN_TIMEOUT_MS = 15_000;
 
 interface ShutdownOptions {
   timeoutMs?: number;
   exit?: (code: number) => void;
-  logError?: (message: string) => void;
+  log?: LogWriter;
 }
 
 export async function shutdownApplication(
@@ -15,7 +16,7 @@ export async function shutdownApplication(
 ): Promise<void> {
   const timeoutMs = options.timeoutMs ?? SHUTDOWN_TIMEOUT_MS;
   const exit = options.exit ?? process.exit;
-  const logError = options.logError ?? console.error;
+  const log = options.log ?? writeStructuredLog;
   let stage: ShutdownStage = "health_server";
   let timeout: ReturnType<typeof setTimeout> | undefined;
 
@@ -35,19 +36,23 @@ export async function shutdownApplication(
   if (timeout) clearTimeout(timeout);
 
   if (outcome.type === "timed_out") {
-    logError(`SlackDeskBot shutdown timed out during ${stage} after ${timeoutMs} ms`);
+    log({ event: "shutdown", outcome: "timeout", stage, timeout_ms: timeoutMs });
     exit(1);
     return;
   }
   if (outcome.type === "failed") {
-    logError(
-      `SlackDeskBot shutdown failed during ${stage}: ${
-        outcome.error instanceof Error ? outcome.error.message : "unknown shutdown error"
-      }`,
-    );
+    log({
+      event: "shutdown",
+      outcome: "failure",
+      stage,
+      error_type: outcome.error instanceof Error ? outcome.error.name : typeof outcome.error,
+      error_message:
+        outcome.error instanceof Error ? outcome.error.message : "unknown shutdown error",
+    });
     exit(1);
     return;
   }
+  log({ event: "shutdown", outcome: "success", stage });
   exit(0);
 }
 
@@ -69,9 +74,13 @@ if (import.meta.main) {
       });
     }
   } catch (error) {
-    console.error(
-      `SlackDeskBot failed to start: ${error instanceof Error ? error.message : "unknown startup error"}`,
-    );
+    writeStructuredLog({
+      event: "startup",
+      component: "application",
+      outcome: "failure",
+      error_type: error instanceof Error ? error.name : typeof error,
+      error_message: error instanceof Error ? error.message : "unknown startup error",
+    });
     process.exitCode = 1;
   }
 }
