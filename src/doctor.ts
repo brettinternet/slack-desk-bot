@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { constants, realpathSync } from "node:fs";
-import { access, lstat, readFile, stat } from "node:fs/promises";
+import { access, lstat, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { createConnection, createServer } from "node:net";
 import { dirname, join } from "node:path";
@@ -168,6 +168,17 @@ class ReadOnlyPiCredentials implements CredentialStore {
 
 const executeFile = promisify(execFile);
 
+/**
+ * `sandbox-exec -p` truncates long profiles, so readiness checks the same way
+ * the backends run: from a profile file inside the backend-owned home.
+ */
+async function writeProfile(home: string, profile: string): Promise<string> {
+  await mkdir(home, { recursive: true, mode: 0o700 });
+  const path = join(home, "readiness.sb");
+  await writeFile(path, profile, { mode: 0o600 });
+  return path;
+}
+
 export async function checkCodexReadiness(config: Config): Promise<string> {
   if (process.platform !== "darwin") {
     throw new Error("Codex requires macOS Seatbelt sandboxing; this platform is unsupported");
@@ -191,24 +202,24 @@ export async function checkCodexReadiness(config: Config): Promise<string> {
   }
   const home = config.codexHome ?? defaultCodexHome(config.workspace);
   try {
-    await executeFile(
-      executable,
-      ["-c", 'cli_auth_credentials_store="keyring"', "login", "status"],
-      {
-        timeout: 10_000,
-        env: { ...process.env, CODEX_HOME: home },
-      },
-    );
+    await executeFile(executable, ["login", "status"], {
+      timeout: 10_000,
+      env: { PATH: process.env.PATH, CODEX_HOME: home, HOME: home },
+    });
   } catch {
-    throw new Error(
-      `Codex authentication is missing; run \`CODEX_HOME=${home} codex -c cli_auth_credentials_store=keyring login\``,
-    );
+    throw new Error(`Codex authentication is missing; run \`CODEX_HOME=${home} codex login\``);
   }
   try {
     const profile = codexSandboxProfile(config.workspace, home, executable);
-    await executeFile("/usr/bin/sandbox-exec", ["-p", profile, "/usr/bin/true"], {
-      timeout: 10_000,
-    });
+    await executeFile(
+      "/usr/bin/sandbox-exec",
+      ["-f", await writeProfile(home, profile), executable, "--version"],
+      {
+        timeout: 20_000,
+        cwd: config.workspace,
+        env: { PATH: process.env.PATH, CODEX_HOME: home, HOME: home },
+      },
+    );
   } catch {
     throw new Error("Codex process confinement is unavailable; macOS Seatbelt must be enabled");
   }
@@ -249,10 +260,15 @@ export async function checkClaudeReadiness(config: Config): Promise<string> {
   }
   try {
     const profile = claudeSandboxProfile(config.workspace, home, executable, config.agentMode);
-    await executeFile("/usr/bin/sandbox-exec", ["-p", profile, executable, "--version"], {
-      timeout: 10_000,
-      env: { CLAUDE_CONFIG_DIR: home, HOME: home, PATH: process.env.PATH },
-    });
+    await executeFile(
+      "/usr/bin/sandbox-exec",
+      ["-f", await writeProfile(home, profile), executable, "--version"],
+      {
+        timeout: 20_000,
+        cwd: config.workspace,
+        env: { CLAUDE_CONFIG_DIR: home, HOME: home, PATH: process.env.PATH },
+      },
+    );
   } catch {
     throw new Error("Claude process confinement is unavailable; macOS Seatbelt must be enabled");
   }

@@ -45,8 +45,7 @@ hum up
 ```sh
 mise use -g codex@latest
 mkdir -p "$HOME/Library/Application Support/SlackDeskBot/codex"
-CODEX_HOME="$HOME/Library/Application Support/SlackDeskBot/codex" \
-  codex -c cli_auth_credentials_store=keyring login
+CODEX_HOME="$HOME/Library/Application Support/SlackDeskBot/codex" codex login
 ```
 
 Then set:
@@ -59,7 +58,7 @@ SLACK_CODEX_HOME=/Users/you/Library/Application Support/SlackDeskBot/codex
 SLACK_CODEX_EXECUTABLE=/absolute/path/to/codex
 ```
 
-Run `task doctor` after switching. Codex mode requires macOS, Keychain-backed authentication, and the Seatbelt process sandbox. Read-write mode is intentionally unsupported. Codex thread mappings and transcripts are retained below `SLACK_CODEX_HOME`, so Slack and `slack-desk attach` resume the exact thread after a service restart.
+Run `task doctor` after switching. Codex mode requires macOS, an authenticated `SLACK_CODEX_HOME`, and the Seatbelt process sandbox. Read-write mode is intentionally unsupported. Codex thread mappings and transcripts are retained below `SLACK_CODEX_HOME`, so Slack and `slack-desk attach` resume the exact thread after a service restart.
 
 To use Claude Code instead:
 
@@ -221,9 +220,9 @@ Rollback: unload LaunchAgent, check out the previous tag/commit, rerun the insta
 
 **Tool paths** are confined to `SLACK_AGENT_CWD`. With Pi, a backend policy allows only the selected file tools and blocks sensitive paths. The target repository is treated as an untrusted Pi project: its `.pi/` directory cannot inject extensions, settings, or system prompts. User-level Pi extensions (`~/.pi/agent`) run as trusted code outside this policy.
 
-**Codex security differs from Pi.** Codex receives a read-only native sandbox and also runs inside a SlackDeskBot-owned macOS Seatbelt boundary. The boundary permits workspace reads, denies workspace writes and sensitive paths, and blocks reads of other user and temporary data; only system runtime files, the Codex executable, and its dedicated control/session home are exceptions. Codex commands inherit no service environment. Authentication is stored in macOS Keychain rather than a readable `auth.json`. Read-write mode, image attachments, Linux service deployment, MCP/connectors, and unrestricted command networking are not supported by this adapter.
+**Codex security differs from Pi.** Codex receives a read-only native sandbox and also runs inside a SlackDeskBot-owned macOS Seatbelt boundary. The boundary denies _file contents_ under other user, temporary, and mounted-volume paths, allowing only the workspace, the Codex executable's install root, and its dedicated session home. Writes are confined to that session home. Path metadata stays readable because both CLIs canonicalize their own executable, home, and workspace during startup; denying it prevents them from launching at all. Codex commands inherit no service environment. Credentials live in an owner-only `auth.json` inside `SLACK_CODEX_HOME`; the Codex process can read it, while Codex's own read-only sandbox prevents model-issued commands from reading anything outside the workspace, including that file. Read-write mode, image attachments, Linux service deployment, MCP/connectors, and unrestricted command networking are not supported by this adapter.
 
-**Claude security differs from Pi and Codex.** Claude runs in restricted mode with inherited project and user settings ignored, no MCP servers or slash commands, no permission prompts, and an explicit file-tool list. Read-only mode exposes `Read`, `Glob`, and `Grep`; read-write also exposes `Edit` and `Write` and retains the global single-writer limit. A separate macOS Seatbelt boundary confines reads and writes to the workspace, denies credential-like paths, and permits only Claude's dedicated config/session home for internal state. Bash and other code-running tools, WebFetch, WebSearch, image attachments, Linux service deployment, and unrestricted command networking are not supported.
+**Claude security differs from Pi and Codex.** Claude runs in restricted mode with inherited project and user settings ignored, no MCP servers or slash commands, no permission prompts, and an explicit file-tool list. Read-only mode exposes `Read`, `Glob`, and `Grep`; read-write also exposes `Edit` and `Write` and retains the global single-writer limit. The same Seatbelt boundary used for Codex confines file contents and writes, additionally allowing writes to Claude's fixed `/tmp/claude-<uid>` and `/tmp/cc-socks` runtime directories, which the CLI requires to start. Read-write mode adds workspace writes only. Bash and other code-running tools, WebFetch, WebSearch, image attachments, Linux service deployment, and unrestricted command networking are not supported.
 
 **Sessions** are designed for one service owner. The service is their sole mutable owner. The local socket is owner-only, has no TCP fallback, and does not expose session file paths, prompts, tokens, user names, or file contents in discovery or logs. Do not share session files across instances without external locking.
 

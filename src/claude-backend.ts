@@ -10,8 +10,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { seatbeltProfile } from "./seatbelt.ts";
 import type {
   AgentAttachment,
   AgentBackend,
@@ -57,11 +58,13 @@ export class ClaudeProviderError extends Error {
   }
 }
 
-function escapedLiteral(value: string): string {
-  return JSON.stringify(value);
-}
-function escapedRegex(value: string): string {
-  return value.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
+/**
+ * Claude Code keeps interrupt sockets and lock state under fixed `/tmp` paths,
+ * so those two directories are writable in addition to the backend home.
+ */
+function claudeRuntimePaths(): string[] {
+  const uid = process.getuid?.() ?? 0;
+  return [`/private/tmp/claude-${uid}`, "/private/tmp/cc-socks"];
 }
 
 /** Independent Seatbelt boundary for Claude and every tool process it starts. */
@@ -71,43 +74,13 @@ export function claudeSandboxProfile(
   executable: string,
   mode: AgentMode = "read-only",
 ): string {
-  const canonicalWorkspace = realpathSync(workspace);
-  const canonicalHome = realpathSync(claudeHome);
-  const canonicalExecutable = realpathSync(executable);
-  const executableRoot = dirname(dirname(canonicalExecutable));
-  const sensitive = `${escapedRegex(canonicalWorkspace)}/(.*/)?(\\.git|\\.ssh)(/|$)|${escapedRegex(canonicalWorkspace)}/(.*/)?(\\.env(\\..*)?|\\.netrc|\\.npmrc|\\.pypirc|id_(rsa|dsa|ecdsa|ed25519)|[^/]+\\.(key|pem|p12|pfx))$|${escapedRegex(canonicalWorkspace)}/(.*/)?(\\.aws/credentials|gcloud/application_default_credentials\\.json|\\.docker/config\\.json)$`;
-  const workspaceWrite =
-    mode === "read-write"
-      ? `(allow file-write* (subpath ${escapedLiteral(canonicalWorkspace)}))`
-      : "";
-  return [
-    "(version 1)",
-    "(deny default)",
-    "(allow process*)",
-    "(allow network*)",
-    "(allow sysctl-read)",
-    "(allow mach-lookup)",
-    "(allow file-read-metadata)",
-    '(allow file-read* (literal "/"))',
-    `(allow file-read* (subpath ${escapedLiteral(canonicalWorkspace)}))`,
-    `(allow file-read* (subpath ${escapedLiteral(canonicalHome)}))`,
-    `(allow file-read* (subpath ${escapedLiteral(executableRoot)}))`,
-    '(allow file-read* (subpath "/System"))',
-    '(allow file-read* (subpath "/Library"))',
-    '(allow file-read* (subpath "/usr"))',
-    '(allow file-read* (subpath "/bin"))',
-    '(allow file-read* (subpath "/sbin"))',
-    '(allow file-read* (subpath "/private/etc"))',
-    '(allow file-read* (subpath "/private/var/db/timezone"))',
-    '(allow file-read* (subpath "/private/var/select"))',
-    `(allow file-write* (subpath ${escapedLiteral(canonicalHome)}))`,
-    workspaceWrite,
-    `(deny file-read* file-write* (regex #"${sensitive}"))`,
-    '(allow file-read* file-write* (literal "/dev/null") (literal "/dev/urandom") (literal "/dev/random"))',
-    "",
-  ]
-    .filter(Boolean)
-    .join("\n");
+  return seatbeltProfile({
+    workspace,
+    home: claudeHome,
+    executable,
+    allowWorkspaceWrite: mode === "read-write",
+    extraWritePaths: claudeRuntimePaths(),
+  });
 }
 
 export function prepareClaudePrompt(
@@ -330,7 +303,11 @@ export class ClaudeBackend implements AgentBackend {
         child.kill("SIGTERM");
       }
     });
-    child.stderr.resume();
+    let stderrTail = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderrTail = `${stderrTail}${chunk}`.slice(-500);
+    });
     try {
       const exit = await new Promise<{ code: number | null }>((resolveExit, reject) => {
         child.once("error", reject);
@@ -340,7 +317,8 @@ export class ClaudeBackend implements AgentBackend {
       if (parseError) throw parseError;
       if (exit.code !== 0)
         throw new ClaudeOutputError(
-          `Claude Code exited unsuccessfully${exit.code == null ? "" : ` (code ${exit.code})`}`,
+          `Claude Code exited unsuccessfully${exit.code == null ? "" : ` (code ${exit.code})`}` +
+            (stderrTail.trim() ? `: ${stderrTail.trim()}` : ""),
         );
       if (providerError) throw new ClaudeProviderError();
       if (!sessionId) throw new ClaudeOutputError("Claude Code did not report a session ID");

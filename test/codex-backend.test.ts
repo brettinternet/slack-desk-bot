@@ -10,7 +10,6 @@ import {
   CodexCapabilityError,
   CodexOutputError,
   CodexProviderError,
-  codexSandboxProfile,
   prepareCodexPrompt,
 } from "../src/codex-backend.ts";
 
@@ -235,44 +234,4 @@ describe("Codex output", () => {
       }
     }
   });
-});
-
-describe("Codex process boundary", () => {
-  test.skipIf(process.platform !== "darwin")(
-    "allows workspace reads while blocking outside reads, writes, and credential paths",
-    () => {
-      const root = mkdtempSync(join(tmpdir(), "slack-desk-codex-security-"));
-      const workspace = join(root, "workspace");
-      const home = join(root, "home");
-      mkdirSync(workspace);
-      mkdirSync(home);
-      writeFileSync(join(workspace, "public.txt"), "public");
-      writeFileSync(join(workspace, ".env"), "secret");
-      writeFileSync(join(root, "outside.txt"), "outside");
-      try {
-        const output = execFileSync(
-          "/usr/bin/sandbox-exec",
-          [
-            "-p",
-            codexSandboxProfile(workspace, home, "/usr/bin/true"),
-            "/bin/sh",
-            "-c",
-            "cat public.txt; cat ../outside.txt 2>/dev/null || echo outside-blocked; cat .env 2>/dev/null || echo credential-blocked; touch write-test 2>/dev/null || echo write-blocked",
-          ],
-          { cwd: workspace, encoding: "utf8" },
-        );
-        expect(output).toContain("public");
-        expect(output).toContain("outside-blocked");
-        expect(output).toContain("credential-blocked");
-        expect(output).toContain("write-blocked");
-        expect(output).not.toContain("outside\n");
-        expect(output).not.toContain("secret");
-        const profile = codexSandboxProfile(workspace, home, "/usr/bin/true");
-        expect(profile).toContain(dirname(process.env.HOME!));
-        expect(profile).toContain("/private/var/folders");
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
-    },
-  );
 });

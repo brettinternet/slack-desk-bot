@@ -10,8 +10,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { seatbeltProfile } from "./seatbelt.ts";
 import type {
   AgentAttachment,
   AgentBackend,
@@ -56,54 +57,13 @@ export class CodexProviderError extends Error {
   }
 }
 
-function escapedSandboxLiteral(value: string): string {
-  return JSON.stringify(value);
-}
-
-function escapedRegex(value: string): string {
-  return value.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
-}
-
 /** Seatbelt boundary around Codex and every command it starts. */
 export function codexSandboxProfile(
   workspace: string,
   codexHome: string,
   executable: string,
 ): string {
-  const canonicalWorkspace = realpathSync(workspace);
-  const canonicalExecutable = realpathSync(executable);
-  const executableRoot = dirname(dirname(canonicalExecutable));
-  const canonicalHome = realpathSync(codexHome);
-  const workspacePattern = escapedRegex(canonicalWorkspace);
-  const sensitive = `${workspacePattern}/(.*/)?(\\.git|\\.ssh)(/|$)|${workspacePattern}/(.*/)?(\\.env(\\..*)?|\\.netrc|\\.npmrc|\\.pypirc|id_(rsa|dsa|ecdsa|ed25519)|[^/]+\\.(key|pem|p12|pfx))$|${workspacePattern}/(.*/)?(\\.aws/credentials|gcloud/application_default_credentials\\.json|\\.docker/config\\.json)$`;
-  const parent = dirname(canonicalWorkspace);
-  const restrictedRoots = [
-    parent,
-    dirname(homedir()),
-    "/private/tmp",
-    "/private/var/folders",
-    "/Volumes",
-  ];
-  const outsideReadDenials = [...new Set(restrictedRoots)].map(
-    (root) =>
-      `(deny file-read* (require-all (subpath ${escapedSandboxLiteral(root)}) (require-not (subpath ${escapedSandboxLiteral(canonicalWorkspace)})) (require-not (subpath ${escapedSandboxLiteral(canonicalHome)})) (require-not (subpath ${escapedSandboxLiteral(executableRoot)}))))`,
-  );
-  return [
-    "(version 1)",
-    "(deny default)",
-    "(allow process*)",
-    "(allow network*)",
-    "(allow sysctl-read)",
-    "(allow mach-lookup)",
-    "(allow file-read*)",
-    `(allow file-read* (subpath ${escapedSandboxLiteral(executableRoot)}))`,
-    `(allow file-write* (subpath ${escapedSandboxLiteral(canonicalHome)}))`,
-    `(deny file-read* file-write* (literal ${escapedSandboxLiteral(join(canonicalHome, "auth.json"))}))`,
-    ...outsideReadDenials,
-    '(allow file-read* file-write* (literal "/dev/null") (literal "/dev/urandom") (literal "/dev/random"))',
-    `(deny file-read* file-write* (regex #"${sensitive}"))`,
-    "",
-  ].join("\n");
+  return seatbeltProfile({ workspace, home: codexHome, executable });
 }
 
 export function prepareCodexPrompt(
@@ -133,7 +93,7 @@ export function prepareCodexPrompt(
 
 export function defaultCodexHome(workspace: string): string {
   const key = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
-  return join(homedir(), ".local", "state", "slack-desk-bot", "codex", key);
+  return join(homedir(), "Library", "Application Support", "SlackDeskBot", "codex", key);
 }
 
 function findCodexExecutable(configured?: string): string {
@@ -208,8 +168,6 @@ export class CodexBackend implements AgentBackend {
     const common = [
       "--json",
       "-c",
-      'cli_auth_credentials_store="keyring"',
-      "-c",
       'shell_environment_policy.inherit="none"',
       "--skip-git-repo-check",
       "--ignore-user-config",
@@ -224,7 +182,7 @@ export class CodexBackend implements AgentBackend {
       cwd: this.workspace,
       env: {
         CODEX_HOME: this.home,
-        HOME: process.env.HOME,
+        HOME: this.home,
         LANG: process.env.LANG,
         LC_ALL: process.env.LC_ALL,
         NO_PROXY: process.env.NO_PROXY,
