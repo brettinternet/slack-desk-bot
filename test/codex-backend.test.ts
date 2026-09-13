@@ -301,6 +301,38 @@ describe("Codex output", () => {
     }
   });
 
+  // Codex emits an `error` item for recoverable problems, such as an ignored
+  // malformed config file, in turns that still produce a response.
+  test("ignores recoverable error items when the turn still answers", async () => {
+    const { backend, home } = temporaryBackend(
+      [
+        {
+          events: [
+            JSON.stringify({ type: "thread.started", thread_id: "t1" }),
+            JSON.stringify({
+              type: "item.completed",
+              item: { type: "error", message: "Ignoring malformed agent role definition" },
+            }),
+            JSON.stringify({
+              type: "item.completed",
+              item: { type: "agent_message", text: "answered" },
+            }),
+            JSON.stringify({ type: "turn.completed" }),
+          ],
+        },
+      ],
+      [],
+    );
+    try {
+      expect(await backend.run({ conversationId: "C1:1", requesterId: "U", prompt: "hello" })).toBe(
+        "answered",
+      );
+    } finally {
+      backend.dispose();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("rejects malformed output, provider failures, and nonzero exits", async () => {
     const cases: Array<[FakeRun, new (...args: never[]) => Error]> = [
       [{ events: ["not-json"] }, CodexOutputError],
@@ -314,6 +346,18 @@ describe("Codex output", () => {
         CodexProviderError,
       ],
       [{ events: [], code: 2, stderr: "bad invocation" }, CodexOutputError],
+      [
+        {
+          events: [
+            JSON.stringify({ type: "thread.started", thread_id: "t" }),
+            JSON.stringify({
+              type: "item.completed",
+              item: { type: "error", message: "model unavailable" },
+            }),
+          ],
+        },
+        CodexProviderError,
+      ],
     ];
     for (const [run, errorType] of cases) {
       const { backend, home } = temporaryBackend([run], []);

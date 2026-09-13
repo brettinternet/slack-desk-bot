@@ -114,12 +114,14 @@ function backend(
 function createAgent(
   run: ReturnType<typeof mock>,
   hasConversation?: (conversationId: string) => Promise<boolean>,
+  operatorLog?: (record: StructuredLog) => void,
 ): void {
   new SlackAgent({
     botToken: "xoxb-test",
     appToken: "xapp-test",
     allowedUserIds: new Set(["U_ALLOWED"]),
     agent: backend(run, hasConversation),
+    ...(operatorLog ? { operatorLog } : {}),
   });
 }
 
@@ -478,7 +480,8 @@ describe("SlackAgent transport", () => {
   test("replies once per conversation and reacts when Slack response capacity is full", async () => {
     const held = deferred<string>();
     const run = mock(async () => held.promise);
-    createAgent(run);
+    const operatorLogs: StructuredLog[] = [];
+    createAgent(run, undefined, (record) => operatorLogs.push(record));
     const slack = client();
     const mention = app.handlers.get("app_mention")!;
 
@@ -539,6 +542,7 @@ describe("SlackAgent transport", () => {
       [{ channel: "C_OVERFLOW", timestamp: "9", name: "x" }],
       [{ channel: "C_OVERFLOW", timestamp: "10", name: "x" }],
     ]);
+    expect(operatorLogs).toEqual([{ event: "capacity_drop", active_responses: 8, limit: 8 }]);
 
     held.resolve("response");
     await Promise.all(active);

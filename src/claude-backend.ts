@@ -120,6 +120,7 @@ function detectClaudeSystemPromptSupport(executable: string, home: string): bool
     const help = execFileSync(executable, ["--help"], {
       encoding: "utf8",
       env: claudeProcessEnvironment(home),
+      timeout: 10_000,
     });
     return claudeSupportsSystemPrompt(help);
   } catch {

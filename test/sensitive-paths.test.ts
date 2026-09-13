@@ -42,6 +42,7 @@ const publicPaths = [
   "src/environment.ts",
   ["server", "key", "test.ts"].join("."),
   "id_ed25519.pub",
+  ".env.d/settings.yaml",
   "credentials.ts",
   ".gitignore",
   ".github/workflows/ci.yaml",

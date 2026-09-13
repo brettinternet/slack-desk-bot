@@ -109,6 +109,7 @@ function detectCodexSystemPromptSupport(executable: string, home: string): boole
     const help = execFileSync(executable, ["exec", "--help"], {
       encoding: "utf8",
       env: codexProcessEnvironment(home),
+      timeout: 10_000,
     });
     return codexSupportsSystemPrompt(help);
   } catch {
@@ -210,7 +211,11 @@ export class CodexBackend implements AgentBackend {
     mkdirSync(join(this.home, "tmp"), { recursive: true, mode: 0o700 });
     let threadId = existing?.threadId;
     let finalResponse = "";
-    let providerError: string | undefined;
+    // Codex reports recoverable problems (for example an ignored malformed
+    // config file) as `error` items in a turn that still succeeds, so an item
+    // error only fails the request when no response arrives.
+    let itemError: string | undefined;
+    let turnError: string | undefined;
     try {
       const exit = await runSandboxedJsonl({
         profile: this.sandboxPath,
@@ -239,11 +244,11 @@ export class CodexBackend implements AgentBackend {
             if (item?.type === "agent_message" && typeof item.text === "string") {
               finalResponse = item.text.trim();
             } else if (item?.type === "error" && typeof item.message === "string") {
-              providerError = item.message;
+              itemError = item.message;
             }
           } else if (event.type === "turn.failed" || event.type === "error") {
             const error = event.error as Record<string, unknown> | undefined;
-            providerError =
+            turnError =
               (typeof error?.message === "string" && error.message) ||
               (typeof event.message === "string" && event.message) ||
               "Codex provider request failed";
@@ -259,9 +264,12 @@ export class CodexBackend implements AgentBackend {
             (exit.stderrTail ? `: ${exit.stderrTail}` : ""),
         );
       }
-      if (providerError) throw new CodexProviderError();
+      if (turnError) throw new CodexProviderError();
       if (!threadId) throw new CodexOutputError("Codex did not report a thread ID");
-      if (!finalResponse) throw new CodexOutputError("Codex did not return a final response");
+      if (!finalResponse) {
+        if (itemError) throw new CodexProviderError();
+        throw new CodexOutputError("Codex did not return a final response");
+      }
       this.mappings.set(request.conversationId, { threadId, lastActiveAt: this.now() });
       this.saveMappings();
       return finalResponse;

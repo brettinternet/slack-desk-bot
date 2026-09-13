@@ -108,23 +108,33 @@ export async function startApplication(
   );
   const disposeRuntime = async (onStage?: (stage: ShutdownStage) => void): Promise<void> => {
     let cleanupError: unknown;
+    let failedStage: ShutdownStage | undefined;
     onStage?.("local_control");
     try {
       await local.stop();
     } catch (error) {
       cleanupError = error;
+      failedStage = "local_control";
     }
     onStage?.("slack");
     try {
       await slack.stop();
     } catch (error) {
-      cleanupError ??= error;
+      if (cleanupError === undefined) {
+        cleanupError = error;
+        failedStage = "slack";
+      }
     }
     unsubscribeOperator();
     health.markBackendDisposed();
     onStage?.("backend");
     agent.dispose();
-    if (cleanupError) throw cleanupError;
+    if (cleanupError) {
+      // Cleanup is best effort, so later stages still run; report the stage
+      // that actually failed rather than the last one attempted.
+      if (failedStage) onStage?.(failedStage);
+      throw cleanupError;
+    }
   };
 
   let healthServer: HealthServer;

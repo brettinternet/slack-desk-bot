@@ -91,7 +91,9 @@ export function sensitiveSeatbeltRegex(workspace: string): string {
       case "path-suffix":
         return `(.*/)?${escapedRegex(rule.path)}$`;
       case "basename-prefix":
-        return `(.*/)?${escapedRegex(rule.prefix)}(\\..*)?$`;
+        // `[^/]*` keeps the suffix inside one path segment so a directory such
+        // as `.env.d/` is not denied when the structured predicate allows it.
+        return `(.*/)?${escapedRegex(rule.prefix)}(\\.[^/]*)?$`;
       case "extension":
         return `(.*/)?[^/]*${escapedRegex(rule.extension)}$`;
     }

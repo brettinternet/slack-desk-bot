@@ -27,7 +27,7 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 **Resolution:** Added typed `startup`, `unauthorized`, `capacity_drop`, `operator_error`, and `shutdown` events alongside request completion logs. Application and Slack startup, access denials, response-capacity drops, request and delivery failures, corrupt conversation stores, startup failures, and every shutdown outcome now use the shared JSON writer without including prompts, tokens, or file contents.
 
-**Verified:** Focused Slack tests cover structured unauthorized and operator-error metadata without sensitive backend details; application and shutdown tests cover startup and all shutdown outcomes. Type checking and the full test suite pass.
+**Verified:** Focused Slack tests cover structured unauthorized, capacity-drop, and operator-error metadata without sensitive backend details; application and shutdown tests cover startup and all shutdown outcomes, including the stage that actually failed when later cleanup stages still run. Type checking and the full test suite pass.
 
 ### SDB-044: Show Slack prompts in attached terminal sessions
 
@@ -39,7 +39,7 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 **Resolution:** Claude now passes Slack-specific instructions with `--append-system-prompt`, and Codex passes them through `developer_instructions`. Each backend checks the installed CLI before using the capability and retains prompt-prefix fallback for older versions; doctor identifies that fallback explicitly.
 
-**Verified:** Backend tests assert instructions appear in CLI arguments and not stdin, doctor tests cover fallback reporting, and the installed Codex 0.154.0 and Claude Code 2.1.270 expose the required configuration interfaces. `task test` and `task check` pass.
+**Verified:** Backend tests assert instructions appear in CLI arguments and not stdin, doctor tests cover fallback reporting, and the installed Codex 0.154.0 and Claude Code 2.1.270 expose the required configuration interfaces. A live `codex exec -c developer_instructions=…` run confirmed the instructions take effect and also showed that Codex reports recoverable problems as `error` items inside successful turns, so only a failed turn — or an error item with no final response — fails the request. `task test` and `task check` pass.
 
 ### SDB-042: Tell users when a request is dropped at capacity
 
@@ -69,7 +69,7 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 **Resolution:** Added a shared Seatbelt JSONL runner that owns process spawning, prompt I/O, JSONL parsing, cancellation escalation, and cleanup while leaving arguments and event translation in each adapter. Text attachment formatting is shared by Pi, Codex, and Claude without changing their image handling or fallback prompts.
 
-**Verified:** Existing Codex, Claude, and Pi backend tests pass unchanged, along with the full test suite and type and formatting checks.
+**Verified:** Existing Codex, Claude, and Pi backend tests pass unchanged, along with the full test suite and type and formatting checks. Both CLI capability probes run with a bounded timeout so a hanging `--help` cannot stall startup.
 
 ### SDB-036: Bound shutdown time
 
@@ -81,7 +81,7 @@ Findings from the September 2025 audit, grouped by theme and ordered by priority
 
 **Resolution:** Added one data-only sensitive path table with small formatters for the Pi policy predicate, shared Seatbelt regex, and Claude permission globs. Claude now denies the previously omitted credential files, private-key formats, Docker credentials, and gcloud credentials. Environment variants, including templates, are consistently blocked by every backend.
 
-**Verified:** Shared fixtures assert identical structured, Seatbelt-regex, and Claude-glob verdicts for every sensitive rule and representative near-matches. Focused workspace-policy, real Seatbelt, and Claude backend tests pass, along with `task check`.
+**Verified:** Shared fixtures assert identical structured, Seatbelt-regex, and Claude-glob verdicts for every sensitive rule and representative near-matches, including a `.env.d/` directory that must stay readable. Focused workspace-policy, real Seatbelt, and Claude backend tests pass, along with `task check`. A direct `sandbox-exec` check confirmed the Seatbelt regex also denies case variants such as `.ENV` and `AUTH.JSON` on the case-insensitive default volume, matching the structured predicate.
 
 ### SDB-031: Warn when the workspace or environment exposes service credentials
 

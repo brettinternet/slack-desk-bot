@@ -99,6 +99,30 @@ describe("application startup", () => {
     expect(agent.dispose).toHaveBeenCalledTimes(1);
   });
 
+  test("reports the failing cleanup stage after finishing the remaining stages", async () => {
+    const agent = backend();
+    const slackStop = mock(async () => {});
+    const application = await startApplication(config(), {
+      piReady: async () => "Pi model test/model is available",
+      createBackend: () => agent,
+      createSlackAgent: () => ({ start: async () => {}, stop: slackStop }),
+      createLocalControl: () => ({
+        start: async () => {},
+        stop: async () => {
+          throw new Error("socket cleanup failed");
+        },
+      }),
+    });
+
+    const stages: string[] = [];
+    await expect(application.stop((stage) => stages.push(stage))).rejects.toThrow(
+      "socket cleanup failed",
+    );
+    expect(stages).toEqual(["health_server", "local_control", "slack", "backend", "local_control"]);
+    expect(slackStop).toHaveBeenCalledTimes(1);
+    expect(agent.dispose).toHaveBeenCalledTimes(1);
+  });
+
   test("uses Codex readiness without checking Pi", async () => {
     const createBackend = mock(() => backend());
     const piReady = mock(async () => "Pi ready");
