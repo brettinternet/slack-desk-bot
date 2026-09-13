@@ -18,6 +18,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { WebClient } from "@slack/web-api";
 import { codexSandboxProfile, defaultCodexHome } from "./codex-backend.ts";
+import { claudeSandboxProfile, defaultClaudeHome } from "./claude-backend.ts";
 import { loadConfig, type Config } from "./config.ts";
 import { defaultSessionDirectory } from "./pi-backend.ts";
 
@@ -40,6 +41,7 @@ interface DoctorDependencies {
   socketAvailable?: (path: string) => Promise<boolean>;
   piReady?: (workspace: string) => Promise<string>;
   codexReady?: (config: Config) => Promise<string>;
+  claudeReady?: (config: Config) => Promise<string>;
 }
 
 const REQUIRED_SETTINGS = [
@@ -83,7 +85,9 @@ async function checkSessionPath(config: Config): Promise<void> {
   const sessionPath =
     config.agentBackend === "codex"
       ? (config.codexHome ?? defaultCodexHome(config.workspace))
-      : (config.sessionDir ?? defaultSessionDirectory(config.workspace));
+      : config.agentBackend === "claude"
+        ? (config.claudeHome ?? defaultClaudeHome(config.workspace))
+        : (config.sessionDir ?? defaultSessionDirectory(config.workspace));
   const existing = await nearestExistingPath(sessionPath);
   const metadata = await stat(existing);
   if (!metadata.isDirectory()) throw new Error("an existing path component is not a directory");
@@ -211,6 +215,50 @@ export async function checkCodexReadiness(config: Config): Promise<string> {
   return "Codex CLI authentication and read-only process confinement are available";
 }
 
+export async function checkClaudeReadiness(config: Config): Promise<string> {
+  if (process.platform !== "darwin") {
+    throw new Error("Claude Code requires macOS Seatbelt sandboxing; this platform is unsupported");
+  }
+  let executable = config.claudeExecutable;
+  if (!executable) {
+    try {
+      executable = (await executeFile("/usr/bin/which", ["claude"])).stdout.trim();
+    } catch {
+      throw new Error("Claude Code CLI is not installed or is not on PATH");
+    }
+  }
+  try {
+    executable = realpathSync(executable);
+    await executeFile(executable, ["--version"], {
+      timeout: 10_000,
+      env: { PATH: process.env.PATH },
+    });
+  } catch {
+    throw new Error("Claude Code CLI could not be executed; verify SLACK_CLAUDE_EXECUTABLE");
+  }
+  const home = config.claudeHome ?? defaultClaudeHome(config.workspace);
+  try {
+    await executeFile(executable, ["auth", "status"], {
+      timeout: 10_000,
+      env: { CLAUDE_CONFIG_DIR: home, HOME: home, PATH: process.env.PATH },
+    });
+  } catch {
+    throw new Error(
+      `Claude Code authentication is missing; run \`CLAUDE_CONFIG_DIR=${home} claude auth login\``,
+    );
+  }
+  try {
+    const profile = claudeSandboxProfile(config.workspace, home, executable, config.agentMode);
+    await executeFile("/usr/bin/sandbox-exec", ["-p", profile, executable, "--version"], {
+      timeout: 10_000,
+      env: { CLAUDE_CONFIG_DIR: home, HOME: home, PATH: process.env.PATH },
+    });
+  } catch {
+    throw new Error("Claude process confinement is unavailable; macOS Seatbelt must be enabled");
+  }
+  return `Claude Code authentication and ${config.agentMode} process confinement are available`;
+}
+
 export async function checkPiReadiness(workspace: string): Promise<string> {
   const agentDir = getAgentDir();
   const authPath = join(agentDir, "auth.json");
@@ -319,7 +367,7 @@ export async function runDoctor(
       diagnostics,
       "pass",
       "Session storage",
-      `${config.agentBackend === "codex" ? "Codex" : "Pi"} session storage is writable`,
+      `${config.agentBackend === "codex" ? "Codex" : config.agentBackend === "claude" ? "Claude" : "Pi"} session storage is writable`,
     );
   } catch {
     diagnostic(
@@ -383,12 +431,19 @@ export async function runDoctor(
     }
   }
 
-  const readinessCheck = config.agentBackend === "codex" ? "Codex readiness" : "Pi readiness";
+  const readinessCheck =
+    config.agentBackend === "codex"
+      ? "Codex readiness"
+      : config.agentBackend === "claude"
+        ? "Claude readiness"
+        : "Pi readiness";
   try {
     const message =
       config.agentBackend === "codex"
         ? await (dependencies.codexReady ?? checkCodexReadiness)(config)
-        : await (dependencies.piReady ?? checkPiReadiness)(config.workspace);
+        : config.agentBackend === "claude"
+          ? await (dependencies.claudeReady ?? checkClaudeReadiness)(config)
+          : await (dependencies.piReady ?? checkPiReadiness)(config.workspace);
     diagnostic(diagnostics, "pass", readinessCheck, message);
   } catch (error) {
     diagnostic(

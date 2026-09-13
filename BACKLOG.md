@@ -84,8 +84,6 @@ The attached client can watch new turns, submit an operator turn, show status, a
 - Integration and smoke tests show Slack and `slack-desk attach` alternating turns in one Codex thread.
 - Doctor and README document installation, authentication, supported modes and attachments, session behavior, and security differences from Pi.
 
-## Active items
-
 ### SDB-027: Add a Claude Code CLI backend
 
 **Depends on:** SDB-025. Reuse backend-neutral conversation control behavior proven by the Codex adapter, but keep Claude-specific process and event handling in its own adapter rather than introducing a generalized CLI framework prematurely.

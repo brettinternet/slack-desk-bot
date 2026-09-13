@@ -102,6 +102,28 @@ describe("application startup", () => {
     await application.stop();
   });
 
+  test("uses Claude readiness without checking Pi or Codex", async () => {
+    const createBackend = mock(() => backend());
+    const piReady = mock(async () => "Pi ready");
+    const codexReady = mock(async () => "Codex ready");
+    const claudeReady = mock(async () => "Claude ready");
+    const application = await startApplication(
+      { ...config(), agentBackend: "claude" },
+      {
+        piReady,
+        codexReady,
+        claudeReady,
+        createBackend,
+        createSlackAgent: () => ({ start: async () => {}, stop: async () => {} }),
+      },
+    );
+
+    expect(claudeReady).toHaveBeenCalledTimes(1);
+    expect(piReady).not.toHaveBeenCalled();
+    expect(codexReady).not.toHaveBeenCalled();
+    await application.stop();
+  });
+
   test("fails before creating runtime resources when Pi is not ready", async () => {
     const createBackend = mock(() => backend());
     const createSlackAgent = mock(() => ({ start: async () => {}, stop: async () => {} }));

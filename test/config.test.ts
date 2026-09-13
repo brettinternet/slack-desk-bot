@@ -23,6 +23,8 @@ describe("loadConfig", () => {
       instructions: undefined,
       codexExecutable: undefined,
       codexHome: undefined,
+      claudeExecutable: undefined,
+      claudeHome: undefined,
       queueLimits: {
         timeoutMs: 300_000,
         queueWaitMs: 600_000,
@@ -76,6 +78,21 @@ describe("loadConfig", () => {
         rateLimitBurst: 4,
       },
     });
+  });
+
+  test("loads Claude-specific settings and permits read-write mode", () => {
+    const config = loadConfig({
+      ...valid,
+      SLACK_AGENT_BACKEND: "claude",
+      SLACK_AGENT_MODE: "read-write",
+      SLACK_CLAUDE_EXECUTABLE: "/usr/local/bin/claude",
+      SLACK_CLAUDE_HOME: "/tmp/slack-desk-claude",
+    });
+
+    expect(config.agentBackend).toBe("claude");
+    expect(config.agentMode).toBe("read-write");
+    expect(config.claudeExecutable).toBe("/usr/local/bin/claude");
+    expect(config.claudeHome).toBe("/tmp/slack-desk-claude");
   });
 
   test("loads Codex-specific settings", () => {
@@ -179,6 +196,12 @@ describe("loadConfig", () => {
     );
     expect(() => loadConfig({ ...valid, SLACK_AGENT_BACKEND: "other" })).toThrow(
       "SLACK_AGENT_BACKEND",
+    );
+    expect(() => loadConfig({ ...valid, SLACK_CLAUDE_HOME: ".claude" })).toThrow(
+      "SLACK_CLAUDE_HOME",
+    );
+    expect(() => loadConfig({ ...valid, SLACK_CLAUDE_EXECUTABLE: "claude" })).toThrow(
+      "SLACK_CLAUDE_EXECUTABLE",
     );
     expect(() => loadConfig({ ...valid, SLACK_AGENT_MODE: "write" })).toThrow("SLACK_AGENT_MODE");
     expect(() =>

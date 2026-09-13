@@ -32,7 +32,7 @@ Authenticate Pi if needed (`pi`, then `/login` and select a model), then:
 ```sh
 cp .env.example .env
 # Fill in tokens, absolute SLACK_AGENT_CWD, and allowed Slack user IDs.
-task doctor    # validates settings, tokens, paths, ports, Slack auth, Pi readiness
+task doctor    # validates settings, tokens, paths, ports, Slack auth, and backend readiness
 hum up
 ```
 
@@ -60,6 +60,15 @@ SLACK_CODEX_EXECUTABLE=/absolute/path/to/codex
 ```
 
 Run `task doctor` after switching. Codex mode requires macOS, Keychain-backed authentication, and the Seatbelt process sandbox. Read-write mode is intentionally unsupported. Codex thread mappings and transcripts are retained below `SLACK_CODEX_HOME`, so Slack and `slack-desk attach` resume the exact thread after a service restart.
+
+To use Claude Code instead:
+
+```sh
+mkdir -p "$HOME/Library/Application Support/SlackDeskBot/claude"
+CLAUDE_CONFIG_DIR="$HOME/Library/Application Support/SlackDeskBot/claude" claude auth login
+```
+
+Set `SLACK_AGENT_BACKEND=claude` and optionally `SLACK_CLAUDE_HOME` or `SLACK_CLAUDE_EXECUTABLE`, then run `task doctor`. Claude requires macOS Seatbelt and uses `claude -p` with `stream-json`, a dedicated `CLAUDE_CONFIG_DIR`, ignored inherited settings, and no permission prompts. Read-only mode enables only `Read`, `Glob`, and `Grep`; read-write also enables `Edit` and `Write` and keeps the global single-writer queue limit. Bash, WebFetch, WebSearch, shell/code tools, out-of-workspace paths, and credential-like paths are denied by both Claude policy and the independent Seatbelt profile. Text attachments are inlined; image attachments are rejected without writing files. Session IDs are persisted only after a successful response, and subsequent turns resume that exact Claude session.
 
 ## Slack interaction
 
@@ -123,7 +132,7 @@ Restart after changes. These apply only to SlackDeskBot sessions; the target rep
 | Text types        | plain text, Markdown, JSON, XML |
 | Image types       | PNG, JPEG, GIF, WebP            |
 
-Files are downloaded from Slack into memory only and are never written to disk. Pi accepts the listed text and image types. Codex inlines text attachments but returns a capability error for images because its CLI requires an image file path.
+Files are downloaded from Slack into memory only and are never written to disk. Pi accepts the listed text and image types. Codex and Claude inline text attachments but return a capability error for images because their CLIs require an image file path.
 
 See [`.env.example`](.env.example) for all tunable `SLACK_AGENT_*` settings.
 
@@ -169,7 +178,7 @@ hum down
 
 ### Backup and restore
 
-Session data is the only data requiring backup. Stop the service first. Pi uses `SLACK_AGENT_SESSION_DIR`; Codex uses `SLACK_CODEX_HOME`.
+Session data is the only data requiring backup. Stop the service first. Pi uses `SLACK_AGENT_SESSION_DIR`; Codex uses `SLACK_CODEX_HOME`; Claude uses `SLACK_CLAUDE_HOME`.
 
 ```sh
 tar -C "$HOME/Library/Application Support/SlackDeskBot" -czf "slackdeskbot-sessions-$(date +%Y%m%d).tgz" sessions
@@ -177,7 +186,7 @@ tar -C "$HOME/Library/Application Support/SlackDeskBot" -czf "slackdeskbot-sessi
 
 Restore: stop, move existing sessions aside, extract the archive, verify permissions, run `task doctor`, then `task service:install`. Never merge two session directories or run two instances against one.
 
-Offline resume is recovery-only: stop SlackDeskBot first. For Pi, open a copied or exclusively owned session with `pi --session <file>`. Never run `pi --session` against a live SlackDeskBot session. For Codex, use `CODEX_HOME=<configured-home> codex resume <thread-id>` only while SlackDeskBot is stopped. Concurrent access does not attach to the service's in-memory queue and can fork history.
+Offline resume is recovery-only: stop SlackDeskBot first. For Pi, open a copied or exclusively owned session with `pi --session <file>`. Never run `pi --session` against a live SlackDeskBot session. For Codex, use `CODEX_HOME=<configured-home> codex resume <thread-id>` only while SlackDeskBot is stopped. For Claude, use `CLAUDE_CONFIG_DIR=<configured-home> claude --resume <session-id>` only while SlackDeskBot is stopped. Concurrent access does not attach to the service's in-memory queue and can fork history.
 
 ### Upgrade and rollback
 
@@ -214,11 +223,13 @@ Rollback: unload LaunchAgent, check out the previous tag/commit, rerun the insta
 
 **Codex security differs from Pi.** Codex receives a read-only native sandbox and also runs inside a SlackDeskBot-owned macOS Seatbelt boundary. The boundary permits workspace reads, denies workspace writes and sensitive paths, and blocks reads of other user and temporary data; only system runtime files, the Codex executable, and its dedicated control/session home are exceptions. Codex commands inherit no service environment. Authentication is stored in macOS Keychain rather than a readable `auth.json`. Read-write mode, image attachments, Linux service deployment, MCP/connectors, and unrestricted command networking are not supported by this adapter.
 
+**Claude security differs from Pi and Codex.** Claude runs in restricted mode with inherited project and user settings ignored, no MCP servers or slash commands, no permission prompts, and an explicit file-tool list. Read-only mode exposes `Read`, `Glob`, and `Grep`; read-write also exposes `Edit` and `Write` and retains the global single-writer limit. A separate macOS Seatbelt boundary confines reads and writes to the workspace, denies credential-like paths, and permits only Claude's dedicated config/session home for internal state. Bash and other code-running tools, WebFetch, WebSearch, image attachments, Linux service deployment, and unrestricted command networking are not supported.
+
 **Sessions** are designed for one service owner. The service is their sole mutable owner. The local socket is owner-only, has no TCP fallback, and does not expose session file paths, prompts, tokens, user names, or file contents in discovery or logs. Do not share session files across instances without external locking.
 
 ## Adding another backend
 
-Implement `AgentBackend` from [`src/agent.ts`](src/agent.ts) and select it in [`src/index.ts`](src/index.ts). Keep adapters narrow: translate a conversation ID and prompt into one text response.
+Implement `AgentBackend` from [`src/agent.ts`](src/agent.ts) and select it in [`src/application.ts`](src/application.ts). Keep adapters narrow: translate a conversation ID and prompt into one text response.
 
 ## Development
 

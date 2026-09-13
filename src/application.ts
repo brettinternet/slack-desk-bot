@@ -1,8 +1,9 @@
 import { type CancellableAgentBackend, type QueueSnapshot, QueuedAgentBackend } from "./agent.ts";
 import type { Config } from "./config.ts";
 import { CodexBackend } from "./codex-backend.ts";
+import { ClaudeBackend } from "./claude-backend.ts";
 import { ConversationCoordinator } from "./conversation-coordinator.ts";
-import { checkCodexReadiness, checkPiReadiness } from "./doctor.ts";
+import { checkClaudeReadiness, checkCodexReadiness, checkPiReadiness } from "./doctor.ts";
 import { HealthState, startHealthServer } from "./health.ts";
 import { LocalControlServer } from "./local-control.ts";
 import { PiBackend } from "./pi-backend.ts";
@@ -31,6 +32,7 @@ interface RuntimeBackend extends CancellableAgentBackend {
 interface ApplicationDependencies {
   piReady?: (workspace: string) => Promise<string>;
   codexReady?: (config: Config) => Promise<string>;
+  claudeReady?: (config: Config) => Promise<string>;
   createBackend?: (config: Config) => RuntimeBackend;
   createSlackAgent?: (options: {
     config: Config;
@@ -60,13 +62,20 @@ function defaultBackend(config: Config): RuntimeBackend {
           home: config.codexHome,
           instructions: config.instructions,
         })
-      : new PiBackend(config.workspace, {
-          mode: config.agentMode,
-          instructions: config.instructions,
-          sessionDir: config.sessionDir,
-          maxActiveSessions: config.maxActiveSessions,
-          sessionIdleMs: config.sessionIdleMs,
-        });
+      : config.agentBackend === "claude"
+        ? new ClaudeBackend(config.workspace, {
+            executable: config.claudeExecutable,
+            home: config.claudeHome,
+            instructions: config.instructions,
+            mode: config.agentMode,
+          })
+        : new PiBackend(config.workspace, {
+            mode: config.agentMode,
+            instructions: config.instructions,
+            sessionDir: config.sessionDir,
+            maxActiveSessions: config.maxActiveSessions,
+            sessionIdleMs: config.sessionIdleMs,
+          });
   return new QueuedAgentBackend(backend, config.queueLimits);
 }
 
@@ -86,6 +95,8 @@ export async function startApplication(
 
   if (config.agentBackend === "codex") {
     await (dependencies.codexReady ?? checkCodexReadiness)(config);
+  } else if (config.agentBackend === "claude") {
+    await (dependencies.claudeReady ?? checkClaudeReadiness)(config);
   } else {
     await (dependencies.piReady ?? checkPiReadiness)(config.workspace);
   }

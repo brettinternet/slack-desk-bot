@@ -16,6 +16,7 @@ function dependencies() {
     socketAvailable: mock(async () => true),
     piReady: mock(async () => "Pi model test/model is available"),
     codexReady: mock(async () => "Codex CLI is ready"),
+    claudeReady: mock(async () => "Claude Code is ready"),
   };
 }
 
@@ -61,6 +62,29 @@ describe("runDoctor", () => {
       message: "Codex CLI is ready",
     });
     expect(checks.codexReady).toHaveBeenCalledTimes(1);
+    expect(checks.piReady).not.toHaveBeenCalled();
+  });
+
+  test("runs only Claude readiness for the Claude backend", async () => {
+    const checks = dependencies();
+    const result = await runDoctor(
+      {
+        ...valid,
+        SLACK_AGENT_BACKEND: "claude",
+        SLACK_CLAUDE_HOME: process.cwd(),
+        SLACK_CLAUDE_EXECUTABLE: "/usr/bin/true",
+      },
+      checks,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.diagnostics).toContainEqual({
+      status: "pass",
+      check: "Claude readiness",
+      message: "Claude Code is ready",
+    });
+    expect(checks.claudeReady).toHaveBeenCalledTimes(1);
+    expect(checks.codexReady).not.toHaveBeenCalled();
     expect(checks.piReady).not.toHaveBeenCalled();
   });
 

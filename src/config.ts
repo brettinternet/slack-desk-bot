@@ -4,7 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import type { QueueLimits } from "./agent.ts";
 
 export type AgentMode = "read-only" | "read-write";
-export type AgentBackendKind = "pi" | "codex";
+export type AgentBackendKind = "pi" | "codex" | "claude";
 
 export interface Config {
   slackBotToken: string;
@@ -17,6 +17,8 @@ export interface Config {
   instructions?: string;
   codexExecutable?: string;
   codexHome?: string;
+  claudeExecutable?: string;
+  claudeHome?: string;
   queueLimits: QueueLimits;
   configuredMaxConcurrentConversations: number;
   sessionDir?: string;
@@ -115,6 +117,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
   const agentMode = environment.SLACK_AGENT_MODE?.trim() || "read-only";
   const codexExecutable = optional(environment, "SLACK_CODEX_EXECUTABLE");
   const codexHome = optional(environment, "SLACK_CODEX_HOME");
+  const claudeExecutable = optional(environment, "SLACK_CLAUDE_EXECUTABLE");
+  const claudeHome = optional(environment, "SLACK_CLAUDE_HOME");
   const configuredSessionDir = environment.SLACK_AGENT_SESSION_DIR?.trim();
   const socketPath =
     optional(environment, "SLACK_AGENT_SOCKET_PATH") ?? defaultSocketPath(environment);
@@ -127,8 +131,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
       throw new Error("SLACK_OPERATOR_USER_IDS must contain only allowed user IDs");
     }
   }
-  if (agentBackend !== "pi" && agentBackend !== "codex") {
-    throw new Error("SLACK_AGENT_BACKEND must be pi or codex");
+  if (agentBackend !== "pi" && agentBackend !== "codex" && agentBackend !== "claude") {
+    throw new Error("SLACK_AGENT_BACKEND must be pi, codex, or claude");
   }
   if (agentMode !== "read-only" && agentMode !== "read-write") {
     throw new Error("SLACK_AGENT_MODE must be read-only or read-write");
@@ -151,6 +155,12 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
   if (codexHome && !isAbsolute(codexHome)) {
     throw new Error("SLACK_CODEX_HOME must be an absolute path");
   }
+  if (claudeExecutable && !isAbsolute(claudeExecutable)) {
+    throw new Error("SLACK_CLAUDE_EXECUTABLE must be an absolute path");
+  }
+  if (claudeHome && !isAbsolute(claudeHome)) {
+    throw new Error("SLACK_CLAUDE_HOME must be an absolute path");
+  }
   if (!isAbsolute(socketPath)) {
     throw new Error("SLACK_AGENT_SOCKET_PATH must be an absolute path");
   }
@@ -172,6 +182,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
     instructions: loadInstructions(environment),
     codexExecutable,
     codexHome: codexHome ? resolve(codexHome) : undefined,
+    claudeExecutable,
+    claudeHome: claudeHome ? resolve(claudeHome) : undefined,
     queueLimits: {
       timeoutMs: positiveInteger(environment, "SLACK_AGENT_TIMEOUT_MS", DEFAULTS.timeoutMs),
       queueWaitMs: positiveInteger(environment, "SLACK_AGENT_QUEUE_WAIT_MS", DEFAULTS.queueWaitMs),
