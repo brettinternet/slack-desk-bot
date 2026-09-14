@@ -58,7 +58,9 @@ export async function runIdentityCommand(
     if (rest.length > 0) throw new Error(IDENTITY_USAGE);
     const botToken = options.botToken?.trim();
     if (!botToken) throw new Error("SLACK_BOT_TOKEN is required to scan Slack identities");
-    const resolver = new GitSlackIdentityResolver(() => loadSlackUsers(botToken));
+    // Fail visibly for missing scopes or authentication instead of reporting every author unresolved.
+    const slackUsers = await loadSlackUsers(botToken);
+    const resolver = new GitSlackIdentityResolver(async () => slackUsers);
     const authors = await gitAuthors(repository);
     if (authors.length === 0) output("No commit authors found.");
     for (const author of authors) {
