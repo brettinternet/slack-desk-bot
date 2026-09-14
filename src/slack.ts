@@ -40,6 +40,7 @@ interface SlackAgentOptions {
   operatorError?: (message: string, context: { requestId: string; errorType: string }) => void;
   statusUpdateIntervalMs?: number;
   health?: HealthState;
+  random?: () => number;
 }
 
 export class SlackAuthenticationError extends Error {
@@ -51,6 +52,7 @@ export class SlackAuthenticationError extends Error {
 
 const MAX_CONCURRENT_RESPONSES = 8;
 const MISSING_CONVERSATION_TTL_MS = 60_000;
+const WORKSPACE_REACTION_PROBABILITY = 0.2;
 
 interface DeliveryResult {
   outcome: "success" | "partial" | "failure";
@@ -140,6 +142,7 @@ export class SlackAgent {
   private readonly missingConversations = new Map<string, number>();
   private readonly ownedChannelThreads = new Set<string>();
   private readonly receiver: SocketModeReceiver;
+  private workspaceEmojiNames: string[] = [];
   private botUserId = "";
   private activeResponses = 0;
   private responseCapacityWarningLogged = false;
@@ -246,6 +249,7 @@ export class SlackAgent {
     }
     if (!authentication.user_id) throw new SlackAuthenticationError();
     this.botUserId = authentication.user_id;
+    await this.loadWorkspaceEmoji();
     await this.app.start();
     (this.options.operatorLog ?? writeStructuredLog)({
       event: "startup",
@@ -284,6 +288,22 @@ export class SlackAgent {
           unfurl_media: false,
         }),
       );
+    }
+  }
+
+  private async loadWorkspaceEmoji(): Promise<void> {
+    try {
+      const response = await this.slackOperation(this.app.client.emoji.list());
+      this.workspaceEmojiNames = Object.entries(response.emoji ?? {})
+        .filter(([, value]) => !value.startsWith("alias:"))
+        .map(([name]) => name);
+    } catch (error) {
+      (this.options.operatorLog ?? writeStructuredLog)({
+        event: "operator_error",
+        component: "slack",
+        message: "Unable to load workspace emoji; playful reactions are disabled",
+        error_type: errorType(error),
+      });
     }
   }
 
@@ -734,7 +754,25 @@ export class SlackAgent {
         name: "eyes",
       }),
     );
+    if (successful) await this.addRandomWorkspaceReaction(client, message);
     return delivery;
+  }
+
+  private async addRandomWorkspaceReaction(
+    client: App["client"],
+    message: InboundSlackMessage,
+  ): Promise<void> {
+    const random = this.options.random ?? Math.random;
+    if (this.workspaceEmojiNames.length === 0 || random() >= WORKSPACE_REACTION_PROBABILITY) return;
+    const name = this.workspaceEmojiNames[Math.floor(random() * this.workspaceEmojiNames.length)];
+    if (!name) return;
+    await this.bestEffortSlackOperation(
+      client.reactions.add({
+        channel: message.channel,
+        timestamp: message.messageTs,
+        name,
+      }),
+    );
   }
 
   private recordRequest(

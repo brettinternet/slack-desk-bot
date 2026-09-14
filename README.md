@@ -73,7 +73,7 @@ Set `SLACK_AGENT_BACKEND=claude` and optionally `SLACK_CLAUDE_HOME` or `SLACK_CL
 
 ## Slack interaction
 
-Mention the bot in a channel to start a conversation. Further replies in that thread do not need a mention, including after restarts. DMs work without a mention. Only user IDs in `SLACK_ALLOWED_USER_IDS` can invoke the app.
+Mention the bot in a channel to start a conversation. Further replies in that thread do not need a mention, including after restarts. DMs work without a mention. Only user IDs in `SLACK_ALLOWED_USER_IDS` can invoke the app. After a successful response, the bot has a 20% chance of adding a randomly selected custom workspace emoji reaction.
 
 | Command              | Effect                                                               |
 | -------------------- | -------------------------------------------------------------------- |

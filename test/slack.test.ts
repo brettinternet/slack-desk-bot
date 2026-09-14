@@ -59,6 +59,7 @@ class MockSlackApp {
   readonly receiver: MockSocketModeReceiver;
   readonly client = {
     auth: { test: mock(async (): Promise<{ user_id?: string }> => ({ user_id: "U_BOT" })) },
+    emoji: { list: mock(async () => ({ emoji: {} as Record<string, string> })) },
     chat: {
       postMessage: mock(async () => ({ ts: "operator-message" })),
     },
@@ -180,6 +181,65 @@ describe("SlackAgent transport", () => {
     app.client.auth.test.mockImplementationOnce(async () => ({}));
     await expect(incomplete.start()).rejects.toBeInstanceOf(SlackAuthenticationError);
     expect(app.start).not.toHaveBeenCalled();
+  });
+
+  test("occasionally adds a random custom workspace emoji after a successful response", async () => {
+    const randomValues = [0.1, 0.99];
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+      random: () => randomValues.shift() ?? 1,
+    });
+    app.client.emoji.list.mockImplementationOnce(async () => ({
+      emoji: {
+        party_parrot: "https://example.com/party.gif",
+        ship_it: "https://example.com/ship.png",
+        party_alias: "alias:party_parrot",
+      },
+    }));
+    await agent.start();
+    const slack = client();
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_PLAYFUL_REACTION" },
+      event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "5" },
+      client: slack,
+    });
+
+    expect(app.client.emoji.list).toHaveBeenCalledTimes(1);
+    expect(slack.reactions.add).toHaveBeenCalledWith({
+      channel: "C1",
+      timestamp: "5",
+      name: "ship_it",
+    });
+  });
+
+  test("usually skips the custom workspace emoji reaction", async () => {
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+      random: () => 0.8,
+    });
+    app.client.emoji.list.mockImplementationOnce(async () => ({
+      emoji: { party_parrot: "https://example.com/party.gif" },
+    }));
+    await agent.start();
+    const slack = client();
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_NO_PLAYFUL_REACTION" },
+      event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "6" },
+      client: slack,
+    });
+
+    expect(slack.reactions.add.mock.calls.map(([reaction]) => reaction.name)).toEqual([
+      "eyes",
+      "white_check_mark",
+    ]);
   });
 
   test("publishes attributed local operator exchanges to the originating Slack thread", async () => {

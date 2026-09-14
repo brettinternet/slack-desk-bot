@@ -34,6 +34,7 @@ describe("configuration documents", () => {
         "app_mentions:read",
         "channels:history",
         "chat:write",
+        "emoji:read",
         "files:read",
         "groups:history",
         "im:history",
