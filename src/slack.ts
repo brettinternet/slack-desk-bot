@@ -22,7 +22,7 @@ import { type LogWriter, type RequestLogWriter, writeStructuredLog } from "./log
 import { type HealthState } from "./health.ts";
 import {
   conversationId,
-  escapeSlackText,
+  formatSlackText,
   HELP_MESSAGE,
   isSupportedChannelMessage,
   isSupportedDirectMessage,
@@ -466,7 +466,7 @@ export class SlackAgent {
     label: string,
     text: string,
   ): Promise<void> {
-    const chunks = splitSlackMessage(escapeSlackText(text));
+    const chunks = splitSlackMessage(formatSlackText(text));
     for (const [index, chunk] of chunks.entries()) {
       await this.chatOperation(() =>
         this.app.client.chat.postMessage({
@@ -874,7 +874,7 @@ export class SlackAgent {
             admission,
           )
         : await this.options.agent.handleCommand(id, message.requesterId, command, observer);
-      return { outcome: "success", finalOutput: escapeSlackText(output) };
+      return { outcome: "success", finalOutput: formatSlackText(output) };
     }
     const request = {
       conversationId: id,
@@ -887,7 +887,7 @@ export class SlackAgent {
       : await this.options.agent.run(request, observer);
     return {
       outcome: "success",
-      finalOutput: escapeSlackText(output, slackUserMentions(message.prompt)),
+      finalOutput: formatSlackText(output, slackUserMentions(message.prompt)),
     };
   }
 

@@ -829,7 +829,7 @@ describe("SlackAgent transport", () => {
     expect(slack.chat.update).toHaveBeenCalledWith({
       channel: "C1",
       ts: "status-ts",
-      text: "&lt;!channel&gt; see &lt;@U999&gt; &amp; &lt;https://evil.example|docs&gt;",
+      text: "&lt;!channel&gt; see *this* &lt;@U999&gt; &amp; &lt;https://evil.example|docs&gt;",
     });
   });
 
