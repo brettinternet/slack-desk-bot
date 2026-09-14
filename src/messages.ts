@@ -83,7 +83,7 @@ export function escapeSlackText(
   text: string,
   allowedUserMentions: ReadonlySet<string> = new Set(),
 ): string {
-  return text.replace(/<@[A-Z0-9]+>|[&<>]/g, (value) => {
+  return text.replace(/<@[A-Z0-9_]+>|[&<>]/g, (value) => {
     if (allowedUserMentions.has(value)) return value;
     if (value === "&") return "&amp;";
     if (value === ">") return "&gt;";

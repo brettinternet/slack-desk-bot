@@ -874,7 +874,7 @@ export class SlackAgent {
             admission,
           )
         : await this.options.agent.handleCommand(id, message.requesterId, command, observer);
-      return { outcome: "success", finalOutput: formatSlackText(output) };
+      return { outcome: "success", finalOutput: output };
     }
     const request = {
       conversationId: id,
@@ -885,10 +885,7 @@ export class SlackAgent {
     const output = admission
       ? await this.options.agent.run(request, observer, admission)
       : await this.options.agent.run(request, observer);
-    return {
-      outcome: "success",
-      finalOutput: formatSlackText(output, slackUserMentions(message.prompt)),
-    };
+    return { outcome: "success", finalOutput: output };
   }
 
   private isExpectedAgentError(error: unknown): boolean {
@@ -916,6 +913,7 @@ export class SlackAgent {
         message.threadTs,
         status.statusTs,
         execution.finalOutput,
+        new Set([...slackUserMentions(message.prompt), `<@${message.requesterId}>`]),
       );
       if (delivery.outcome !== "success") {
         this.reportOperatorError(
@@ -985,8 +983,9 @@ export class SlackAgent {
     threadTs: string | undefined,
     statusTs: string | undefined,
     output: string,
+    allowedUserMentions: ReadonlySet<string>,
   ): Promise<DeliveryResult> {
-    const [first, ...rest] = splitSlackMessage(output);
+    const [first, ...rest] = splitSlackMessage(formatSlackText(output, allowedUserMentions));
     let publishedMessages = 0;
     let updated = false;
     if (statusTs) {
