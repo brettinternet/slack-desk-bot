@@ -62,6 +62,14 @@ const WORKING_STATUS_MESSAGES = [
   { started: "I’m looking into it…", ongoing: "Still looking into it…" },
   { started: "Let me dig into that…", ongoing: "Still digging into it…" },
   { started: "I’ll take a look…", ongoing: "Still working through it…" },
+  { started: "Working on it…", ongoing: "Still working on it…" },
+  { started: "Checking that now…", ongoing: "Still checking…" },
+  { started: "Let me investigate…", ongoing: "Still investigating…" },
+  { started: "I’m digging in…", ongoing: "Still digging in…" },
+  { started: "I’m on the case…", ongoing: "Still on the case…" },
+  { started: "Taking a closer look…", ongoing: "Still taking a closer look…" },
+  { started: "Give me a moment to check…", ongoing: "Still checking…" },
+  { started: "I’m working through that…", ongoing: "Still working through it…" },
 ] as const;
 
 interface DeliveryResult {

@@ -1589,7 +1589,7 @@ describe("SlackAgent transport", () => {
       appToken: "xapp-test",
       allowedUserIds: new Set(["U_ALLOWED"]),
       agent: backend(run),
-      random: () => 0.75,
+      random: () => 0.99,
     });
     const slack = client();
 
@@ -1603,7 +1603,7 @@ describe("SlackAgent transport", () => {
     expect(slack.chat.update).toHaveBeenCalledWith({
       channel: "C1",
       ts: "status-ts",
-      text: "I’ll take a look…",
+      text: "I’m working through that…",
     });
     expect(slack.reactions.add).not.toHaveBeenCalled();
     expect(slack.reactions.remove).not.toHaveBeenCalled();
