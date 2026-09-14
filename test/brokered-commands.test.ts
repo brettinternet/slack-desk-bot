@@ -8,6 +8,7 @@ import {
   type BrokeredCommandSpec,
   executeBrokeredCommand,
   runGitInspection,
+  runRepoFun,
   runSystemInfo,
 } from "../src/brokered-commands.ts";
 
@@ -27,13 +28,27 @@ function temporaryWorkspace(): string {
 
 function initializeRepository(workspace = temporaryWorkspace()): string {
   mkdirSync(workspace, { recursive: true });
-  execFileSync("/usr/bin/git", ["init", "-q", workspace]);
+  execFileSync("/usr/bin/git", ["init", "-q", "-b", "main", workspace]);
   execFileSync("/usr/bin/git", ["-C", workspace, "config", "user.name", "Test User"]);
   execFileSync("/usr/bin/git", ["-C", workspace, "config", "user.email", "test@example.com"]);
   writeFileSync(join(workspace, "visible.ts"), "export const answer = 42;\n");
   writeFileSync(join(workspace, ".env"), "SECRET=hidden\n");
   execFileSync("/usr/bin/git", ["-C", workspace, "add", "visible.ts", ".env"]);
   execFileSync("/usr/bin/git", ["-C", workspace, "commit", "-q", "-m", "Initial commit"]);
+  return workspace;
+}
+
+function repositoryWithHistory(): string {
+  const workspace = initializeRepository();
+  mkdirSync(join(workspace, "src"));
+  writeFileSync(join(workspace, "visible.ts"), "export const answer = 43;\n");
+  writeFileSync(join(workspace, "src", "second.ts"), "export const second = true;\n");
+  execFileSync("/usr/bin/git", ["-C", workspace, "add", "visible.ts", "src/second.ts"]);
+  execFileSync("/usr/bin/git", ["-C", workspace, "config", "user.name", "Second User"]);
+  execFileSync("/usr/bin/git", ["-C", workspace, "config", "user.email", "second@example.com"]);
+  execFileSync("/usr/bin/git", ["-C", workspace, "commit", "-q", "-m", "Add second feature"]);
+  execFileSync("/usr/bin/git", ["-C", workspace, "tag", "v1", "HEAD~1"]);
+  execFileSync("/usr/bin/git", ["-C", workspace, "branch", "stale-example", "HEAD~1"]);
   return workspace;
 }
 
@@ -181,6 +196,15 @@ describe("Git inspection broker", () => {
     await expect(
       runGitInspection({ action: "show_file", path: ".git/config" }, workspace),
     ).rejects.toThrow("sensitive workspace paths");
+
+    // `git blame` accepts one literal pathname, not a pathspec; wildcard-looking names must not
+    // expand to a tracked sensitive file.
+    await expect(runGitInspection({ action: "blame", path: ".env*" }, workspace)).rejects.toThrow(
+      "no such path",
+    );
+    await expect(
+      runGitInspection({ action: "file_ownership", path: ".env*" }, workspace),
+    ).rejects.toThrow("no such path");
   });
 
   test("rejects revision and line-range injection", async () => {
@@ -258,6 +282,106 @@ describe("Git inspection broker", () => {
     expect(result).not.toContain(".env");
     expect(result).not.toContain(".pi");
   });
+
+  test("provides the complete local repository insight catalog", async () => {
+    const workspace = repositoryWithHistory();
+    const results = await Promise.all([
+      runGitInspection({ action: "commit_details" }, workspace),
+      runGitInspection({ action: "search_commits", query: "second" }, workspace),
+      runGitInspection(
+        { action: "branch_divergence", baseRevision: "HEAD~1", headRevision: "HEAD" },
+        workspace,
+      ),
+      runGitInspection(
+        { action: "release_notes", baseRevision: "HEAD~1", headRevision: "HEAD" },
+        workspace,
+      ),
+      runGitInspection({ action: "activity_calendar" }, workspace),
+      runGitInspection({ action: "code_age" }, workspace),
+      runGitInspection({ action: "file_ownership", path: "visible.ts" }, workspace),
+      runGitInspection({ action: "bus_factor" }, workspace),
+      runGitInspection({ action: "stale_branches" }, workspace),
+      runGitInspection({ action: "largest_files" }, workspace),
+      runGitInspection({ action: "oldest_files" }, workspace),
+      runGitInspection({ action: "change_coupling" }, workspace),
+      runGitInspection({ action: "commit_streaks" }, workspace),
+      runGitInspection({ action: "repo_health" }, workspace),
+      runGitInspection({ action: "contributor_trivia" }, workspace),
+    ]);
+
+    for (const result of results) expect(result.length).toBeGreaterThan(10);
+    expect(results[0]).toContain("Subject: Add second feature");
+    expect(results[1]).toContain("Add second feature");
+    expect(results[2]).toContain("Head HEAD: 1 unique commit");
+    expect(results[3]).toContain("Add second feature");
+    expect(results[5]).toContain("Tracked files aged");
+    expect(results[6]).toContain("Second User");
+    expect(results[10]).toContain("visible.ts");
+    expect(results[11]).toContain("src/second.ts ↔ visible.ts");
+    expect(results[13]).toContain("Branch: main");
+    expect(results[14]).toContain("Most prolific contributor");
+
+    const initial = await runGitInspection(
+      { action: "commit_details", revision: "HEAD~1" },
+      workspace,
+    );
+    expect(initial).toContain("visible.ts");
+    expect(initial).not.toContain(".env");
+  });
+
+  test("validates fixed-string and ref inputs for new insights", async () => {
+    const workspace = repositoryWithHistory();
+    await expect(runGitInspection({ action: "search_commits" }, workspace)).rejects.toThrow(
+      "query is required",
+    );
+    await expect(
+      runGitInspection(
+        { action: "branch_divergence", baseRevision: "HEAD; touch nope" },
+        workspace,
+      ),
+    ).rejects.toThrow("simple commit ID");
+    await expect(
+      runGitInspection({ action: "activity_calendar", days: 2 }, workspace),
+    ).rejects.toThrow("days");
+  });
+});
+
+describe("repository fun broker", () => {
+  test("generates every playful report without adding side effects", async () => {
+    const workspace = repositoryWithHistory();
+    const actions = [
+      "personality",
+      "birthday",
+      "ancient_artifacts",
+      "hot_zone",
+      "team_constellation",
+      "commit_weather",
+      "fortune",
+      "activity_sparkline",
+      "milestones",
+      "trivia",
+    ] as const;
+
+    const results = await Promise.all(actions.map((action) => runRepoFun({ action }, workspace)));
+
+    expect(results.every((result) => result.length > 15)).toBe(true);
+    expect(results[0]).toContain("Repository personality");
+    expect(results[1]).toContain("Codebase birthday");
+    expect(results[4]).toContain("Team constellation");
+    expect(results[6]).toContain("Repository fortune");
+    expect(results[7]).toMatch(/[▁▂▃▄▅▆▇█]/);
+    expect(results[9]).not.toContain("second@example.com");
+  });
+
+  test("selects a nested repository within the workspace boundary", async () => {
+    const workspace = temporaryWorkspace();
+    initializeRepository(join(workspace, "nested"));
+
+    const result = await runRepoFun({ action: "birthday", repository: "nested" }, workspace);
+
+    expect(result).toContain("Codebase birthday");
+    expect(result).toContain("Initial commit");
+  });
 });
 
 describe("macOS system information broker", () => {
@@ -298,6 +422,128 @@ describe("macOS system information broker", () => {
     expect(calls[0]?.arguments).toEqual(["-g", "batt"]);
     expect(calls[3]?.arguments).toEqual(["-h", realpathSync(workspace)]);
     expect(calls[5]?.arguments).toEqual(["-g", "therm"]);
+  });
+
+  test("provides and redacts the expanded host insight catalog", async () => {
+    const workspace = temporaryWorkspace();
+    const execute: BrokeredCommandExecutor = async (spec) => {
+      const joined = `${spec.executable} ${spec.arguments.join(" ")}`;
+      if (joined.includes("SPPowerDataType")) {
+        return successful(
+          JSON.stringify({
+            SPPowerDataType: [
+              {
+                sppower_battery_health_info: {
+                  sppower_battery_health: "Good",
+                  sppower_battery_health_maximum_capacity: "97%",
+                  sppower_battery_cycle_count: 42,
+                },
+                sppower_battery_charge_info: {
+                  sppower_battery_state_of_charge: 80,
+                  sppower_battery_is_charging: "TRUE",
+                },
+                sppower_battery_model_info: { sppower_battery_serial_number: "PRIVATE-SERIAL" },
+              },
+            ],
+          }),
+        );
+      }
+      if (joined.includes("SPDisplaysDataType")) {
+        return successful(
+          JSON.stringify({
+            SPDisplaysDataType: [
+              {
+                spdisplays_ndrvs: [
+                  {
+                    _name: "Studio Display",
+                    _spdisplays_resolution: "2560 x 1440 @ 60Hz",
+                    _spdisplays_pixels: "5120 x 2880",
+                    _spdisplays_display_serial_number: "PRIVATE-DISPLAY-SERIAL",
+                    spdisplays_main: "spdisplays_yes",
+                  },
+                ],
+              },
+            ],
+          }),
+        );
+      }
+      if (spec.executable === "/usr/bin/vm_stat") {
+        return successful(
+          "Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 100.\nPages active: 200.\nPages inactive: 300.\nPages speculative: 10.\nPages wired down: 50.\nPages occupied by compressor: 25.\n",
+        );
+      }
+      if (spec.executable === "/usr/sbin/sysctl") {
+        return successful(
+          spec.arguments.includes("hw.memsize")
+            ? "17179869184\ntotal = 1.00G  used = 0.25G  free = 0.75G\n"
+            : "Apple Test CPU\n8\n10\n",
+        );
+      }
+      if (spec.executable === "/bin/df") {
+        return successful(
+          "Filesystem Size Used Avail Capacity Mounted on\n/dev/test 1Ti 1Gi 999Gi 1% /\n",
+        );
+      }
+      if (joined.includes("pmset -g custom")) {
+        return successful(
+          "Battery Power:\n sleep 5\n displaysleep 10\n hibernatefile /private/secret\nAC Power:\n sleep 0\n",
+        );
+      }
+      if (spec.executable === "/usr/bin/xcodebuild")
+        return successful("Xcode 26.0\nBuild version TEST\n");
+      if (spec.executable === "/usr/bin/clang")
+        return successful("Apple clang version 17\nTarget: arm64\n");
+      if (joined.includes("pmset -g batt")) return successful("Now drawing from AC Power\n");
+      if (joined.includes("pmset -g therm")) return successful("No thermal warning\n");
+      if (spec.executable === "/usr/bin/memory_pressure")
+        return successful("System-wide memory free percentage: 70%\n");
+      if (spec.executable === "/usr/bin/uptime")
+        return successful("up 4 days, load averages: 1 1 1\n");
+      if (spec.executable.endsWith("/hum")) {
+        return successful(
+          JSON.stringify({
+            state: "running",
+            readiness: "ready",
+            started_at: new Date(Date.now() - 60_000).toISOString(),
+            restart_count: 3,
+            relaunches: 1,
+            argv: ["private", "ignored"],
+          }),
+        );
+      }
+      return successful("tool 1.0\n");
+    };
+
+    const actions = [
+      "battery_health",
+      "cpu_summary",
+      "memory_summary",
+      "volume_summary",
+      "power_settings",
+      "developer_tools",
+      "runtime_versions",
+      "display_summary",
+      "system_pressure",
+      "service_health",
+    ] as const;
+    const results = await Promise.all(
+      actions.map((action) => runSystemInfo({ action }, workspace, undefined, execute, "darwin")),
+    );
+
+    expect(results.every((result) => result.length > 10)).toBe(true);
+    expect(results[0]).toContain("Cycle count: 42");
+    expect(results[0]).not.toContain("PRIVATE-SERIAL");
+    expect(results[1]).toContain("Physical cores: 8");
+    expect(results[2]).toContain("Installed:");
+    expect(results[4]).not.toContain("hibernatefile");
+    expect(results[5]).toContain("Xcode 26.0");
+    expect(results[6]).toContain("Bun:");
+    expect(results[7]).toContain("Studio Display (main)");
+    expect(results[7]).not.toContain("PRIVATE-DISPLAY-SERIAL");
+    expect(results[8]).toContain("System pressure verdict: normal");
+    expect(results[8]).toContain("Disk: Workspace volume");
+    expect(results[9]).toContain("Readiness: ready");
+    expect(results[9]).toContain("Restart count: 3");
   });
 
   test("does not claim host support on non-macOS systems", async () => {

@@ -96,6 +96,7 @@ describe("Pi configuration", () => {
       "find",
       "ls",
       "git_inspect",
+      "repo_fun",
       "system_info",
     ]);
     expect(toolsForMode("read-write", "brokered")).toEqual([
@@ -106,6 +107,7 @@ describe("Pi configuration", () => {
       "edit",
       "write",
       "git_inspect",
+      "repo_fun",
       "system_info",
     ]);
   });

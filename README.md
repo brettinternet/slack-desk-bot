@@ -147,7 +147,7 @@ For the Pi backend, opt into fixed read-only command brokers without enabling a 
 SLACK_AGENT_COMMAND_MODE=brokered
 ```
 
-**`git_inspect`** reports status, branches, tags, bounded logs and diffs, historical contents, blame, history, contributors, frequently changed files, and tracked-file statistics.
+**`git_inspect`** reports status, branches, tags, bounded logs and diffs, historical contents, blame, commit search/details, release notes, branch divergence, contributors and file ownership, activity and streaks, code/file age, largest files, change coupling, hotspots, bus-factor estimates, repository health, and tracked-file statistics.
 
 - `SLACK_AGENT_CWD` is the outer access boundary: a single repo root or a parent of multiple repos.
 - In nested layouts, `git_inspect` resolves a workspace-relative repo root and uses paths relative to it.
@@ -156,7 +156,9 @@ SLACK_AGENT_COMMAND_MODE=brokered
 - Sensitive paths (`.env`, `.git`, credentials, private keys) are rejected or omitted.
 - Git runs as `/usr/bin/git` with exact arguments, no pager, hooks, lazy fetching, optional locks, global/system config, credential prompts, or inherited service environment. It cannot contact remotes or mutate the repository.
 
-**`system_info`** reports battery, uptime/load, OS and kernel versions, workspace disk space, memory and thermal pressure, computer name, and local clock. Each action uses a fixed Apple executable with fixed arguments; no shell or free-form arguments are accepted.
+**`repo_fun`** derives playful local-only reports from Git metadata: repository personality and birthday, ancient artifacts, hot zones, team constellations, commit weather, deterministic fortunes, activity sparklines, milestones, and trivia. Interpret personality, weather, ownership, and concentration results as approximate.
+
+**`system_info`** reports battery and battery health, uptime/load, OS/kernel/CPU/runtime/tool versions, workspace disk and volume space, memory and thermal pressure, power settings, redacted connected-display summaries, computer name, local clock, combined system pressure, and SlackDeskBot process health. Each action uses in-process facts or a fixed executable with fixed arguments; no shell or free-form arguments are accepted. Hardware serials and private scheduled activity returned by macOS are never included in tool output.
 
 Brokered commands are off by default, currently Pi-only, and independent of `SLACK_AGENT_MODE` (read-only and read-write sessions receive the same inspection-only operations).
 

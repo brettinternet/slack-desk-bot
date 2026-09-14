@@ -27,7 +27,7 @@ import { writeStructuredLog } from "./log.ts";
 import { workspacePolicy } from "./workspace-policy.ts";
 
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
-const BROKERED_TOOLS = ["git_inspect", "system_info"];
+const BROKERED_TOOLS = ["git_inspect", "repo_fun", "system_info"];
 export const PI_RESOURCE_POLICY_DESCRIPTION =
   "User extensions, skills, and prompt templates are disabled; only mode-approved tools are allowed";
 
