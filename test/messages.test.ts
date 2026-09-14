@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
   conversationId,
+  escapeSlackText,
   isSupportedChannelMessage,
   isSupportedDirectMessage,
   MAX_SLACK_RESPONSE_MESSAGES,
   parseSlackCommand,
+  slackUserMentions,
   splitSlackMessage,
   stripBotMention,
   TRUNCATION_MARKER,
@@ -41,6 +43,14 @@ describe("Slack message helpers", () => {
   test("maps channel threads and DMs to stable conversations", () => {
     expect(conversationId("C123", "100.1")).toBe("C123:100.1");
     expect(conversationId("D123")).toBe("dm:D123");
+  });
+
+  test("preserves only user mentions explicitly included in the request", () => {
+    const allowed = slackUserMentions("ask <@U04ET2XUC3B> about this");
+
+    expect(escapeSlackText("<@U04ET2XUC3B> hi <@U999> & <!channel>", allowed)).toBe(
+      "<@U04ET2XUC3B> hi &lt;@U999&gt; &amp; &lt;!channel&gt;",
+    );
   });
 
   test("splits long output without dropping text", () => {

@@ -833,6 +833,28 @@ describe("SlackAgent transport", () => {
     });
   });
 
+  test("renders a user mention repeated from the Slack request", async () => {
+    createAgent(mock(async () => "<@U04ET2XUC3B> — nice work!"));
+    const slack = client();
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_USER_MENTION" },
+      event: {
+        user: "U_ALLOWED",
+        text: "<@U_BOT> compliment <@U04ET2XUC3B>",
+        channel: "C1",
+        ts: "1",
+      },
+      client: slack,
+    });
+
+    expect(slack.chat.update).toHaveBeenCalledWith({
+      channel: "C1",
+      ts: "status-ts",
+      text: "<@U04ET2XUC3B> — nice work!",
+    });
+  });
+
   test("routes existing threads and direct messages to stable conversations", async () => {
     const run = mock(async () => "response");
     createAgent(run);

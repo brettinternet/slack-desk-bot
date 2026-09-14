@@ -27,6 +27,7 @@ import {
   isSupportedChannelMessage,
   isSupportedDirectMessage,
   parseSlackCommand,
+  slackUserMentions,
   splitSlackMessage,
   stripBotMention,
 } from "./messages.ts";
@@ -876,7 +877,10 @@ export class SlackAgent {
     const output = admission
       ? await this.options.agent.run(request, observer, admission)
       : await this.options.agent.run(request, observer);
-    return { outcome: "success", finalOutput: escapeSlackText(output) };
+    return {
+      outcome: "success",
+      finalOutput: escapeSlackText(output, slackUserMentions(message.prompt)),
+    };
   }
 
   private isExpectedAgentError(error: unknown): boolean {

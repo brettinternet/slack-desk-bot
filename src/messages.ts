@@ -67,15 +67,28 @@ export function splitSlackMessage(
   return published;
 }
 
+/** Returns user mention entities that the Slack user explicitly included. */
+export function slackUserMentions(text: string): ReadonlySet<string> {
+  return new Set(text.match(/<@[A-Z0-9]+>/g) ?? []);
+}
+
 /**
  * Escapes Slack's three reserved characters so untrusted agent output cannot
- * inject mentions (`<!channel>`, `<@U…>`), fake channel links, or disguised
- * link labels. Slack renders these entities back as literal text.
- * Only apply this to agent, repository, or operator-supplied content; bot
- * authored text that intentionally mentions a user must not be escaped.
+ * inject special mentions (`<!channel>`), unapproved user mentions, fake
+ * channel links, or disguised link labels. Slack renders escaped entities back
+ * as literal text. User mentions explicitly present in the request may be
+ * preserved so the agent can intentionally address the same person.
  */
-export function escapeSlackText(text: string): string {
-  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+export function escapeSlackText(
+  text: string,
+  allowedUserMentions: ReadonlySet<string> = new Set(),
+): string {
+  return text.replace(/<@[A-Z0-9]+>|[&<>]/g, (value) => {
+    if (allowedUserMentions.has(value)) return value;
+    if (value === "&") return "&amp;";
+    if (value === ">") return "&gt;";
+    return value.length === 1 ? "&lt;" : `&lt;${value.slice(1, -1)}&gt;`;
+  });
 }
 
 export function conversationId(channel: string, threadTs?: string): string {
