@@ -18,6 +18,10 @@ describe("configuration documents", () => {
 
   test("Slack manifest enables the required Socket Mode events and scopes", async () => {
     const manifest = await yaml("slack-app-manifest.yaml");
+    expect(manifest.features?.app_home).toEqual({
+      messages_tab_enabled: true,
+      messages_tab_read_only_enabled: false,
+    });
     expect(manifest.settings?.socket_mode_enabled).toBe(true);
     expect(manifest.settings?.event_subscriptions?.bot_events).toEqual([
       "app_mention",
