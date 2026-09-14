@@ -184,7 +184,7 @@ describe("SlackAgent transport", () => {
   });
 
   test("occasionally adds a random custom workspace emoji after a successful response", async () => {
-    const randomValues = [0.1, 0.99];
+    const randomValues = [0.1, 0.1, 0.99];
     const agent = new SlackAgent({
       botToken: "xoxb-test",
       appToken: "xapp-test",
@@ -236,10 +236,8 @@ describe("SlackAgent transport", () => {
       client: slack,
     });
 
-    expect(slack.reactions.add.mock.calls.map(([reaction]) => reaction.name)).toEqual([
-      "eyes",
-      "white_check_mark",
-    ]);
+    expect(slack.reactions.add).not.toHaveBeenCalled();
+    expect(slack.reactions.remove).not.toHaveBeenCalled();
   });
 
   test("publishes attributed local operator exchanges to the originating Slack thread", async () => {
@@ -694,16 +692,8 @@ describe("SlackAgent transport", () => {
       ts: "status-ts",
       text: "response",
     });
-    expect(slack.reactions.add).toHaveBeenCalledWith({
-      channel: "C1",
-      timestamp: "1",
-      name: "white_check_mark",
-    });
-    expect(slack.reactions.remove).toHaveBeenCalledWith({
-      channel: "C1",
-      timestamp: "1",
-      name: "eyes",
-    });
+    expect(slack.reactions.add).not.toHaveBeenCalled();
+    expect(slack.reactions.remove).not.toHaveBeenCalled();
   });
 
   test("logs request metadata and tool count without prompt contents", async () => {
@@ -1109,11 +1099,7 @@ describe("SlackAgent transport", () => {
       timestamp: "2",
       name: "x",
     });
-    expect(slack.reactions.remove).toHaveBeenCalledWith({
-      channel: "C1",
-      timestamp: "2",
-      name: "eyes",
-    });
+    expect(slack.reactions.remove).not.toHaveBeenCalled();
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
       request_id: "E_FAILURE",
@@ -1351,6 +1337,7 @@ describe("SlackAgent transport", () => {
       allowedUserIds: new Set(["U_ALLOWED"]),
       agent: new QueuedAgentBackend(rawBackend, queueLimits()),
       statusUpdateIntervalMs: 10,
+      random: () => 0,
     });
     const slack = client();
     const mention = app.handlers.get("app_mention")!;
@@ -1370,10 +1357,10 @@ describe("SlackAgent transport", () => {
 
     const progress = slack.chat.update.mock.calls
       .map(([message]) => message.text as string)
-      .filter((text) => text.startsWith("Working…"));
-    expect(progress[0]).toBe("Working…");
+      .filter((text) => text === "On it…" || text.startsWith("Still on it…"));
+    expect(progress[0]).toBe("On it…");
     expect(progress.some((text) => /elapsed · 1 tool use$/.test(text))).toBe(true);
-    expect(progress.filter((text) => text === "Working…")).toHaveLength(1);
+    expect(progress.filter((text) => text === "On it…")).toHaveLength(1);
     expect(slack.chat.postMessage).toHaveBeenCalledWith({
       channel: "C2",
       thread_ts: "9",
@@ -1390,7 +1377,7 @@ describe("SlackAgent transport", () => {
     expect(
       slack.chat.update.mock.calls
         .map(([message]) => message.text)
-        .filter((text) => text === "Working…"),
+        .filter((text) => text === "On it…"),
     ).toHaveLength(2);
   });
 
@@ -1440,6 +1427,7 @@ describe("SlackAgent transport", () => {
       operatorUserIds: new Set(["U_OPERATOR"]),
       agent: new QueuedAgentBackend(rawBackend, queueLimits()),
       log: (record) => records.push(record),
+      random: () => 0,
     });
     const slack = client();
     let statusCount = 0;
@@ -1472,7 +1460,7 @@ describe("SlackAgent transport", () => {
     ).toHaveLength(1);
     expect(
       slack.chat.update.mock.calls.some(
-        ([message]) => message.ts === "status-1" && message.text === "Working…",
+        ([message]) => message.ts === "status-1" && message.text === "On it…",
       ),
     ).toBe(true);
     expect(slack.chat.update).toHaveBeenCalledWith({
@@ -1489,10 +1477,19 @@ describe("SlackAgent transport", () => {
     );
   });
 
-  test("keeps the working reaction until the backend settles", async () => {
+  test("uses one natural status pair without procedural confirmation reactions", async () => {
     const result = deferred<string>();
-    const run = mock(() => result.promise);
-    createAgent(run);
+    const run = mock((_request: unknown, observer?: AgentRunObserver) => {
+      observer?.onStarted?.();
+      return result.promise;
+    });
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(run),
+      random: () => 0.75,
+    });
     const slack = client();
 
     const handling = app.handlers.get("app_mention")!({
@@ -1502,36 +1499,28 @@ describe("SlackAgent transport", () => {
     });
     await Bun.sleep(0);
 
-    expect(slack.reactions.add.mock.calls[0]?.[0]).toEqual({
+    expect(slack.chat.update).toHaveBeenCalledWith({
       channel: "C1",
-      timestamp: "5",
-      name: "eyes",
+      ts: "status-ts",
+      text: "I’ll take a look…",
     });
+    expect(slack.reactions.add).not.toHaveBeenCalled();
     expect(slack.reactions.remove).not.toHaveBeenCalled();
 
     result.resolve("response");
     await handling;
 
-    expect(slack.reactions.add.mock.calls[1]?.[0]).toEqual({
-      channel: "C1",
-      timestamp: "5",
-      name: "white_check_mark",
-    });
-    expect(slack.reactions.remove).toHaveBeenCalledWith({
-      channel: "C1",
-      timestamp: "5",
-      name: "eyes",
-    });
+    expect(slack.reactions.add).not.toHaveBeenCalled();
+    expect(slack.reactions.remove).not.toHaveBeenCalled();
   });
 
-  test("does not let reaction failures mask a successful response", async () => {
-    const run = mock(async () => "response");
+  test("does not let a failure reaction error mask the error response", async () => {
+    const run = mock(async () => {
+      throw new Error("backend unavailable");
+    });
     createAgent(run);
     const slack = client();
     slack.reactions.add.mockImplementation(async () => {
-      throw new Error("reaction unavailable");
-    });
-    slack.reactions.remove.mockImplementation(async () => {
       throw new Error("reaction unavailable");
     });
 
@@ -1545,7 +1534,7 @@ describe("SlackAgent transport", () => {
     expect(slack.chat.update).toHaveBeenCalledWith({
       channel: "C1",
       ts: "status-ts",
-      text: "response",
+      text: "The request failed unexpectedly. Try again or contact the operator with request ID `E_REACTION_FAILURE`.",
     });
   });
 

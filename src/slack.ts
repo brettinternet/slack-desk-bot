@@ -53,6 +53,12 @@ export class SlackAuthenticationError extends Error {
 const MAX_CONCURRENT_RESPONSES = 8;
 const MISSING_CONVERSATION_TTL_MS = 60_000;
 const WORKSPACE_REACTION_PROBABILITY = 0.2;
+const WORKING_STATUS_MESSAGES = [
+  { started: "On it…", ongoing: "Still on it…" },
+  { started: "I’m looking into it…", ongoing: "Still looking into it…" },
+  { started: "Let me dig into that…", ongoing: "Still digging into it…" },
+  { started: "I’ll take a look…", ongoing: "Still working through it…" },
+] as const;
 
 interface DeliveryResult {
   outcome: "success" | "partial" | "failure";
@@ -538,13 +544,10 @@ export class SlackAgent {
     client: App["client"],
     message: InboundSlackMessage,
   ): Promise<RequestStatus> {
-    await this.bestEffortSlackOperation(
-      client.reactions.add({
-        channel: message.channel,
-        timestamp: message.messageTs,
-        name: "eyes",
-      }),
-    );
+    const random = this.options.random ?? Math.random;
+    const statusMessage =
+      WORKING_STATUS_MESSAGES[Math.floor(random() * WORKING_STATUS_MESSAGES.length)] ??
+      WORKING_STATUS_MESSAGES[0];
     const response = await this.bestEffortChatOperation(() =>
       client.chat.postMessage({
         channel: message.channel,
@@ -571,11 +574,11 @@ export class SlackAgent {
         onQueued: () => {},
         onStarted: () => {
           runStartedAt = performance.now();
-          update("Working…");
+          update(statusMessage.started);
           feedbackTimer = setInterval(() => {
             const elapsed = Math.max(1, Math.floor((performance.now() - runStartedAt) / 1_000));
             update(
-              `Working… ${elapsed}s elapsed · ${toolCount} tool ${toolCount === 1 ? "use" : "uses"}`,
+              `${statusMessage.ongoing} ${elapsed}s elapsed · ${toolCount} tool ${toolCount === 1 ? "use" : "uses"}`,
             );
           }, this.options.statusUpdateIntervalMs ?? 30_000);
           feedbackTimer.unref();
@@ -740,20 +743,15 @@ export class SlackAgent {
     const successful = execution.outcome === "success" && delivery.outcome === "success";
     if (delivery.outcome === "success") this.options.health?.recordSlackDeliverySuccess();
     else if (execution.finalOutput !== undefined) this.options.health?.recordSlackDeliveryFailure();
-    await this.bestEffortSlackOperation(
-      client.reactions.add({
-        channel: message.channel,
-        timestamp: message.messageTs,
-        name: successful ? "white_check_mark" : "x",
-      }),
-    );
-    await this.bestEffortSlackOperation(
-      client.reactions.remove({
-        channel: message.channel,
-        timestamp: message.messageTs,
-        name: "eyes",
-      }),
-    );
+    if (!successful) {
+      await this.bestEffortSlackOperation(
+        client.reactions.add({
+          channel: message.channel,
+          timestamp: message.messageTs,
+          name: "x",
+        }),
+      );
+    }
     if (successful) await this.addRandomWorkspaceReaction(client, message);
     return delivery;
   }
