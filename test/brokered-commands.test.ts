@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { GitSlackIdentityResolver } from "../src/git-slack-identities.ts";
 import {
   type BrokeredCommandExecutor,
   type BrokeredCommandSpec,
@@ -34,7 +35,15 @@ function initializeRepository(workspace = temporaryWorkspace()): string {
   writeFileSync(join(workspace, "visible.ts"), "export const answer = 42;\n");
   writeFileSync(join(workspace, ".env"), "SECRET=hidden\n");
   execFileSync("/usr/bin/git", ["-C", workspace, "add", "visible.ts", ".env"]);
-  execFileSync("/usr/bin/git", ["-C", workspace, "commit", "-q", "-m", "Initial commit"]);
+  execFileSync("/usr/bin/git", [
+    "-C",
+    workspace,
+    "commit",
+    "-q",
+    "--author=Test User <test@example.com>",
+    "-m",
+    "Initial commit",
+  ]);
   return workspace;
 }
 
@@ -46,7 +55,15 @@ function repositoryWithHistory(): string {
   execFileSync("/usr/bin/git", ["-C", workspace, "add", "visible.ts", "src/second.ts"]);
   execFileSync("/usr/bin/git", ["-C", workspace, "config", "user.name", "Second User"]);
   execFileSync("/usr/bin/git", ["-C", workspace, "config", "user.email", "second@example.com"]);
-  execFileSync("/usr/bin/git", ["-C", workspace, "commit", "-q", "-m", "Add second feature"]);
+  execFileSync("/usr/bin/git", [
+    "-C",
+    workspace,
+    "commit",
+    "-q",
+    "--author=Second User <second@example.com>",
+    "-m",
+    "Add second feature",
+  ]);
   execFileSync("/usr/bin/git", ["-C", workspace, "tag", "v1", "HEAD~1"]);
   execFileSync("/usr/bin/git", ["-C", workspace, "branch", "stale-example", "HEAD~1"]);
   return workspace;
@@ -120,6 +137,20 @@ describe("Git inspection broker", () => {
     ).toContain("Initial commit");
     expect(await runGitInspection({ action: "stats" }, workspace)).toContain("Tracked files: 1");
     expect(await runGitInspection({ action: "hotspots" }, workspace)).toContain("visible.ts");
+  });
+
+  test("maps canonical commit emails to Slack users in contributor reports", async () => {
+    const workspace = initializeRepository();
+    const resolver = new GitSlackIdentityResolver(async () => [
+      { id: "U0123", email: "test@example.com", name: "Test Person" },
+    ]);
+
+    expect(
+      await runGitInspection({ action: "identities" }, workspace, undefined, undefined, resolver),
+    ).toContain("Test User <test@example.com> → Test Person (U0123, email)");
+    expect(
+      await runGitInspection({ action: "contributors" }, workspace, undefined, undefined, resolver),
+    ).toContain("Test User (Slack: Test Person, U0123)");
   });
 
   test("selects a nested repository without broadening workspace access", async () => {

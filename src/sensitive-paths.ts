@@ -26,6 +26,7 @@ export const SENSITIVE_PATH_RULES: readonly SensitivePathRule[] = [
   { kind: "path-suffix", path: ".aws/credentials" },
   { kind: "path-suffix", path: "gcloud/application_default_credentials.json" },
   { kind: "path-suffix", path: ".docker/config.json" },
+  { kind: "path-suffix", path: ".slack-desk/identities.yaml" },
   { kind: "basename-prefix", prefix: ".env" },
   { kind: "extension", extension: ".key" },
   { kind: "extension", extension: ".pem" },

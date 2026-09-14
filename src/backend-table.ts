@@ -2,6 +2,7 @@ import type { AgentBackend } from "./agent.ts";
 import { ClaudeBackend, defaultClaudeHome } from "./claude-backend.ts";
 import { CodexBackend, defaultCodexHome } from "./codex-backend.ts";
 import type { AgentBackendKind, Config } from "./config.ts";
+import { GitSlackIdentityResolver, loadSlackUsers } from "./git-slack-identities.ts";
 import { defaultSessionDirectory, PiBackend } from "./pi-backend.ts";
 
 export interface BackendReadinessChecks {
@@ -32,6 +33,11 @@ export const BACKENDS: Record<AgentBackendKind, BackendDefinition> = {
         sessionDir: config.sessionDir,
         maxActiveSessions: config.maxActiveSessions,
         sessionIdleMs: config.sessionIdleMs,
+        brokeredToolsOptions: {
+          identityResolver: new GitSlackIdentityResolver(() =>
+            loadSlackUsers(config.slackBotToken),
+          ),
+        },
       }),
     checkReady: (config, checks) => checks.pi(config.workspace),
     sessionHome: (config) => config.sessionDir ?? defaultSessionDirectory(config.workspace),

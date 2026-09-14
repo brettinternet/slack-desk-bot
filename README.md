@@ -113,7 +113,7 @@ slack-desk attach f82ab719 --history 50  # default: 20; --no-history to disable
 
 `slack-desk sessions` shows conversation labels and participants when Slack metadata is available. Attaching prints thread/DM identity, participants, permalink, and recent history, then switches to live events.
 
-Scopes `channels:read`, `groups:read`, `im:read`, and `users:read` are required; reinstall an existing app after adding them. History falls back gracefully when Slack denies access.
+Scopes `channels:read`, `groups:read`, `im:read`, `users:read`, and `users:read.email` are required; reinstall an existing app after adding them. History and automatic Git identity matching fall back gracefully when Slack denies access.
 
 Inside an attachment use prompts normally, or `/status`, `/cancel`, `/quit`. Slack and local prompts share the same per-conversation queue. Local operator prompts and replies post back to the originating Slack thread with attribution; disconnecting does not stop the session or an active request.
 
@@ -147,7 +147,18 @@ For the Pi backend, opt into fixed read-only command brokers without enabling a 
 SLACK_AGENT_COMMAND_MODE=brokered
 ```
 
-**`git_inspect`** reports status, branches, tags, bounded logs and diffs, historical contents, blame, commit search/details, release notes, branch divergence, contributors and file ownership, activity and streaks, code/file age, largest files, change coupling, hotspots, bus-factor estimates, repository health, and tracked-file statistics.
+**`git_inspect`** reports status, branches, tags, bounded logs and diffs, historical contents, blame, commit search/details, release notes, branch divergence, contributors and file ownership, activity and streaks, code/file age, largest files, change coupling, hotspots, bus-factor estimates, repository health, tracked-file statistics, and Git-author-to-Slack identity matches.
+
+Git identities use `.mailmap`-canonicalized author emails. Exact workspace-email matches are automatic; names are never fuzzy-matched. Explicit aliases can be stored globally or in a local, gitignored project file:
+
+```sh
+slack-desk identities scan
+slack-desk identities list
+slack-desk identities link U012ABCDEF brett@users.noreply.github.com
+slack-desk identities link U012ABCDEF brett@company.com --global
+```
+
+Project mappings are written to `.slack-desk/identities.yaml`; global mappings use `~/.config/slack-desk/identities.yaml`. Project mappings take precedence. `scan` requires `SLACK_BOT_TOKEN` and the `users:read.email` scope. The `contributors`, `identities`, and `bus_factor` Git inspection actions include resolved Slack names and stable user IDs without exposing workspace email addresses.
 
 - `SLACK_AGENT_CWD` is the outer access boundary: a single repo root or a parent of multiple repos.
 - In nested layouts, `git_inspect` resolves a workspace-relative repo root and uses paths relative to it.

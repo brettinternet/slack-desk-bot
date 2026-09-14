@@ -5,6 +5,7 @@ import { createInterface } from "node:readline";
 import type { ConversationSummary } from "./agent.ts";
 import { defaultSocketPath } from "./config.ts";
 import type { ConversationEvent } from "./conversation-coordinator.ts";
+import { IDENTITY_USAGE, runIdentityCommand } from "./identity-cli.ts";
 import {
   isLocalServerMessage,
   LOCAL_PROTOCOL_VERSION,
@@ -83,8 +84,7 @@ class LocalClient {
   }
 }
 
-const USAGE =
-  "Usage: slack-desk [--socket <path>] sessions | slack-desk [--socket <path>] attach <session-id> [--history <0-100> | --no-history]";
+const USAGE = `Usage: slack-desk [--socket <path>] sessions | slack-desk [--socket <path>] attach <session-id> [--history <0-100> | --no-history]\n${IDENTITY_USAGE}`;
 
 function terminalText(text: string): string {
   return text
@@ -282,6 +282,10 @@ export function parseArguments(args: readonly string[]): {
 }
 
 export async function main(args: string[] = process.argv.slice(2)): Promise<void> {
+  if (args[0] === "identities") {
+    await runIdentityCommand(args.slice(1), { botToken: process.env.SLACK_BOT_TOKEN });
+    return;
+  }
   const { command, sessionId, socketPath: requested, historyLimit } = parseArguments(args);
   const socketPath =
     requested ?? (process.env.SLACK_AGENT_SOCKET_PATH?.trim() || defaultSocketPath());

@@ -9,6 +9,7 @@ import {
   truncateHead,
   type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
+import type { GitSlackIdentityResolver } from "./git-slack-identities.ts";
 import { isPathInWorkspace, isSensitiveWorkspacePath } from "./workspace-policy.ts";
 
 const COMMAND_TIMEOUT_MS = 10_000;
@@ -30,6 +31,7 @@ const GIT_ACTIONS = [
   "blame",
   "file_history",
   "contributors",
+  "identities",
   "hotspots",
   "stats",
   "commit_details",
@@ -487,6 +489,7 @@ interface HistoryCommit {
   hash: string;
   timestamp: number;
   author: string;
+  email: string;
   paths: string[];
 }
 
@@ -532,7 +535,7 @@ async function historyCommits(
     [
       "log",
       ...(days === undefined ? [] : [`--since=${days}.days`]),
-      "--format=@@@%H%x09%ct%x09%an",
+      "--format=@@@%H%x09%ct%x09%aN%x09%aE",
       "--name-only",
       "--no-renames",
     ],
@@ -543,14 +546,41 @@ async function historyCommits(
   let current: HistoryCommit | undefined;
   for (const line of output.split("\n")) {
     if (line.startsWith("@@@")) {
-      const [hash = "", timestamp = "0", author = "Unknown"] = line.slice(3).split("\t");
-      current = { hash, timestamp: Number(timestamp), author, paths: [] };
+      const [hash = "", timestamp = "0", author = "Unknown", email = ""] = line
+        .slice(3)
+        .split("\t");
+      current = { hash, timestamp: Number(timestamp), author, email, paths: [] };
       commits.push(current);
     } else if (line && current && !isSensitiveGitPath(line, repository, workspace)) {
       current.paths.push(line);
     }
   }
   return commits;
+}
+
+async function contributorLabels(
+  repository: string,
+  commits: readonly HistoryCommit[],
+  identityResolver?: GitSlackIdentityResolver,
+): Promise<Map<string, string>> {
+  const authors = new Map<string, { name: string; email: string }>();
+  for (const commit of commits)
+    authors.set(commit.email, { name: commit.author, email: commit.email });
+  const labels = new Map<string, string>();
+  await Promise.all(
+    [...authors.values()].map(async ({ name, email }) => {
+      const identity = identityResolver
+        ? await identityResolver.resolve(repository, email)
+        : undefined;
+      labels.set(
+        email,
+        identity
+          ? `${name} (Slack: ${identity.slackName ?? identity.slackUserId}, ${identity.slackUserId})`
+          : name,
+      );
+    }),
+  );
+  return labels;
 }
 
 function dateKey(timestamp: number): string {
@@ -704,6 +734,7 @@ export async function runGitInspection(
   workspace: string,
   signal?: AbortSignal,
   execute: BrokeredCommandExecutor = executeBrokeredCommand,
+  identityResolver?: GitSlackIdentityResolver,
 ): Promise<string> {
   const repository = await requireRepositoryRoot(input.repository, workspace, signal, execute);
   const limit = boundedInteger(input.limit, 20, 1, 100, "limit");
@@ -845,8 +876,33 @@ export async function runGitInspection(
         ),
       );
     }
-    case "contributors":
-      return present(await git(repository, ["shortlog", "-sn", "--all"], signal, execute));
+    case "contributors": {
+      const commits = await historyCommits(repository, workspace, undefined, signal, execute);
+      const labels = await contributorLabels(repository, commits, identityResolver);
+      const authors = ranked(histogram(commits.map((commit) => commit.email)));
+      return present(
+        authors
+          .slice(0, limit)
+          .map(([email, count]) => `${count.toString().padStart(6)}\t${labels.get(email) ?? email}`)
+          .join("\n"),
+      );
+    }
+    case "identities": {
+      const commits = await historyCommits(repository, workspace, undefined, signal, execute);
+      const authors = new Map<string, string>();
+      for (const commit of commits) authors.set(commit.email, commit.author);
+      const rows = await Promise.all(
+        [...authors.entries()].sort().map(async ([email, name]) => {
+          const identity = identityResolver
+            ? await identityResolver.resolve(repository, email)
+            : undefined;
+          return identity
+            ? `${name} <${email}> → ${identity.slackName ?? identity.slackUserId} (${identity.slackUserId}, ${identity.source})`
+            : `${name} <${email}> → unresolved`;
+        }),
+      );
+      return present(rows.join("\n") || "No commit authors found.");
+    }
     case "hotspots": {
       const days = boundedInteger(input.days, 30, 1, 365, "days");
       const output = await git(
@@ -995,7 +1051,8 @@ export async function runGitInspection(
     case "bus_factor": {
       const days = boundedInteger(input.days, 180, 7, 3650, "days");
       const commits = await historyCommits(repository, workspace, days, signal, execute);
-      const authors = ranked(histogram(commits.map((commit) => commit.author)));
+      const labels = await contributorLabels(repository, commits, identityResolver);
+      const authors = ranked(histogram(commits.map((commit) => commit.email)));
       const total = commits.length || 1;
       let cumulative = 0;
       let busFactor = 0;
@@ -1008,7 +1065,10 @@ export async function runGitInspection(
         `Approximate bus factor over ${days} days: ${busFactor}\nContributors needed for 50% of commits: ${
           authors
             .slice(0, limit)
-            .map(([author, count]) => `${author} (${((count / total) * 100).toFixed(1)}%)`)
+            .map(
+              ([email, count]) =>
+                `${labels.get(email) ?? email} (${((count / total) * 100).toFixed(1)}%)`,
+            )
             .join(", ") || "none"
         }`,
       );
@@ -1636,6 +1696,7 @@ export async function runSystemInfo(
 export interface BrokeredToolsOptions {
   execute?: BrokeredCommandExecutor;
   platform?: NodeJS.Platform;
+  identityResolver?: GitSlackIdentityResolver;
 }
 
 /** Service-owned, non-shell tools whose actions map to fixed executables and validated argv. */
@@ -1651,7 +1712,7 @@ export function brokeredTools(
         name: "git_inspect",
         label: "Git Inspect",
         description:
-          "Safely inspect repository state, history, ownership, activity, age, branch divergence, release notes, file size, coupling, streaks, health, and trivia without a shell. repository selects a Git root within the workspace and defaults to the workspace itself. Path actions require a repository-relative literal path. Ref actions accept only simple local commit IDs or ref names. Output is bounded to 50KB/2000 lines and sensitive paths are blocked.",
+          "Safely inspect repository state, history, contributor-to-Slack identities, ownership, activity, age, branch divergence, release notes, file size, coupling, streaks, health, and trivia without a shell. repository selects a Git root within the workspace and defaults to the workspace itself. Path actions require a repository-relative literal path. Ref actions accept only simple local commit IDs or ref names. Output is bounded to 50KB/2000 lines and sensitive paths are blocked.",
         promptSnippet:
           "Inspect Git state, history, blame, ownership, activity, coupling, release notes, and repository health",
         promptGuidelines: [
@@ -1707,7 +1768,16 @@ export function brokeredTools(
         async execute(_toolCallId, params, signal) {
           return {
             content: [
-              { type: "text", text: await runGitInspection(params, workspace, signal, execute) },
+              {
+                type: "text",
+                text: await runGitInspection(
+                  params,
+                  workspace,
+                  signal,
+                  execute,
+                  options.identityResolver,
+                ),
+              },
             ],
             details: { action: params.action },
           };
