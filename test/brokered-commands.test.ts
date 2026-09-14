@@ -25,8 +25,8 @@ function temporaryWorkspace(): string {
   return workspace;
 }
 
-function initializeRepository(): string {
-  const workspace = temporaryWorkspace();
+function initializeRepository(workspace = temporaryWorkspace()): string {
+  mkdirSync(workspace, { recursive: true });
   execFileSync("/usr/bin/git", ["init", "-q", workspace]);
   execFileSync("/usr/bin/git", ["-C", workspace, "config", "user.name", "Test User"]);
   execFileSync("/usr/bin/git", ["-C", workspace, "config", "user.email", "test@example.com"]);
@@ -107,6 +107,35 @@ describe("Git inspection broker", () => {
     expect(await runGitInspection({ action: "hotspots" }, workspace)).toContain("visible.ts");
   });
 
+  test("selects a nested repository without broadening workspace access", async () => {
+    const workspace = temporaryWorkspace();
+    const repository = initializeRepository(join(workspace, "houston"));
+
+    expect(
+      await runGitInspection(
+        { action: "blame", repository: "houston", path: "visible.ts" },
+        workspace,
+      ),
+    ).toContain("Test User");
+    writeFileSync(join(repository, ".env"), "SECRET=changed\n");
+    const overview = await runGitInspection(
+      { action: "overview", repository: "houston" },
+      workspace,
+    );
+    expect(overview).toContain("Initial commit");
+    expect(overview).not.toContain(".env");
+
+    const outside = initializeRepository();
+    symlinkSync(outside, join(workspace, "linked-repository"));
+    await expect(
+      runGitInspection({ action: "overview", repository: "linked-repository" }, workspace),
+    ).rejects.toThrow("inside the configured workspace");
+    await expect(
+      runGitInspection({ action: "overview", repository: "../outside" }, workspace),
+    ).rejects.toThrow("inside the configured workspace");
+    expect(repository).toBe(join(workspace, "houston"));
+  });
+
   test("shows literal file diffs while omitting sensitive status paths", async () => {
     const workspace = initializeRepository();
     writeFileSync(join(workspace, "visible.ts"), "export const answer = 43;\n");
@@ -142,10 +171,10 @@ describe("Git inspection broker", () => {
     );
     await expect(
       runGitInspection({ action: "show_file", path: "../outside.ts" }, workspace),
-    ).rejects.toThrow("inside the configured workspace");
+    ).rejects.toThrow("inside the selected repository");
     await expect(
       runGitInspection({ action: "show_file", path: "escape.ts" }, workspace),
-    ).rejects.toThrow("outside the configured workspace");
+    ).rejects.toThrow("outside the selected repository");
     await expect(
       runGitInspection({ action: "show_file", path: ".env" }, workspace),
     ).rejects.toThrow("sensitive workspace paths");
@@ -174,14 +203,14 @@ describe("Git inspection broker", () => {
     ).rejects.toThrow("endLine");
   });
 
-  test("refuses to inspect an enclosing repository from a workspace subdirectory", async () => {
+  test("refuses to inspect an enclosing repository from a selected subdirectory", async () => {
     const repository = initializeRepository();
     const workspace = join(repository, "packages", "app");
     mkdirSync(workspace, { recursive: true });
     writeFileSync(join(repository, "sibling-secret.txt"), "not in workspace\n");
 
     await expect(runGitInspection({ action: "status" }, workspace)).rejects.toThrow(
-      "requires SLACK_AGENT_CWD to be the repository root",
+      "must identify a Git repository root",
     );
     await expect(
       runGitInspection({ action: "show_file", path: "sibling-secret.txt" }, workspace),

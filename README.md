@@ -136,7 +136,10 @@ SLACK_AGENT_COMMAND_MODE=brokered
 
 **`git_inspect`** reports status, branches, tags, bounded logs and diffs, historical contents, blame, history, contributors, frequently changed files, and tracked-file statistics.
 
-- `SLACK_AGENT_CWD` must be the repository root, not a subdirectory.
+- `SLACK_AGENT_CWD` is the outer access boundary. It may be a repository root or a parent containing multiple repositories.
+- For nested projects, `git_inspect` selects a workspace-relative repository root; file paths are relative to that repository.
+- Repository selection rejects traversal, symlink escapes, non-root subdirectories, and paths outside `SLACK_AGENT_CWD`.
+- Other file tools remain relative to `SLACK_AGENT_CWD`, so they can inspect files across the allowed projects without changing process directories.
 - Sensitive paths such as `.env`, `.git`, credentials, and private keys are rejected or omitted.
 - Git runs as `/usr/bin/git` with exact arguments. It has no pager, hooks, lazy fetching, optional locks, global/system config, credential prompts, or inherited service environment.
 - It cannot contact remotes or mutate the repository.

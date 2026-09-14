@@ -47,6 +47,7 @@ type SystemAction = (typeof SYSTEM_ACTIONS)[number];
 
 export interface GitInspectInput {
   action: GitAction;
+  repository?: string;
   path?: string;
   revision?: string;
   startLine?: number;
@@ -235,17 +236,35 @@ async function git(
   return result.stdout;
 }
 
-async function requireWorkspaceRepositoryRoot(
+async function requireRepositoryRoot(
+  repositoryPath: string | undefined,
   workspace: string,
   signal: AbortSignal | undefined,
   execute: BrokeredCommandExecutor,
-): Promise<void> {
-  const root = (await git(workspace, ["rev-parse", "--show-toplevel"], signal, execute)).trim();
-  if (!root || realpathSync(root) !== realpathSync(workspace)) {
+): Promise<string> {
+  const selected = repositoryPath?.trim() || ".";
+  if (isAbsolute(selected)) {
+    throw new Error("repository must be relative to the configured workspace");
+  }
+  const candidate = resolve(realpathSync(workspace), selected);
+  if (!isPathInWorkspace(candidate, workspace)) {
+    throw new Error("repository must identify a directory inside the configured workspace");
+  }
+  if (isSensitiveWorkspacePath(candidate, workspace)) {
+    throw new Error("access to sensitive workspace paths is blocked");
+  }
+  if (!statSync(candidate, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error("repository must identify an existing directory");
+  }
+
+  const repository = realpathSync(candidate);
+  const root = (await git(repository, ["rev-parse", "--show-toplevel"], signal, execute)).trim();
+  if (!root || realpathSync(root) !== repository) {
     throw new Error(
-      "git_inspect requires SLACK_AGENT_CWD to be the repository root; refusing to inspect an enclosing repository",
+      "repository must identify a Git repository root; refusing to inspect an enclosing repository",
     );
   }
+  return repository;
 }
 
 function boundedInteger(
@@ -262,18 +281,17 @@ function boundedInteger(
   return selected;
 }
 
-function workspacePath(path: string | undefined, workspace: string): string {
+function repositoryPath(path: string | undefined, repository: string, workspace: string): string {
   if (!path?.trim()) throw new Error("path is required for this git action");
   let normalized = path.trim().replace(/^@/, "");
-  if (isAbsolute(normalized)) throw new Error("path must be relative to the configured workspace");
-  const canonicalWorkspace = realpathSync(workspace);
-  normalized = relative(canonicalWorkspace, resolve(canonicalWorkspace, normalized));
+  if (isAbsolute(normalized)) throw new Error("path must be relative to the selected repository");
+  normalized = relative(repository, resolve(repository, normalized));
   if (!normalized || normalized.startsWith("..") || isAbsolute(normalized)) {
-    throw new Error("path must identify a file inside the configured workspace");
+    throw new Error("path must identify a file inside the selected repository");
   }
-  const absolute = resolve(workspace, normalized);
-  if (!isPathInWorkspace(absolute, workspace)) {
-    throw new Error("path resolves outside the configured workspace");
+  const absolute = resolve(repository, normalized);
+  if (!isPathInWorkspace(absolute, repository)) {
+    throw new Error("path resolves outside the selected repository");
   }
   if (isSensitiveWorkspacePath(absolute, workspace)) {
     throw new Error("access to sensitive workspace paths is blocked");
@@ -300,11 +318,11 @@ function present(output: string): string {
   return `${truncation.content}\n\n[Output truncated to ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}).]`;
 }
 
-function isSensitiveGitPath(path: string, workspace: string): boolean {
-  return isSensitiveWorkspacePath(resolve(workspace, path), workspace);
+function isSensitiveGitPath(path: string, repository: string, workspace: string): boolean {
+  return isSensitiveWorkspacePath(resolve(repository, path), workspace);
 }
 
-function formatStatus(output: string, workspace: string): string {
+function formatStatus(output: string, repository: string, workspace: string): string {
   const records = output.split("\0").filter(Boolean);
   const visible: string[] = [];
   for (let index = 0; index < records.length; index++) {
@@ -317,8 +335,8 @@ function formatStatus(output: string, workspace: string): string {
     const path = record.slice(3);
     const renamed = status.includes("R") || status.includes("C") ? records[++index] : undefined;
     if (
-      isSensitiveGitPath(path, workspace) ||
-      (renamed && isSensitiveGitPath(renamed, workspace))
+      isSensitiveGitPath(path, repository, workspace) ||
+      (renamed && isSensitiveGitPath(renamed, repository, workspace))
     ) {
       continue;
     }
@@ -327,8 +345,10 @@ function formatStatus(output: string, workspace: string): string {
   return visible.join("\n") || "Working tree clean (sensitive paths, if any, are omitted).";
 }
 
-function formatStats(output: string, workspace: string): string {
-  const files = output.split("\0").filter((path) => path && !isSensitiveGitPath(path, workspace));
+function formatStats(output: string, repository: string, workspace: string): string {
+  const files = output
+    .split("\0")
+    .filter((path) => path && !isSensitiveGitPath(path, repository, workspace));
   const extensions = new Map<string, number>();
   for (const path of files) {
     const name = path.split("/").at(-1) ?? path;
@@ -355,8 +375,8 @@ async function gitObjectContents(
   return git(workspace, ["show", "--no-ext-diff", "--no-textconv", object], signal, execute);
 }
 
-function workingTreeContents(path: string, workspace: string): string {
-  const absolute = resolve(realpathSync(workspace), path);
+function workingTreeContents(path: string, repository: string): string {
+  const absolute = resolve(repository, path);
   const stat = statSync(absolute, { throwIfNoEntry: false });
   if (!stat) return "";
   if (!stat.isFile()) throw new Error("diff path must identify a regular file");
@@ -368,10 +388,16 @@ function workingTreeContents(path: string, workspace: string): string {
   return contents.toString("utf8");
 }
 
-function formatHotspots(output: string, workspace: string, limit: number, days: number): string {
+function formatHotspots(
+  output: string,
+  repository: string,
+  workspace: string,
+  limit: number,
+  days: number,
+): string {
   const counts = new Map<string, number>();
   for (const path of output.split("\n")) {
-    if (!path || isSensitiveGitPath(path, workspace)) continue;
+    if (!path || isSensitiveGitPath(path, repository, workspace)) continue;
     counts.set(path, (counts.get(path) ?? 0) + 1);
   }
   const rows = [...counts.entries()]
@@ -391,16 +417,16 @@ export async function runGitInspection(
   signal?: AbortSignal,
   execute: BrokeredCommandExecutor = executeBrokeredCommand,
 ): Promise<string> {
-  await requireWorkspaceRepositoryRoot(workspace, signal, execute);
+  const repository = await requireRepositoryRoot(input.repository, workspace, signal, execute);
   const limit = boundedInteger(input.limit, 20, 1, 100, "limit");
   switch (input.action) {
     case "overview": {
       const [branch, commitCount, latest, status] = await Promise.all([
-        git(workspace, ["branch", "--show-current"], signal, execute),
-        git(workspace, ["rev-list", "--count", "HEAD"], signal, execute),
-        git(workspace, ["log", "-1", "--date=short", "--format=%h %ad %an — %s"], signal, execute),
+        git(repository, ["branch", "--show-current"], signal, execute),
+        git(repository, ["rev-list", "--count", "HEAD"], signal, execute),
+        git(repository, ["log", "-1", "--date=short", "--format=%h %ad %an — %s"], signal, execute),
         git(
-          workspace,
+          repository,
           ["status", "--porcelain=v1", "--branch", "--ignore-submodules=all", "-z"],
           signal,
           execute,
@@ -412,7 +438,7 @@ export async function runGitInspection(
           `Commits: ${commitCount.trim()}`,
           `Latest: ${latest.trim()}`,
           "Status:",
-          formatStatus(status, workspace),
+          formatStatus(status, repository, workspace),
         ].join("\n"),
       );
     }
@@ -420,18 +446,19 @@ export async function runGitInspection(
       return present(
         formatStatus(
           await git(
-            workspace,
+            repository,
             ["status", "--porcelain=v1", "--branch", "--ignore-submodules=all", "-z"],
             signal,
             execute,
           ),
+          repository,
           workspace,
         ),
       );
     case "branches":
       return present(
         await git(
-          workspace,
+          repository,
           [
             "branch",
             "--sort=-committerdate",
@@ -444,7 +471,7 @@ export async function runGitInspection(
     case "tags":
       return present(
         await git(
-          workspace,
+          repository,
           [
             "tag",
             "--sort=-creatordate",
@@ -457,20 +484,20 @@ export async function runGitInspection(
     case "log":
       return present(
         await git(
-          workspace,
+          repository,
           ["log", `-${limit}`, "--date=short", "--format=%h %ad %an — %s"],
           signal,
           execute,
         ),
       );
     case "diff": {
-      const path = workspacePath(input.path, workspace);
+      const path = repositoryPath(input.path, repository, workspace);
       const current = input.staged
-        ? await gitObjectContents(`:${path}`, workspace, signal, execute)
-        : workingTreeContents(path, workspace);
+        ? await gitObjectContents(`:${path}`, repository, signal, execute)
+        : workingTreeContents(path, repository);
       const base = await gitObjectContents(
         input.staged ? `HEAD:${path}` : `:${path}`,
-        workspace,
+        repository,
         signal,
         execute,
       );
@@ -478,10 +505,10 @@ export async function runGitInspection(
       return present(generateUnifiedPatch(path, base, current));
     }
     case "show_file": {
-      const path = workspacePath(input.path, workspace);
+      const path = repositoryPath(input.path, repository, workspace);
       return present(
         await git(
-          workspace,
+          repository,
           ["show", "--no-ext-diff", "--no-textconv", `${revision(input.revision)}:${path}`],
           signal,
           execute,
@@ -489,7 +516,7 @@ export async function runGitInspection(
       );
     }
     case "blame": {
-      const path = workspacePath(input.path, workspace);
+      const path = repositoryPath(input.path, repository, workspace);
       const start = input.startLine;
       const end = input.endLine;
       if ((start === undefined) !== (end === undefined)) {
@@ -504,7 +531,7 @@ export async function runGitInspection(
             ];
       return present(
         await git(
-          workspace,
+          repository,
           ["blame", "--no-textconv", ...range, revision(input.revision), "--", path],
           signal,
           execute,
@@ -512,10 +539,10 @@ export async function runGitInspection(
       );
     }
     case "file_history": {
-      const path = workspacePath(input.path, workspace);
+      const path = repositoryPath(input.path, repository, workspace);
       return present(
         await git(
-          workspace,
+          repository,
           [
             "log",
             `-${limit}`,
@@ -531,20 +558,24 @@ export async function runGitInspection(
       );
     }
     case "contributors":
-      return present(await git(workspace, ["shortlog", "-sn", "--all"], signal, execute));
+      return present(await git(repository, ["shortlog", "-sn", "--all"], signal, execute));
     case "hotspots": {
       const days = boundedInteger(input.days, 30, 1, 365, "days");
       const output = await git(
-        workspace,
+        repository,
         ["log", `--since=${days}.days`, "--format=", "--name-only", "--no-renames"],
         signal,
         execute,
       );
-      return present(formatHotspots(output, workspace, limit, days));
+      return present(formatHotspots(output, repository, workspace, limit, days));
     }
     case "stats":
       return present(
-        formatStats(await git(workspace, ["ls-files", "-z"], signal, execute), workspace),
+        formatStats(
+          await git(repository, ["ls-files", "-z"], signal, execute),
+          repository,
+          workspace,
+        ),
       );
   }
 }
@@ -610,18 +641,25 @@ export function brokeredTools(
         name: "git_inspect",
         label: "Git Inspect",
         description:
-          "Safely inspect repository history and state without a shell. Actions: overview, status, branches, tags, log, diff, show_file, blame, file_history, contributors, hotspots, and stats. diff/show_file/blame/file_history require a workspace-relative path. Output is bounded to 50KB/2000 lines and sensitive paths are blocked.",
+          "Safely inspect repository history and state without a shell. Actions: overview, status, branches, tags, log, diff, show_file, blame, file_history, contributors, hotspots, and stats. repository selects a Git root within the workspace and defaults to the workspace itself. diff/show_file/blame/file_history require a repository-relative path. Output is bounded to 50KB/2000 lines and sensitive paths are blocked.",
         promptSnippet:
           "Inspect Git status, history, blame, diffs, contributors, hotspots, and repository stats",
         promptGuidelines: [
           "Use git_inspect instead of guessing about repository history, authorship, or current Git state.",
+          "When the workspace contains multiple projects, set repository to the workspace-relative Git root named by the user or file path.",
           "Use git_inspect only for inspection; it cannot mutate the repository, contact remotes, or run hooks.",
         ],
         parameters: Type.Object({
           action: StringEnum(GIT_ACTIONS, { description: "Safe Git inspection operation" }),
+          repository: Type.Optional(
+            Type.String({
+              description:
+                "Workspace-relative Git repository root; defaults to the configured workspace",
+            }),
+          ),
           path: Type.Optional(
             Type.String({
-              description: "Workspace-relative literal file path for path-based actions",
+              description: "Repository-relative literal file path for path-based actions",
             }),
           ),
           revision: Type.Optional(
