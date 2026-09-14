@@ -91,6 +91,23 @@ export function escapeSlackText(
   });
 }
 
+/** Escapes untrusted text and translates Markdown bold to Slack mrkdwn. */
+export function formatSlackText(
+  text: string,
+  allowedUserMentions: ReadonlySet<string> = new Set(),
+): string {
+  return escapeSlackText(text, allowedUserMentions)
+    .split(/(```[\s\S]*?```|`+[^`\n]*`+)/g)
+    .map((part, index) =>
+      index % 2 === 0
+        ? part
+            .replace(/\*\*(?=\S)([^\n]*?\S)\*\*/g, "*$1*")
+            .replace(/__(?=\S)([^\n]*?\S)__/g, "*$1*")
+        : part,
+    )
+    .join("");
+}
+
 export function conversationId(channel: string, threadTs?: string): string {
   return threadTs ? `${channel}:${threadTs}` : `dm:${channel}`;
 }

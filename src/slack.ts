@@ -59,17 +59,17 @@ const MISSING_CONVERSATION_TTL_MS = 60_000;
 const WORKSPACE_REACTION_PROBABILITY = 0.2;
 const WORKING_STATUS_MESSAGES = [
   { started: "On it…", ongoing: "Still on it…" },
-  { started: "I’m looking into it…", ongoing: "Still looking into it…" },
-  { started: "Let me dig into that…", ongoing: "Still digging into it…" },
-  { started: "I’ll take a look…", ongoing: "Still working through it…" },
-  { started: "Working on it…", ongoing: "Still working on it…" },
-  { started: "Checking that now…", ongoing: "Still checking…" },
-  { started: "Let me investigate…", ongoing: "Still investigating…" },
-  { started: "I’m digging in…", ongoing: "Still digging in…" },
-  { started: "I’m on the case…", ongoing: "Still on the case…" },
-  { started: "Taking a closer look…", ongoing: "Still taking a closer look…" },
-  { started: "Give me a moment to check…", ongoing: "Still checking…" },
-  { started: "I’m working through that…", ongoing: "Still working through it…" },
+  { started: "Looking…", ongoing: "Still looking…" },
+  { started: "Digging in…", ongoing: "Still digging…" },
+  { started: "Taking a look…", ongoing: "Still at it…" },
+  { started: "Working on it…", ongoing: "Still working…" },
+  { started: "Checking…", ongoing: "Still checking…" },
+  { started: "Investigating…", ongoing: "Still investigating…" },
+  { started: "Reviewing…", ongoing: "Still reviewing…" },
+  { started: "Thinking… 🤔", ongoing: "Still thinking… 🤔" },
+  { started: "Looking now… 👀", ongoing: "Still looking… 👀" },
+  { started: "One moment…", ongoing: "Still at it…" },
+  { started: "Diving in…", ongoing: "Still diving…" },
 ] as const;
 
 interface DeliveryResult {

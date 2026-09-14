@@ -816,8 +816,8 @@ describe("SlackAgent transport", () => {
     expect(JSON.stringify(records[0])).not.toContain("secret prompt contents");
   });
 
-  test("escapes untrusted agent output so repository content cannot inject mentions", async () => {
-    createAgent(mock(async () => "<!channel> see <@U999> & <https://evil.example|docs>"));
+  test("formats and escapes untrusted agent output for Slack", async () => {
+    createAgent(mock(async () => "<!channel> see **this** <@U999> & <https://evil.example|docs>"));
     const slack = client();
 
     await app.handlers.get("app_mention")!({
@@ -1603,7 +1603,7 @@ describe("SlackAgent transport", () => {
     expect(slack.chat.update).toHaveBeenCalledWith({
       channel: "C1",
       ts: "status-ts",
-      text: "I’m working through that…",
+      text: "Diving in…",
     });
     expect(slack.reactions.add).not.toHaveBeenCalled();
     expect(slack.reactions.remove).not.toHaveBeenCalled();

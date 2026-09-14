@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   conversationId,
   escapeSlackText,
+  formatSlackText,
   isSupportedChannelMessage,
   isSupportedDirectMessage,
   MAX_SLACK_RESPONSE_MESSAGES,
@@ -50,6 +51,14 @@ describe("Slack message helpers", () => {
 
     expect(escapeSlackText("<@U04ET2XUC3B> hi <@U999> & <!channel>", allowed)).toBe(
       "<@U04ET2XUC3B> hi &lt;@U999&gt; &amp; &lt;!channel&gt;",
+    );
+  });
+
+  test("formats Markdown bold as Slack mrkdwn without changing code", () => {
+    const markdown = `Short answer: **Amp is better**; __Pi is flexible__.\n\n\`**literal**\`\n\n\`\`\`md\n**also literal**\n\`\`\``;
+
+    expect(formatSlackText(markdown)).toBe(
+      `Short answer: *Amp is better*; *Pi is flexible*.\n\n\`**literal**\`\n\n\`\`\`md\n**also literal**\n\`\`\``,
     );
   });
 
