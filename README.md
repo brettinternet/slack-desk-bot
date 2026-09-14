@@ -40,7 +40,12 @@ hum up
 
 ### Agent backend
 
-**Pi (default):** `SLACK_AGENT_BACKEND=pi`. Reads model settings, `models.json`, and `auth.json` from the Pi agent directory reported by `task doctor`. Does not load that directory's extensions, skills, or prompt templates. Tools are restricted to the allowlist from `SLACK_AGENT_MODE` and `SLACK_AGENT_COMMAND_MODE`, enforced again at call time. Authenticate with desktop Pi as usual; no credential copy is required.
+**Pi (default):** `SLACK_AGENT_BACKEND=pi`.
+
+- Reads model settings, `models.json`, and `auth.json` from the Pi agent directory reported by `task doctor`.
+- Does not load that directory's extensions, skills, or prompt templates.
+- Tools are restricted to the `SLACK_AGENT_MODE` and `SLACK_AGENT_COMMAND_MODE` allowlist, enforced again at call time.
+- Authenticate with desktop Pi as usual. No credential copy is required.
 
 **Codex:**
 
@@ -74,13 +79,17 @@ Set `SLACK_AGENT_BACKEND=claude` and optionally `SLACK_CLAUDE_HOME` or `SLACK_CL
 | read-only  | `Read`, `Glob`, `Grep`                                 |
 | read-write | adds `Edit`, `Write`; keeps global single-writer limit |
 
-Claude requires macOS Seatbelt. It runs via `claude -p` with `stream-json`, a dedicated `CLAUDE_CONFIG_DIR`, inherited settings ignored, and no permission prompts. Bash, WebFetch, WebSearch, shell/code tools, out-of-workspace paths, and credential-like paths are denied by both Claude policy and Seatbelt. Text attachments are inlined; images are rejected. Session IDs persist only after a successful response, and subsequent turns resume that session.
+Claude requires macOS Seatbelt. It runs via `claude -p` with `stream-json`, a dedicated `CLAUDE_CONFIG_DIR`, inherited settings ignored, and no permission prompts.
+
+- Bash, WebFetch, WebSearch, shell/code tools, out-of-workspace paths, and credential-like paths are denied by Claude policy and Seatbelt.
+- Text attachments are inlined; images are rejected.
+- Session IDs persist only after a successful response. Subsequent turns resume that session.
 
 Run `task doctor` after switching backends.
 
 ## Slack interaction
 
-Mention the bot in a channel to start a conversation. Replies in that thread do not need a mention, including after restarts. DMs work without a mention. Only user IDs in `SLACK_ALLOWED_USER_IDS` can invoke the app. After a successful response, the bot has a 20% chance of adding a random custom workspace emoji reaction.
+Mention the bot in a channel to start a conversation. Replies in that thread do not need a mention, including after restarts. DMs work without a mention. Only `SLACK_ALLOWED_USER_IDS` can invoke the app. After a successful response, the bot has a 20% chance of reacting with a random custom workspace emoji.
 
 | Command              | Effect                                                |
 | -------------------- | ----------------------------------------------------- |
@@ -99,14 +108,18 @@ SlackDeskBot remains the sole owner of mutable agent sessions. A local client jo
 bun link                 # once, from this checkout
 slack-desk sessions
 slack-desk attach f82ab719
-slack-desk attach f82ab719 --history 50  # default: 20; use --no-history to disable
+slack-desk attach f82ab719 --history 50  # default: 20; --no-history to disable
 ```
 
-Session discovery shows the Slack conversation label and participants when Slack metadata is available. Attaching prints the thread or DM identity, participant details, Slack permalink, and recent history before switching to live events. The additional `channels:read`, `groups:read`, `im:read`, and `users:read` manifest scopes require reinstalling an existing Slack app before names and channel metadata are available; history falls back gracefully when Slack denies access.
+`slack-desk sessions` shows conversation labels and participants when Slack metadata is available. Attaching prints thread/DM identity, participants, permalink, and recent history, then switches to live events.
+
+Scopes `channels:read`, `groups:read`, `im:read`, and `users:read` are required; reinstall an existing app after adding them. History falls back gracefully when Slack denies access.
 
 Inside an attachment use prompts normally, or `/status`, `/cancel`, `/quit`. Slack and local prompts share the same per-conversation queue. Local operator prompts and replies post back to the originating Slack thread with attribution; disconnecting does not stop the session or an active request.
 
-The socket defaults to `~/Library/Application Support/SlackDeskBot/control.sock` on macOS. Override with `SLACK_AGENT_SOCKET_PATH` (absolute); the client reads the same variable or takes `--socket <path>`. The versioned newline-delimited JSON control protocol is local-only, bounds frames, clients, pending requests, subscriptions, and buffered output, and exposes session state plus bounded Slack conversation metadata and history only to the local operator.
+On macOS, the socket defaults to `~/Library/Application Support/SlackDeskBot/control.sock`. Override with `SLACK_AGENT_SOCKET_PATH` (absolute); the client reads the same variable or takes `--socket <path>`.
+
+The protocol is versioned newline-delimited JSON, local-only. It bounds frames, clients, pending requests, subscriptions, and buffered output. Session state and bounded Slack metadata/history are exposed only to the local operator.
 
 ### Custom instructions
 
@@ -136,13 +149,12 @@ SLACK_AGENT_COMMAND_MODE=brokered
 
 **`git_inspect`** reports status, branches, tags, bounded logs and diffs, historical contents, blame, history, contributors, frequently changed files, and tracked-file statistics.
 
-- `SLACK_AGENT_CWD` is the outer access boundary. It may be a repository root or a parent containing multiple repositories.
-- For nested projects, `git_inspect` selects a workspace-relative repository root; file paths are relative to that repository.
+- `SLACK_AGENT_CWD` is the outer access boundary: a single repo root or a parent of multiple repos.
+- In nested layouts, `git_inspect` resolves a workspace-relative repo root and uses paths relative to it.
+- Other file tools stay relative to `SLACK_AGENT_CWD`, reaching files across allowed projects without changing directories.
 - Repository selection rejects traversal, symlink escapes, non-root subdirectories, and paths outside `SLACK_AGENT_CWD`.
-- Other file tools remain relative to `SLACK_AGENT_CWD`, so they can inspect files across the allowed projects without changing process directories.
-- Sensitive paths such as `.env`, `.git`, credentials, and private keys are rejected or omitted.
-- Git runs as `/usr/bin/git` with exact arguments. It has no pager, hooks, lazy fetching, optional locks, global/system config, credential prompts, or inherited service environment.
-- It cannot contact remotes or mutate the repository.
+- Sensitive paths (`.env`, `.git`, credentials, private keys) are rejected or omitted.
+- Git runs as `/usr/bin/git` with exact arguments, no pager, hooks, lazy fetching, optional locks, global/system config, credential prompts, or inherited service environment. It cannot contact remotes or mutate the repository.
 
 **`system_info`** reports battery, uptime/load, OS and kernel versions, workspace disk space, memory and thermal pressure, computer name, and local clock. Each action uses a fixed Apple executable with fixed arguments; no shell or free-form arguments are accepted.
 
@@ -270,9 +282,13 @@ Rollback: unload LaunchAgent, check out the previous tag/commit, rerun the insta
 
 **Read-only by default.** `read`, `grep`, `find`, `ls` are allowed. Set `SLACK_AGENT_MODE=read-write` to enable `edit` and `write` (enforces one active conversation). Brokered commands are separately controlled by `SLACK_AGENT_COMMAND_MODE` and never add a shell or mutation capability.
 
-**Path policy** blocks `.env` files (except templates), `.ssh`, `.git` contents, private keys, cloud credentials, `.netrc`, `.npmrc`, `.pypirc`. Applies in both modes, follows symlinks, normalizes `~`, `@`, and `file://` paths. This is path-based only, not secret detection. Use a dedicated checkout without secrets.
+**Path policy** blocks `.env` files (except templates), `.ssh`, `.git` contents, private keys, cloud credentials, `.netrc`, `.npmrc`, `.pypirc`. It applies in both modes, follows symlinks, and normalizes `~`, `@`, and `file://` paths.
 
-**Tool paths** are confined to `SLACK_AGENT_CWD`. Pi allows only the selected file and brokered tools and blocks sensitive paths. The target repository is untrusted: its `.pi/` directory cannot inject extensions, settings, or system prompts. User-level Pi extensions (`~/.pi/agent`) run as trusted code outside this policy.
+This is path-based only, not secret detection. Use a dedicated checkout without secrets.
+
+**Tool paths** are confined to `SLACK_AGENT_CWD`. Pi allows only the selected file and brokered tools and blocks sensitive paths.
+
+The target repository's `.pi/` directory cannot inject extensions, settings, or system prompts. User-level Pi extensions (`~/.pi/agent`) run as trusted code outside this policy.
 
 ### Backend-specific sandboxing
 
@@ -304,7 +320,11 @@ Claude also denies Bash, shell/code tools, WebFetch, and WebSearch.
 
 ### Sessions
 
-Sessions are designed for one service owner. SlackDeskBot is their sole mutable owner. The local socket has no TCP fallback and does not expose session file paths, prompts, tokens, user names, or file contents in discovery or logs. The socket is created `0600` inside a `0700` owner-only directory. Neither Node nor Bun exposes Unix peer credentials, so any process running as the service user can connect and is treated as the operator. Do not share session files across instances without external locking.
+Sessions are designed for one service owner; SlackDeskBot is their sole mutable owner.
+
+The socket has no TCP fallback and does not expose session paths, prompts, tokens, user names, or file contents in discovery or logs. It is created `0600` inside a `0700` owner-only directory.
+
+Neither Node nor Bun exposes Unix peer credentials, so any process running as the service user can connect and is treated as the operator. Do not share session files across instances without external locking.
 
 ## Adding another backend
 
