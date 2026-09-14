@@ -84,7 +84,17 @@ class LocalClient {
 }
 
 const USAGE =
-  "Usage: slack-desk [--socket <path>] sessions | slack-desk [--socket <path>] attach <session-id>";
+  "Usage: slack-desk [--socket <path>] sessions | slack-desk [--socket <path>] attach <session-id> [--history <0-100> | --no-history]";
+
+function terminalText(text: string): string {
+  return text
+    .replace(/\u001b(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g, "")
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
+}
+
+function terminalLine(text: string): string {
+  return terminalText(text).replace(/\s+/g, " ").trim();
+}
 
 function formatAge(timestamp: number, now: number): string {
   const seconds = Math.max(0, Math.floor((now - timestamp) / 1_000));
@@ -95,25 +105,63 @@ function formatAge(timestamp: number, now: number): string {
 }
 
 export function formatSessions(sessions: ConversationSummary[], now = Date.now()): string[] {
-  const conversationWidth = Math.max(
-    "CONVERSATION".length,
-    ...sessions.map(({ conversationId }) => conversationId.length),
+  const labels = sessions.map((session) =>
+    terminalLine(session.details?.label ?? session.conversationId),
+  );
+  const conversationWidth = Math.max("CONVERSATION".length, ...labels.map((label) => label.length));
+  const participantLabels = sessions.map(
+    (session) =>
+      session.details?.participants.map(({ name }) => terminalLine(name)).join(", ") || "-",
+  );
+  const participantWidth = Math.max(
+    "PARTICIPANTS".length,
+    ...participantLabels.map((label) => label.length),
   );
   return [
-    `SESSION   ${"CONVERSATION".padEnd(conversationWidth)} STATE      LAST ACTIVE`,
+    `SESSION   ${"CONVERSATION".padEnd(conversationWidth)} ${"PARTICIPANTS".padEnd(participantWidth)} STATE      LAST ACTIVE`,
     ...sessions.map(
-      (session) =>
-        `${session.sessionId.slice(0, 8).padEnd(9)} ${session.conversationId.padEnd(conversationWidth)} ${session.state.padEnd(10)} ${formatAge(session.lastActiveAt, now)}`,
+      (session, index) =>
+        `${session.sessionId.slice(0, 8).padEnd(9)} ${labels[index]!.padEnd(conversationWidth)} ${participantLabels[index]!.padEnd(participantWidth)} ${session.state.padEnd(10)} ${formatAge(session.lastActiveAt, now)}`,
     ),
   ];
+}
+
+export function formatHistory(session: ConversationSummary): string[] {
+  const details = session.details;
+  if (!details) return [];
+  const lines = [terminalLine(details.label)];
+  const participants = details.participants.map((participant) =>
+    participant.handle
+      ? `${terminalLine(participant.name)} (@${terminalLine(participant.handle)}, ${terminalLine(participant.id)})`
+      : `${terminalLine(participant.name)} (${terminalLine(participant.id)})`,
+  );
+  if (participants.length > 0) lines.push(`Participants: ${participants.join(", ")}`);
+  if (details.permalink) lines.push(`Slack: ${terminalLine(details.permalink)}`);
+  if (details.historyUnavailable) lines.push(terminalLine(details.historyUnavailable));
+  if (details.history.length > 0) {
+    lines.push("── recent history ──");
+    for (const entry of details.history) {
+      const time = Number.isFinite(entry.timestamp)
+        ? new Date(entry.timestamp).toISOString().replace("T", " ").slice(0, 19)
+        : "unknown time";
+      lines.push(`[${time}] ${terminalLine(entry.authorName)}> ${terminalText(entry.text)}`);
+      for (const attachment of entry.attachments ?? []) {
+        lines.push(`  attachment: ${terminalLine(attachment)}`);
+      }
+    }
+    lines.push("── live events ──");
+  }
+  return lines;
 }
 
 export class ConversationEventFormatter {
   private readonly queuedPrompts = new Map<string, number>();
 
   format(event: ConversationEvent): string[] {
-    if (event.type === "response") return [`agent> ${event.response ?? ""}`];
-    if (event.type === "failure") return [`agent error> ${event.error ?? "request failed"}`];
+    if (event.type === "response") return [`agent> ${terminalText(event.response ?? "")}`];
+    if (event.type === "failure") {
+      return [`agent error> ${terminalText(event.error ?? "request failed")}`];
+    }
     if (event.type !== "queued" && event.type !== "started") return [];
 
     const prompt = this.promptLine(event);
@@ -133,7 +181,7 @@ export class ConversationEventFormatter {
   private promptLine(event: ConversationEvent): string | undefined {
     if (!event.requesterKind || event.promptExcerpt === undefined) return undefined;
     const label = event.requesterKind === "operator" ? "operator" : "user";
-    return `${label}> ${event.promptExcerpt}`;
+    return `${label}> ${terminalLine(event.promptExcerpt)}`;
   }
 }
 
@@ -141,9 +189,17 @@ function printSessions(sessions: ConversationSummary[]): void {
   for (const line of formatSessions(sessions)) console.log(line);
 }
 
-async function attach(client: LocalClient, sessionId: string): Promise<void> {
-  const session = (await client.request("attach", { sessionId })) as ConversationSummary;
+async function attach(
+  client: LocalClient,
+  sessionId: string,
+  historyLimit?: number,
+): Promise<void> {
+  const session = (await client.request("attach", {
+    sessionId,
+    historyLimit,
+  })) as ConversationSummary;
   console.log(`Attached to ${session.conversationId}`);
+  for (const line of formatHistory(session)) console.log(line);
   console.log("Enter a prompt, /status, /cancel, or /quit.");
   const formatter = new ConversationEventFormatter();
   client.onEvent = (event) => {
@@ -187,9 +243,11 @@ export function parseArguments(args: readonly string[]): {
   command: "sessions" | "attach";
   sessionId?: string;
   socketPath?: string;
+  historyLimit?: number;
 } {
   const positional: string[] = [];
   let socketPath: string | undefined;
+  let historyLimit: number | undefined;
   for (let index = 0; index < args.length; index++) {
     const value = args[index]!;
     if (value === "--socket") {
@@ -198,6 +256,18 @@ export function parseArguments(args: readonly string[]): {
     } else if (value.startsWith("--socket=")) {
       socketPath = value.slice("--socket=".length);
       if (!socketPath) throw new Error("--socket requires a path");
+    } else if (value === "--no-history") {
+      historyLimit = 0;
+    } else if (value === "--history") {
+      const requested = args[++index];
+      if (!requested || !/^\d+$/.test(requested)) throw new Error("--history requires 0-100");
+      historyLimit = Number(requested);
+      if (historyLimit > 100) throw new Error("--history requires 0-100");
+    } else if (value.startsWith("--history=")) {
+      const requested = value.slice("--history=".length);
+      if (!/^\d+$/.test(requested)) throw new Error("--history requires 0-100");
+      historyLimit = Number(requested);
+      if (historyLimit > 100) throw new Error("--history requires 0-100");
     } else {
       positional.push(value);
     }
@@ -207,11 +277,12 @@ export function parseArguments(args: readonly string[]): {
     throw new Error(USAGE);
   }
   if (command === "attach" && !sessionId) throw new Error(USAGE);
-  return { command, sessionId, socketPath };
+  if (command === "sessions" && historyLimit !== undefined) throw new Error(USAGE);
+  return { command, sessionId, socketPath, historyLimit };
 }
 
 export async function main(args: string[] = process.argv.slice(2)): Promise<void> {
-  const { command, sessionId, socketPath: requested } = parseArguments(args);
+  const { command, sessionId, socketPath: requested, historyLimit } = parseArguments(args);
   const socketPath =
     requested ?? (process.env.SLACK_AGENT_SOCKET_PATH?.trim() || defaultSocketPath());
   let client: LocalClient;
@@ -224,7 +295,7 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
     if (command === "sessions") {
       printSessions((await client.request("list")) as ConversationSummary[]);
     } else {
-      await attach(client, sessionId!);
+      await attach(client, sessionId!, historyLimit);
     }
   } finally {
     client.close();

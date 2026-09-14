@@ -17,6 +17,7 @@ export interface LocalRequest {
   requestId: string;
   sessionId?: string;
   prompt?: string;
+  historyLimit?: number;
 }
 
 export interface LocalResponse {

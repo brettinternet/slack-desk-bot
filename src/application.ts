@@ -1,4 +1,9 @@
-import { type CancellableAgentBackend, type QueueSnapshot, QueuedAgentBackend } from "./agent.ts";
+import {
+  type CancellableAgentBackend,
+  type ConversationInspector,
+  type QueueSnapshot,
+  QueuedAgentBackend,
+} from "./agent.ts";
 import { BACKENDS } from "./backend-table.ts";
 import type { Config } from "./config.ts";
 import { ConversationCoordinator } from "./conversation-coordinator.ts";
@@ -8,7 +13,7 @@ import { LocalControlServer } from "./local-control.ts";
 import { type LogWriter, writeStructuredLog } from "./log.ts";
 import { SlackAgent } from "./slack.ts";
 
-interface SlackLifecycle {
+interface SlackLifecycle extends Partial<ConversationInspector> {
   start(): Promise<void>;
   stop(): Promise<void>;
   publishOperatorExchange?(conversationId: string, prompt: string, response: string): Promise<void>;
@@ -46,6 +51,7 @@ interface ApplicationDependencies {
   createLocalControl?: (options: {
     socketPath: string;
     coordinator: ConversationCoordinator;
+    inspector?: ConversationInspector;
   }) => LocalControlLifecycle;
 }
 
@@ -101,6 +107,9 @@ export async function startApplication(
     {
       socketPath: config.socketPath,
       coordinator: agent,
+      ...(slack.inspectConversation
+        ? { inspector: { inspectConversation: slack.inspectConversation.bind(slack) } }
+        : {}),
     },
   );
   const unsubscribeOperator = agent.onOperatorExchange((exchange) =>

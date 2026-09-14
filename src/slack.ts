@@ -12,6 +12,9 @@ import {
   type AgentCommand,
   type AgentRunObserver,
   type CancellableAgentBackend,
+  type ConversationDetails,
+  type ConversationHistoryEntry,
+  type ConversationParticipant,
 } from "./agent.ts";
 import { EventDeduplicator } from "./event-deduplicator.ts";
 import { ingestSlackFiles } from "./slack-files.ts";
@@ -68,6 +71,15 @@ interface DeliveryResult {
 
 interface SlackFileReference {
   id?: string;
+}
+
+interface SlackHistoryMessage {
+  ts?: string;
+  user?: string;
+  bot_id?: string;
+  username?: string;
+  text?: string;
+  files?: Array<{ name?: string; title?: string; mimetype?: string }>;
 }
 
 interface InboundSlackMessage {
@@ -128,6 +140,16 @@ function errorType(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
 
+function boundedLocalText(text: string, maxCharacters: number): string {
+  const singleLine = text
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return singleLine.length <= maxCharacters
+    ? singleLine
+    : `${singleLine.slice(0, maxCharacters - 1)}…`;
+}
+
 function slackDestination(conversation: string): { channel: string; thread_ts?: string } {
   if (conversation.startsWith("dm:")) return { channel: conversation.slice(3) };
   const separator = conversation.indexOf(":");
@@ -149,6 +171,7 @@ export class SlackAgent {
   private readonly ownedChannelThreads = new Set<string>();
   private readonly receiver: SocketModeReceiver;
   private workspaceEmojiNames: string[] = [];
+  private readonly userCache = new Map<string, ConversationParticipant>();
   private botUserId = "";
   private activeResponses = 0;
   private responseCapacityWarningLogged = false;
@@ -276,6 +299,156 @@ export class SlackAgent {
     const destination = slackDestination(conversation);
     await this.publishAttributed(destination, "*Local operator:*", prompt);
     await this.publishAttributed(destination, "*Agent (operator request):*", response);
+  }
+
+  async inspectConversation(
+    conversation: string,
+    historyLimit: number,
+  ): Promise<ConversationDetails> {
+    const destination = slackDestination(conversation);
+    const channelResponse = await this.bestEffortSlackOperation(
+      this.app.client.conversations.info({ channel: destination.channel }),
+    );
+    const channel = channelResponse?.channel;
+    const channelName =
+      channel && "name" in channel && typeof channel.name === "string" ? channel.name : undefined;
+
+    const inspectedMessages = await this.conversationMessages(destination, historyLimit > 0);
+    const messages = (inspectedMessages ?? [])
+      .filter((message) => Number.isFinite(Number(message.ts)))
+      .sort((left, right) => Number(left.ts) - Number(right.ts));
+    const participantIds = [
+      ...new Set(
+        messages.flatMap((message) => (message.user && !message.bot_id ? [message.user] : [])),
+      ),
+    ].filter((id) => id !== this.botUserId);
+    const participants: ConversationParticipant[] = [];
+    for (let index = 0; index < participantIds.length; index += 4) {
+      participants.push(
+        ...(await Promise.all(
+          participantIds.slice(index, index + 4).map((id) => this.resolveUser(id)),
+        )),
+      );
+    }
+    const participantById = new Map(
+      participants.map((participant) => [participant.id, participant]),
+    );
+    const history =
+      historyLimit > 0
+        ? messages
+            .slice(-historyLimit)
+            .map((message) => this.historyEntry(message, participantById))
+        : [];
+    const threadStarter = destination.thread_ts
+      ? boundedLocalText(messages[0]?.text ?? "", 120)
+      : undefined;
+    const directUserId =
+      channel && "user" in channel && typeof channel.user === "string"
+        ? channel.user
+        : participantIds[0];
+    const directParticipant = directUserId
+      ? (participantById.get(directUserId) ?? (await this.resolveUser(directUserId)))
+      : undefined;
+    const permalinkResponse =
+      destination.thread_ts && historyLimit > 0
+        ? await this.bestEffortSlackOperation(
+            this.app.client.chat.getPermalink({
+              channel: destination.channel,
+              message_ts: destination.thread_ts,
+            }),
+          )
+        : undefined;
+    const permalink = permalinkResponse?.permalink;
+    const label = conversation.startsWith("dm:")
+      ? `DM with ${directParticipant?.name ?? directUserId ?? destination.channel}`
+      : `#${channelName ?? destination.channel}${threadStarter ? ` / ${threadStarter}` : ""}`;
+
+    return {
+      label,
+      ...(channelName ? { channelName } : {}),
+      ...(threadStarter ? { threadStarter } : {}),
+      ...(typeof permalink === "string" ? { permalink } : {}),
+      participants,
+      history,
+      ...(!inspectedMessages ? { historyUnavailable: "Slack history is unavailable" } : {}),
+    };
+  }
+
+  private async conversationMessages(
+    destination: { channel: string; thread_ts?: string },
+    fetchAllPages: boolean,
+  ): Promise<SlackHistoryMessage[] | undefined> {
+    if (!destination.thread_ts) {
+      const response = await this.bestEffortSlackOperation(
+        this.app.client.conversations.history({ channel: destination.channel, limit: 100 }),
+      );
+      return Array.isArray(response?.messages)
+        ? (response.messages as SlackHistoryMessage[])
+        : undefined;
+    }
+
+    const messages: SlackHistoryMessage[] = [];
+    let cursor: string | undefined;
+    do {
+      const response = await this.bestEffortSlackOperation(
+        this.app.client.conversations.replies({
+          channel: destination.channel,
+          ts: destination.thread_ts,
+          limit: 100,
+          ...(cursor ? { cursor } : {}),
+        }),
+      );
+      if (!response || !Array.isArray(response.messages))
+        return messages.length > 0 ? messages : undefined;
+      messages.push(...(response.messages as SlackHistoryMessage[]));
+      cursor = response.response_metadata?.next_cursor || undefined;
+    } while (fetchAllPages && cursor);
+    return messages;
+  }
+
+  private async resolveUser(id: string): Promise<ConversationParticipant> {
+    const cached = this.userCache.get(id);
+    if (cached) return cached;
+    const response = await this.bestEffortSlackOperation(this.app.client.users.info({ user: id }));
+    const user = response?.user;
+    const profile = user?.profile;
+    const handle = user?.name || undefined;
+    const name = boundedLocalText(
+      profile?.display_name || profile?.real_name || user?.real_name || handle || id,
+      120,
+    );
+    const participant = {
+      id,
+      name,
+      ...(handle ? { handle: boundedLocalText(handle, 80) } : {}),
+    };
+    this.userCache.set(id, participant);
+    return participant;
+  }
+
+  private historyEntry(
+    message: SlackHistoryMessage,
+    participants: ReadonlyMap<string, ConversationParticipant>,
+  ): ConversationHistoryEntry {
+    const text = boundedLocalText(message.text ?? "", 500);
+    const operator = text.startsWith("*Local operator:*");
+    const agent = Boolean(message.bot_id || message.user === this.botUserId) && !operator;
+    const participant = message.user ? participants.get(message.user) : undefined;
+    const attachments = (message.files ?? []).map((file) =>
+      boundedLocalText(file.name ?? file.title ?? file.mimetype ?? "attachment", 200),
+    );
+    return {
+      timestamp: Math.round(Number(message.ts) * 1_000),
+      ...(message.user ? { authorId: message.user } : {}),
+      authorName: operator
+        ? "Local operator"
+        : agent
+          ? "Agent"
+          : (participant?.name ?? message.username ?? message.user ?? "User"),
+      kind: operator ? "operator" : agent ? "agent" : "user",
+      text,
+      ...(attachments.length > 0 ? { attachments } : {}),
+    };
   }
 
   /** Splits and escapes untrusted text so one oversized frame cannot fail delivery. */

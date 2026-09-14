@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, stat, unlink } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { dirname } from "node:path";
+import type { ConversationInspector, ConversationSummary } from "./agent.ts";
 import type { ConversationCoordinator, ConversationEvent } from "./conversation-coordinator.ts";
 import {
   isLocalRequest,
@@ -20,6 +21,7 @@ const MAX_BUFFERED_BYTES = 256 * 1024;
 interface LocalControlOptions {
   socketPath: string;
   coordinator: ConversationCoordinator;
+  inspector?: ConversationInspector;
   /**
    * Test seam for simulating a rejected peer. Neither Node nor Bun exposes
    * `SO_PEERCRED`/`getpeereid`, so the real boundary is the owner-only `0700`
@@ -162,7 +164,18 @@ export class LocalControlServer {
   }
 
   private async dispatch(client: ClientState, request: LocalRequest): Promise<unknown> {
-    if (request.type === "list") return this.options.coordinator.listConversations();
+    if (request.type === "list") {
+      const summaries = await this.options.coordinator.listConversations();
+      const detailed: ConversationSummary[] = [];
+      for (let index = 0; index < summaries.length; index += 4) {
+        detailed.push(
+          ...(await Promise.all(
+            summaries.slice(index, index + 4).map((summary) => this.withDetails(summary, 0)),
+          )),
+        );
+      }
+      return detailed;
+    }
     if (request.type === "attach") {
       if (!request.sessionId) throw new Error("sessionId is required");
       const summaries = await this.options.coordinator.listConversations();
@@ -177,7 +190,10 @@ export class LocalControlServer {
       client.detach = this.options.coordinator.subscribe(client.conversationId, (event) =>
         this.sendEvent(client, event),
       );
-      return matches[0];
+      const historyLimit = Number.isInteger(request.historyLimit)
+        ? Math.max(0, Math.min(100, request.historyLimit!))
+        : 20;
+      return this.withDetails(matches[0]!, historyLimit);
     }
     if (!client.conversationId) throw new Error("Attach to a session first");
     if (request.type === "run") {
@@ -205,6 +221,24 @@ export class LocalControlServer {
       return { cancelled: this.options.coordinator.cancelOperator(client.conversationId) };
     }
     throw new Error("Unsupported request type");
+  }
+
+  private async withDetails(
+    summary: ConversationSummary,
+    historyLimit: number,
+  ): Promise<ConversationSummary> {
+    if (!this.options.inspector) return summary;
+    try {
+      return {
+        ...summary,
+        details: await this.options.inspector.inspectConversation(
+          summary.conversationId,
+          historyLimit,
+        ),
+      };
+    } catch {
+      return summary;
+    }
   }
 
   private sendEvent(client: ClientState, event: ConversationEvent): void {

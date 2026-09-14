@@ -99,11 +99,14 @@ SlackDeskBot remains the sole owner of mutable agent sessions. A local client jo
 bun link                 # once, from this checkout
 slack-desk sessions
 slack-desk attach f82ab719
+slack-desk attach f82ab719 --history 50  # default: 20; use --no-history to disable
 ```
+
+Session discovery shows the Slack conversation label and participants when Slack metadata is available. Attaching prints the thread or DM identity, participant details, Slack permalink, and recent history before switching to live events. The additional `channels:read`, `groups:read`, `im:read`, and `users:read` manifest scopes require reinstalling an existing Slack app before names and channel metadata are available; history falls back gracefully when Slack denies access.
 
 Inside an attachment use prompts normally, or `/status`, `/cancel`, `/quit`. Slack and local prompts share the same per-conversation queue. Local operator prompts and replies post back to the originating Slack thread with attribution; disconnecting does not stop the session or an active request.
 
-The socket defaults to `~/Library/Application Support/SlackDeskBot/control.sock` on macOS. Override with `SLACK_AGENT_SOCKET_PATH` (absolute); the client reads the same variable or takes `--socket <path>`. The versioned newline-delimited JSON control protocol is local-only, bounds frames, clients, pending requests, subscriptions, and buffered output, and exposes only session ID, canonical conversation ID, state, and last-active time during discovery.
+The socket defaults to `~/Library/Application Support/SlackDeskBot/control.sock` on macOS. Override with `SLACK_AGENT_SOCKET_PATH` (absolute); the client reads the same variable or takes `--socket <path>`. The versioned newline-delimited JSON control protocol is local-only, bounds frames, clients, pending requests, subscriptions, and buffered output, and exposes session state plus bounded Slack conversation metadata and history only to the local operator.
 
 ### Custom instructions
 

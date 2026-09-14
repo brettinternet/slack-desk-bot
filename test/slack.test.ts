@@ -62,6 +62,26 @@ class MockSlackApp {
     emoji: { list: mock(async () => ({ emoji: {} as Record<string, string> })) },
     chat: {
       postMessage: mock(async () => ({ ts: "operator-message" })),
+      getPermalink: mock(async () => ({ permalink: "https://example.slack.com/thread" })),
+    },
+    conversations: {
+      info: mock(async () => ({ channel: { name: "engineering" } })),
+      replies: mock(async (): Promise<{ messages: Record<string, unknown>[] }> => ({
+        messages: [],
+      })),
+      history: mock(async (): Promise<{ messages: Record<string, unknown>[] }> => ({
+        messages: [],
+      })),
+    },
+    users: {
+      info: mock(async ({ user }: { user: string }) => ({
+        user: {
+          id: user,
+          name: "jane",
+          real_name: "Jane Doe",
+          profile: { display_name: "Jane", real_name: "Jane Doe" },
+        },
+      })),
     },
   };
   readonly start = mock(async () => {});
@@ -238,6 +258,65 @@ describe("SlackAgent transport", () => {
 
     expect(slack.reactions.add).not.toHaveBeenCalled();
     expect(slack.reactions.remove).not.toHaveBeenCalled();
+  });
+
+  test("resolves conversation identity, participants, and bounded history", async () => {
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+    });
+    app.client.conversations.replies
+      .mockImplementationOnce(async () => ({
+        messages: [
+          { ts: "1700000000.000100", user: "U_ALLOWED", text: "Deploy status?" },
+          { ts: "1700000001.000100", bot_id: "B1", user: "U_BOT", text: "Healthy." },
+        ],
+        response_metadata: { next_cursor: "page-2" },
+      }))
+      .mockImplementationOnce(async () => ({
+        messages: [{ ts: "1700000002.000100", user: "U_ALLOWED", text: "Thanks" }],
+      }));
+
+    const details = await agent.inspectConversation("C1:1700000000.000100", 2);
+
+    expect(details).toMatchObject({
+      label: "#engineering / Deploy status?",
+      channelName: "engineering",
+      threadStarter: "Deploy status?",
+      permalink: "https://example.slack.com/thread",
+      participants: [{ id: "U_ALLOWED", name: "Jane", handle: "jane" }],
+    });
+    expect(details.history.map(({ authorName, text }) => ({ authorName, text }))).toEqual([
+      { authorName: "Agent", text: "Healthy." },
+      { authorName: "Jane", text: "Thanks" },
+    ]);
+    expect(app.client.conversations.replies).toHaveBeenNthCalledWith(2, {
+      channel: "C1",
+      ts: "1700000000.000100",
+      limit: 100,
+      cursor: "page-2",
+    });
+  });
+
+  test("keeps session listing metadata cheap", async () => {
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+    });
+    app.client.conversations.replies.mockImplementationOnce(async () => ({
+      messages: [{ ts: "1700000000.000100", user: "U_ALLOWED", text: "Deploy status?" }],
+      response_metadata: { next_cursor: "ignored-page" },
+    }));
+
+    const details = await agent.inspectConversation("C1:1700000000.000100", 0);
+
+    expect(details.history).toEqual([]);
+    expect(app.client.conversations.replies).toHaveBeenCalledTimes(1);
+    expect(app.client.chat.getPermalink).not.toHaveBeenCalled();
   });
 
   test("publishes attributed local operator exchanges to the originating Slack thread", async () => {

@@ -33,11 +33,41 @@ export interface AgentRunObserver {
 
 export type ConversationStateName = "queued" | "running" | "idle" | "inactive";
 
+export interface ConversationParticipant {
+  id: string;
+  name: string;
+  handle?: string;
+}
+
+export interface ConversationHistoryEntry {
+  timestamp: number;
+  authorId?: string;
+  authorName: string;
+  kind: "user" | "agent" | "operator";
+  text: string;
+  attachments?: readonly string[];
+}
+
+export interface ConversationDetails {
+  label: string;
+  channelName?: string;
+  threadStarter?: string;
+  permalink?: string;
+  participants: readonly ConversationParticipant[];
+  history: readonly ConversationHistoryEntry[];
+  historyUnavailable?: string;
+}
+
 export interface ConversationSummary {
   conversationId: string;
   sessionId: string;
   state: ConversationStateName;
   lastActiveAt: number;
+  details?: ConversationDetails;
+}
+
+export interface ConversationInspector {
+  inspectConversation(conversationId: string, historyLimit: number): Promise<ConversationDetails>;
 }
 
 export interface AgentBackend {

@@ -129,7 +129,28 @@ describe("local conversation control", () => {
     coordinator.onOperatorExchange(async () => {
       throw new Error("Slack delivery unavailable");
     });
-    const server = new LocalControlServer({ socketPath: path, coordinator });
+    const inspectedLimits: number[] = [];
+    const inspector = {
+      inspectConversation: async (_conversationId: string, historyLimit: number) => {
+        inspectedLimits.push(historyLimit);
+        return {
+          label: "#engineering / deploys",
+          participants: [{ id: "U123", name: "Jane" }],
+          history:
+            historyLimit > 0
+              ? [
+                  {
+                    timestamp: 1_700_000_000_000,
+                    authorName: "Jane",
+                    kind: "user" as const,
+                    text: "Ship it",
+                  },
+                ]
+              : [],
+        };
+      },
+    };
+    const server = new LocalControlServer({ socketPath: path, coordinator, inspector });
     await server.start();
     const client = await ProtocolClient.connect(path);
 
@@ -137,9 +158,13 @@ describe("local conversation control", () => {
     expect((await client.response("list")).result[0]).toMatchObject({
       sessionId: "f82ab719-full-session-id",
       conversationId: "C123:100.1",
+      details: { label: "#engineering / deploys", history: [] },
     });
-    client.send("attach", "attach", { sessionId: "f82ab719" });
-    expect((await client.response("attach")).ok).toBe(true);
+    client.send("attach", "attach", { sessionId: "f82ab719", historyLimit: 5 });
+    expect((await client.response("attach")).result).toMatchObject({
+      details: { history: [{ authorName: "Jane", text: "Ship it" }] },
+    });
+    expect(inspectedLimits).toEqual([0, 5]);
 
     const slack = coordinator.run({
       conversationId: "C123:100.1",

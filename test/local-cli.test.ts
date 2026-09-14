@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { ConversationEventFormatter, formatSessions, parseArguments } from "../src/local-cli.ts";
+import {
+  ConversationEventFormatter,
+  formatHistory,
+  formatSessions,
+  parseArguments,
+} from "../src/local-cli.ts";
 import { isLocalServerMessage, LOCAL_PROTOCOL_VERSION } from "../src/local-protocol.ts";
 
 describe("slack-desk argument parsing", () => {
@@ -22,6 +27,10 @@ describe("slack-desk argument parsing", () => {
     expect(() => parseArguments([])).toThrow("Usage");
     expect(() => parseArguments(["bogus"])).toThrow("Usage");
     expect(() => parseArguments(["attach"])).toThrow("Usage");
+    expect(parseArguments(["attach", "abc", "--history", "50"]).historyLimit).toBe(50);
+    expect(parseArguments(["attach", "abc", "--no-history"]).historyLimit).toBe(0);
+    expect(() => parseArguments(["sessions", "--history", "20"])).toThrow("Usage");
+    expect(() => parseArguments(["attach", "abc", "--history", "101"])).toThrow("0-100");
     expect(() => parseArguments(["--socket"])).toThrow("--socket requires a path");
   });
 });
@@ -52,6 +61,65 @@ describe("slack-desk output formatting", () => {
     };
     expect(formatter.format(queued)).toEqual(["user> Inspect the failing build"]);
     expect(formatter.format({ ...queued, type: "started" })).toEqual(["agent> Working…"]);
+    expect(
+      formatter.format({
+        type: "response",
+        conversationId: "C1:1",
+        response: "safe\u001b[31m red",
+      }),
+    ).toEqual(["agent> safe red"]);
+
+    expect(
+      formatHistory({
+        sessionId: "f82ab719-full-session-id",
+        conversationId,
+        state: "idle",
+        lastActiveAt: 1_700_000_000_000,
+        details: {
+          label: "#engineering / deploys",
+          permalink: "https://example.slack.com/thread",
+          participants: [{ id: "U1", name: "Jane Doe", handle: "jane" }],
+          history: [
+            {
+              timestamp: 1_700_000_000_000,
+              authorName: "Jane Doe",
+              kind: "user",
+              text: "Ship it",
+              attachments: ["plan.txt"],
+            },
+          ],
+        },
+      }),
+    ).toEqual([
+      "#engineering / deploys",
+      "Participants: Jane Doe (@jane, U1)",
+      "Slack: https://example.slack.com/thread",
+      "── recent history ──",
+      "[2023-11-14 22:13:20] Jane Doe> Ship it",
+      "  attachment: plan.txt",
+      "── live events ──",
+    ]);
+
+    expect(
+      formatHistory({
+        sessionId: "unsafe",
+        conversationId: "C1:1",
+        state: "idle",
+        lastActiveAt: 0,
+        details: {
+          label: "thread\u001b[2J",
+          participants: [{ id: "U1", name: "Jane\u001b[31m" }],
+          history: [
+            {
+              timestamp: Number.NaN,
+              authorName: "Jane\u001b[31m",
+              kind: "user",
+              text: "hello\u001b[2J",
+            },
+          ],
+        },
+      }),
+    ).toContain("[unknown time] Jane> hello");
 
     const attachedAfterQueue = new ConversationEventFormatter();
     expect(
