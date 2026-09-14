@@ -20,7 +20,7 @@ mise exec task -- task init
 1. Optionally rename the app in [`slack-app-manifest.yaml`](slack-app-manifest.yaml).
 2. Create a Slack app from the manifest.
 3. Under **Basic Information → App-Level Tokens**, create a token with `connections:write`.
-4. Install the app into the workspace. Reinstall existing apps so the manifest scopes and event subscriptions are granted.
+4. Install the app into the workspace. Reinstall existing apps to grant the manifest scopes and event subscriptions.
 5. Copy the bot token (`xoxb-…`) and app token (`xapp-…`).
 
 Socket Mode is enabled, so no public endpoint is needed.
@@ -40,17 +40,15 @@ hum up
 
 ### Agent backend
 
-`SLACK_AGENT_BACKEND=pi` is the default. It reads model settings, `models.json`, and `auth.json` from the Pi agent directory reported by `task doctor`, but does not load that directory's extensions, skills, or prompt templates. Slack sessions allow only the tools selected by `SLACK_AGENT_MODE` and `SLACK_AGENT_COMMAND_MODE`; the same allowlist is enforced again at tool-call time. Authenticate with desktop Pi as usual—no credential copy is required.
+**Pi (default):** `SLACK_AGENT_BACKEND=pi`. Reads model settings, `models.json`, and `auth.json` from the Pi agent directory reported by `task doctor`. Does not load that directory's extensions, skills, or prompt templates. Tools are restricted to the allowlist from `SLACK_AGENT_MODE` and `SLACK_AGENT_COMMAND_MODE`, enforced again at call time. Authenticate with desktop Pi as usual; no credential copy is required.
 
-To use Codex CLI instead:
+**Codex:**
 
 ```sh
 mise use -g codex@latest
 mkdir -p "$HOME/Library/Application Support/SlackDeskBot/codex"
 CODEX_HOME="$HOME/Library/Application Support/SlackDeskBot/codex" codex login
 ```
-
-Then set:
 
 ```dotenv
 SLACK_AGENT_BACKEND=codex
@@ -60,33 +58,42 @@ SLACK_CODEX_HOME=/Users/you/Library/Application Support/SlackDeskBot/codex
 SLACK_CODEX_EXECUTABLE=/absolute/path/to/codex
 ```
 
-Run `task doctor` after switching. Codex mode requires macOS, an authenticated `SLACK_CODEX_HOME`, and the Seatbelt process sandbox. Read-write mode is intentionally unsupported. Codex thread mappings and transcripts are retained below `SLACK_CODEX_HOME`, so Slack and `slack-desk attach` resume the exact thread after a service restart.
+Requires macOS, an authenticated `SLACK_CODEX_HOME`, and the Seatbelt process sandbox. Read-write mode is intentionally unsupported. Thread mappings and transcripts under `SLACK_CODEX_HOME` survive restarts, so Slack and `slack-desk attach` resume the exact thread.
 
-To use Claude Code instead:
+**Claude:**
 
 ```sh
 mkdir -p "$HOME/Library/Application Support/SlackDeskBot/claude"
 CLAUDE_CONFIG_DIR="$HOME/Library/Application Support/SlackDeskBot/claude" claude auth login
 ```
 
-Set `SLACK_AGENT_BACKEND=claude` and optionally `SLACK_CLAUDE_HOME` or `SLACK_CLAUDE_EXECUTABLE`, then run `task doctor`. Claude requires macOS Seatbelt and uses `claude -p` with `stream-json`, a dedicated `CLAUDE_CONFIG_DIR`, ignored inherited settings, and no permission prompts. Read-only mode enables only `Read`, `Glob`, and `Grep`; read-write also enables `Edit` and `Write` and keeps the global single-writer queue limit. Bash, WebFetch, WebSearch, shell/code tools, out-of-workspace paths, and credential-like paths are denied by both Claude policy and the independent Seatbelt profile. Text attachments are inlined; image attachments are rejected without writing files. Session IDs are persisted only after a successful response, and subsequent turns resume that exact Claude session.
+Set `SLACK_AGENT_BACKEND=claude` and optionally `SLACK_CLAUDE_HOME` or `SLACK_CLAUDE_EXECUTABLE`.
+
+| Mode       | Tools                                                  |
+| ---------- | ------------------------------------------------------ |
+| read-only  | `Read`, `Glob`, `Grep`                                 |
+| read-write | adds `Edit`, `Write`; keeps global single-writer limit |
+
+Claude requires macOS Seatbelt. It runs via `claude -p` with `stream-json`, a dedicated `CLAUDE_CONFIG_DIR`, inherited settings ignored, and no permission prompts. Bash, WebFetch, WebSearch, shell/code tools, out-of-workspace paths, and credential-like paths are denied by both Claude policy and Seatbelt. Text attachments are inlined; images are rejected. Session IDs persist only after a successful response, and subsequent turns resume that session.
+
+Run `task doctor` after switching backends.
 
 ## Slack interaction
 
-Mention the bot in a channel to start a conversation. Further replies in that thread do not need a mention, including after restarts. DMs work without a mention. Only user IDs in `SLACK_ALLOWED_USER_IDS` can invoke the app. After a successful response, the bot has a 20% chance of adding a randomly selected custom workspace emoji reaction.
+Mention the bot in a channel to start a conversation. Replies in that thread do not need a mention, including after restarts. DMs work without a mention. Only user IDs in `SLACK_ALLOWED_USER_IDS` can invoke the app. After a successful response, the bot has a 20% chance of adding a random custom workspace emoji reaction.
 
-| Command              | Effect                                                               |
-| -------------------- | -------------------------------------------------------------------- |
-| `!help`              | Show usage examples and all commands                                 |
-| `!status`            | Model, context usage, cumulative cost, message count (live sessions) |
-| `!reset`             | Fresh session, previous transcript retained                          |
-| `!cancel` / `cancel` | Cancel active request (own, or any if operator)                      |
+| Command              | Effect                                                |
+| -------------------- | ----------------------------------------------------- |
+| `!help`              | Show usage examples and all commands                  |
+| `!status`            | Model, context, cumulative cost, messages (live only) |
+| `!reset`             | Fresh session (previous transcript retained)          |
+| `!cancel` / `cancel` | Cancel active request (own, or any if operator)       |
 
 Commands are case-insensitive exact messages. An unsupported `!`-prefixed message points back to `!help`.
 
 ## Local terminal attachment
 
-SlackDeskBot remains the sole owner of mutable agent sessions. A local client joins the running service over an owner-only Unix socket instead of opening Pi's JSONL file:
+SlackDeskBot remains the sole owner of mutable agent sessions. A local client joins over an owner-only Unix socket:
 
 ```sh
 bun link                 # once, from this checkout
@@ -94,9 +101,9 @@ slack-desk sessions
 slack-desk attach f82ab719
 ```
 
-Inside an attachment, enter prompts normally or use `/status`, `/cancel`, and `/quit`. Slack and local prompts use the same per-conversation queue. Local operator prompts and replies are posted back to the originating Slack thread with attribution; disconnecting the terminal does not stop the session or an active request.
+Inside an attachment use prompts normally, or `/status`, `/cancel`, `/quit`. Slack and local prompts share the same per-conversation queue. Local operator prompts and replies post back to the originating Slack thread with attribution; disconnecting does not stop the session or an active request.
 
-The socket defaults to `~/Library/Application Support/SlackDeskBot/control.sock` on macOS. Override it for the service with an absolute `SLACK_AGENT_SOCKET_PATH`; the client reads the same variable or takes `--socket <path>`. The versioned newline-delimited JSON control protocol is local-only, bounds frames, clients, pending requests, subscriptions, and buffered output, and exposes only session ID, canonical conversation ID, state, and last-active time during discovery.
+The socket defaults to `~/Library/Application Support/SlackDeskBot/control.sock` on macOS. Override with `SLACK_AGENT_SOCKET_PATH` (absolute); the client reads the same variable or takes `--socket <path>`. The versioned newline-delimited JSON control protocol is local-only, bounds frames, clients, pending requests, subscriptions, and buffered output, and exposes only session ID, canonical conversation ID, state, and last-active time during discovery.
 
 ### Custom instructions
 
@@ -106,7 +113,15 @@ SLACK_AGENT_INSTRUCTIONS="Be concise, conversational, and avoid narrating tool u
 # SLACK_AGENT_INSTRUCTIONS_FILE=/absolute/path/to/instructions.md
 ```
 
-Restart after changes. These apply only to SlackDeskBot sessions; the target repository's `AGENTS.md` still provides project instructions. Pi appends them to its system prompt, Claude uses `--append-system-prompt`, and Codex uses `developer_instructions`. `task doctor` reports when an older CLI lacks the required option and SlackDeskBot must instead prefix instructions to each prompt.
+Restart after changes. These apply only to SlackDeskBot sessions; the target repository's `AGENTS.md` still provides project instructions.
+
+| Backend | Mechanism                 |
+| ------- | ------------------------- |
+| Pi      | Appended to system prompt |
+| Claude  | `--append-system-prompt`  |
+| Codex   | `developer_instructions`  |
+
+`task doctor` reports when an older CLI lacks the required option and SlackDeskBot must prefix instructions to each prompt instead.
 
 ### Brokered inspection commands
 
@@ -116,11 +131,16 @@ For the Pi backend, opt into fixed read-only command brokers without enabling a 
 SLACK_AGENT_COMMAND_MODE=brokered
 ```
 
-The `git_inspect` tool reports repository overview and status, branches, tags, bounded logs, literal-path diffs, historical file contents, blame, file history, contributor counts, frequently changed files, and tracked-file statistics. `SLACK_AGENT_CWD` must be the repository root; the broker refuses to discover an enclosing repository from a workspace subdirectory. Path-based actions remain confined to that root, and sensitive paths such as `.env`, `.git`, credentials, and private keys are rejected or omitted. Git runs as `/usr/bin/git` with exact arguments, no pager, hooks, lazy fetching, optional locks, global/system configuration, credential prompts, or inherited service environment. It cannot contact remotes or mutate the repository.
+**`git_inspect`** reports status, branches, tags, bounded logs and diffs, historical contents, blame, history, contributors, frequently changed files, and tracked-file statistics.
 
-The `system_info` tool reports the macOS host's battery, uptime/load, OS and kernel versions, workspace disk space, memory and thermal pressure, computer name, and local clock. Every action maps to a fixed Apple executable with fixed arguments. The broker never invokes a shell and does not accept executable names or free-form arguments.
+- `SLACK_AGENT_CWD` must be the repository root, not a subdirectory.
+- Sensitive paths such as `.env`, `.git`, credentials, and private keys are rejected or omitted.
+- Git runs as `/usr/bin/git` with exact arguments. It has no pager, hooks, lazy fetching, optional locks, global/system config, credential prompts, or inherited service environment.
+- It cannot contact remotes or mutate the repository.
 
-Brokered commands are off by default and currently supported only by Pi. They are independent of `SLACK_AGENT_MODE`, so read-only and read-write sessions receive the same inspection-only operations when enabled.
+**`system_info`** reports battery, uptime/load, OS and kernel versions, workspace disk space, memory and thermal pressure, computer name, and local clock. Each action uses a fixed Apple executable with fixed arguments; no shell or free-form arguments are accepted.
+
+Brokered commands are off by default, currently Pi-only, and independent of `SLACK_AGENT_MODE` (read-only and read-write sessions receive the same inspection-only operations).
 
 ## Resource limits
 
@@ -147,22 +167,22 @@ Brokered commands are off by default and currently supported only by Pi. They ar
 | Text types        | plain text, Markdown, JSON, XML |
 | Image types       | PNG, JPEG, GIF, WebP            |
 
-Files are downloaded from Slack into memory only and are never written to disk. Pi accepts the listed text and image types. Codex and Claude inline text attachments but return a capability error for images because their CLIs require an image file path.
+Files are downloaded from Slack into memory only and never written to disk. Pi accepts all listed text and image types. Codex and Claude inline text attachments but reject images (their CLIs require an image file path).
 
 See [`.env.example`](.env.example) for all tunable `SLACK_AGENT_*` settings.
 
 ## Readiness and health
 
-| Endpoint   | Purpose                                                                                                                                                                        |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `/healthz` | Liveness. OK during Slack reconnects.                                                                                                                                          |
-| `/readyz`  | `ready` when Slack is connected and backend is available; `degraded` during reconnects or after repeated delivery failures; `unhealthy` when disconnected or backend disposed. |
+| Endpoint   | Purpose                                                                                                                                                            |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/healthz` | Liveness. OK during Slack reconnects.                                                                                                                              |
+| `/readyz`  | `ready` when Slack connected and backend available; `degraded` during reconnects or repeated delivery failures; `unhealthy` when disconnected or backend disposed. |
 
 ```sh
 curl -fsS "http://127.0.0.1:${SLACK_AGENT_HEALTH_PORT:-3210}/readyz"
 ```
 
-Response contains start/uptime, queue counts, connection state, and last successful Slack operation time. No prompts, IDs, paths, tokens, or file data.
+Response includes start/uptime, queue counts, connection state, and last successful Slack operation time. No prompts, IDs, paths, tokens, or file data.
 
 ## macOS deployment
 
@@ -193,15 +213,27 @@ hum down
 
 ### Backup and restore
 
-Session data is the only data requiring backup. Stop the service first. Pi uses `SLACK_AGENT_SESSION_DIR`; Codex uses `SLACK_CODEX_HOME`; Claude uses `SLACK_CLAUDE_HOME`.
+Session data is the only data requiring backup. Stop the service first.
+
+| Backend | Session location          |
+| ------- | ------------------------- |
+| Pi      | `SLACK_AGENT_SESSION_DIR` |
+| Codex   | `SLACK_CODEX_HOME`        |
+| Claude  | `SLACK_CLAUDE_HOME`       |
 
 ```sh
 tar -C "$HOME/Library/Application Support/SlackDeskBot" -czf "slackdeskbot-sessions-$(date +%Y%m%d).tgz" sessions
 ```
 
-Restore: stop, move existing sessions aside, extract the archive, verify permissions, run `task doctor`, then `task service:install`. Never merge two session directories or run two instances against one.
+Restore: stop the service, move existing sessions aside, extract the archive, verify permissions, run `task doctor`, then `task service:install`. Never merge two session directories or run two instances against one.
 
-Offline resume is recovery-only: stop SlackDeskBot first. For Pi, open a copied or exclusively owned session with `pi --session <file>`. Never run `pi --session` against a live SlackDeskBot session. For Codex, use `CODEX_HOME=<configured-home> codex resume <thread-id>` only while SlackDeskBot is stopped. For Claude, use `CLAUDE_CONFIG_DIR=<configured-home> claude --resume <session-id>` only while SlackDeskBot is stopped. Concurrent access does not attach to the service's in-memory queue and can fork history.
+**Offline resume** is recovery-only. Stop SlackDeskBot first. Concurrent access outside the service does not join the in-memory queue and can fork history.
+
+| Backend | Offline resume command                                             |
+| ------- | ------------------------------------------------------------------ |
+| Pi      | `pi --session <file>` (use a copy or exclusively owned session)    |
+| Codex   | `CODEX_HOME=<configured-home> codex resume <thread-id>`            |
+| Claude  | `CLAUDE_CONFIG_DIR=<configured-home> claude --resume <session-id>` |
 
 ### Upgrade and rollback
 
@@ -224,23 +256,49 @@ Rollback: unload LaunchAgent, check out the previous tag/commit, rerun the insta
 2. `task doctor` passes.
 3. `task service:install`, then `hum status` reports ready and `/readyz` returns 200.
 4. Send `!help` in a DM, then send a prompt and confirm a reply.
-5. Run `slack-desk sessions`, attach to that session, and alternate one Slack turn and one terminal turn. Confirm both replies appear in the same backend session/thread and Slack thread without another process opening the session.
+5. `slack-desk sessions`, attach, then alternate one Slack turn and one terminal turn. Confirm both replies use the same backend session and Slack thread without another process opening the session.
 
 ## Security
 
-**Allowlist:** `SLACK_ALLOWED_USER_IDS` (required) controls who can invoke the app. `SLACK_OPERATOR_USER_IDS` (optional subset) can cancel any active request. Rejected users get one reply per conversation every ten minutes. Find member IDs from **Profile → More → Copy member ID**.
+**Allowlist:** `SLACK_ALLOWED_USER_IDS` (required) controls invocation. `SLACK_OPERATOR_USER_IDS` (optional subset) can cancel any active request. Rejected users get one reply per conversation every ten minutes. Find member IDs from **Profile → More → Copy member ID**.
 
-**Read-only by default.** `read`, `grep`, `find`, `ls` are allowed. Set `SLACK_AGENT_MODE=read-write` to enable `edit` and `write`. Read-write mode enforces one active conversation to protect the shared checkout. Optional brokered commands are separately controlled by `SLACK_AGENT_COMMAND_MODE` and never add a shell or mutation capability.
+**Read-only by default.** `read`, `grep`, `find`, `ls` are allowed. Set `SLACK_AGENT_MODE=read-write` to enable `edit` and `write` (enforces one active conversation). Brokered commands are separately controlled by `SLACK_AGENT_COMMAND_MODE` and never add a shell or mutation capability.
 
 **Path policy** blocks `.env` files (except templates), `.ssh`, `.git` contents, private keys, cloud credentials, `.netrc`, `.npmrc`, `.pypirc`. Applies in both modes, follows symlinks, normalizes `~`, `@`, and `file://` paths. This is path-based only, not secret detection. Use a dedicated checkout without secrets.
 
-**Tool paths** are confined to `SLACK_AGENT_CWD`. With Pi, a backend policy allows only the selected file and brokered tools and blocks sensitive paths. The target repository is treated as an untrusted Pi project: its `.pi/` directory cannot inject extensions, settings, or system prompts. User-level Pi extensions (`~/.pi/agent`) run as trusted code outside this policy.
+**Tool paths** are confined to `SLACK_AGENT_CWD`. Pi allows only the selected file and brokered tools and blocks sensitive paths. The target repository is untrusted: its `.pi/` directory cannot inject extensions, settings, or system prompts. User-level Pi extensions (`~/.pi/agent`) run as trusted code outside this policy.
 
-**Codex security differs from Pi.** Codex receives a read-only native sandbox and also runs inside a SlackDeskBot-owned macOS Seatbelt boundary. The boundary denies _file contents_ under other user, temporary, and mounted-volume paths, allowing only the workspace, the Codex executable's install root, and its dedicated session home. Writes are confined to that session home. Path metadata stays readable because both CLIs canonicalize their own executable, home, and workspace during startup; denying it prevents them from launching at all. Codex commands inherit no service environment. Credentials live in an owner-only `auth.json` inside `SLACK_CODEX_HOME`; the Codex process can read it, while Codex's own read-only sandbox prevents model-issued commands from reading anything outside the workspace, including that file. Read-write mode, image attachments, Linux service deployment, MCP/connectors, and unrestricted command networking are not supported by this adapter.
+### Backend-specific sandboxing
 
-**Claude security differs from Pi and Codex.** Claude runs in restricted mode with inherited project and user settings ignored, no MCP servers or slash commands, no permission prompts, and an explicit file-tool list. Read-only mode exposes `Read`, `Glob`, and `Grep`; read-write also exposes `Edit` and `Write` and retains the global single-writer limit. The same Seatbelt boundary used for Codex confines file contents and writes, additionally allowing writes to Claude's fixed `/tmp/claude-<uid>` and `/tmp/cc-socks` runtime directories, which the CLI requires to start. Read-write mode adds workspace writes only. Bash and other code-running tools, WebFetch, WebSearch, image attachments, Linux service deployment, and unrestricted command networking are not supported.
+**Codex** uses two sandboxes:
 
-**Sessions** are designed for one service owner. The service is their sole mutable owner. The local socket has no TCP fallback and does not expose session file paths, prompts, tokens, user names, or file contents in discovery or logs. Access control is filesystem-based: the socket is created `0600` inside a `0700` owner-only directory, which is the enforceable boundary because neither Node nor Bun exposes Unix peer credentials. Any process running as the service's user can therefore connect, and is treated as the operator. Do not share session files across instances without external locking.
+- Its native sandbox is read-only.
+- SlackDeskBot's macOS Seatbelt boundary exposes file contents only from the workspace, Codex install root, and dedicated session home. Writes are limited to that session home.
+- Path metadata remains readable because the CLIs canonicalize their executable, home, and workspace at startup.
+- Commands receive no service environment.
+- Credentials live in an owner-only `auth.json` under `SLACK_CODEX_HOME`. The Codex process can read it; model-issued commands cannot.
+
+**Claude** runs with:
+
+- inherited project and user settings ignored;
+- no MCP servers, slash commands, or permission prompts;
+- an explicit file-tool list;
+- the same Seatbelt boundary as Codex, plus required writes to `/tmp/claude-<uid>` and `/tmp/cc-socks`;
+- workspace writes only in read-write mode.
+
+| Capability                      | Codex | Claude |
+| ------------------------------- | ----- | ------ |
+| Read-write mode                 | No    | Yes    |
+| Image attachments               | No    | No     |
+| Linux service deployment        | No    | No     |
+| MCP/connectors                  | No    | No     |
+| Unrestricted command networking | No    | No     |
+
+Claude also denies Bash, shell/code tools, WebFetch, and WebSearch.
+
+### Sessions
+
+Sessions are designed for one service owner. SlackDeskBot is their sole mutable owner. The local socket has no TCP fallback and does not expose session file paths, prompts, tokens, user names, or file contents in discovery or logs. The socket is created `0600` inside a `0700` owner-only directory. Neither Node nor Bun exposes Unix peer credentials, so any process running as the service user can connect and is treated as the operator. Do not share session files across instances without external locking.
 
 ## Adding another backend
 
