@@ -57,10 +57,12 @@ describe("runDoctor", () => {
   test("fails when the workspace exposes a credential or service-state path", async () => {
     const root = mkdtempSync(join(tmpdir(), "slack-desk-doctor-overlap-"));
     const workspace = join(root, "workspace");
+    const agentDirectory = join(root, "pi", "agent");
     mkdirSync(workspace);
+    mkdirSync(agentDirectory, { recursive: true });
     const cases: Array<[string, NodeJS.ProcessEnv]> = [
       ["the user home directory", { SLACK_AGENT_CWD: homedir() }],
-      ["the Pi agent directory", { SLACK_AGENT_CWD: dirname(getAgentDir()) }],
+      ["the Pi agent directory", { SLACK_AGENT_CWD: dirname(agentDirectory) }],
       [
         "SLACK_AGENT_SESSION_DIR",
         { SLACK_AGENT_CWD: workspace, SLACK_AGENT_SESSION_DIR: join(workspace, "sessions") },
@@ -85,7 +87,10 @@ describe("runDoctor", () => {
 
     try {
       for (const [label, environment] of cases) {
-        const result = await runDoctor({ ...valid, ...environment }, dependencies());
+        const result = await runDoctor(
+          { ...valid, ...environment },
+          { ...dependencies(), agentDirectory },
+        );
         expect(result.ok, label).toBe(false);
         expect(result.diagnostics, label).toContainEqual({
           status: "fail",

@@ -87,6 +87,7 @@ function temporaryBackend(
   const backend = new CodexBackend(process.cwd(), {
     executable: "/usr/bin/true",
     home,
+    platform: "darwin",
     now,
     instructions,
     systemPromptSupported: true,
@@ -162,6 +163,7 @@ describe("Codex sessions", () => {
       const restored = new CodexBackend(process.cwd(), {
         executable: "/usr/bin/true",
         home: first.home,
+        platform: "darwin",
         spawnProcess: fakeSpawner([success("thread-123", "second")], calls),
       });
       expect(await restored.hasConversation("C1:1")).toBe(true);
@@ -289,6 +291,7 @@ describe("Codex output", () => {
       const backend = new CodexBackend(process.cwd(), {
         executable: "/usr/bin/true",
         home,
+        platform: "darwin",
         spawnProcess: fakeSpawner([success("thread-new", "fresh")], []),
       });
       expect(await backend.hasConversation("C1:1")).toBe(false);
