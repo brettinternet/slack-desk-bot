@@ -577,7 +577,7 @@ export async function runDoctor(
       diagnostics,
       "pass",
       "Pi resources",
-      `Agent directory: ${getAgentDir()}. ${PI_RESOURCE_POLICY_DESCRIPTION}`,
+      `Agent directory: ${getAgentDir()}. ${PI_RESOURCE_POLICY_DESCRIPTION}; brokered commands are ${config.agentCommandMode}`,
     );
   }
 

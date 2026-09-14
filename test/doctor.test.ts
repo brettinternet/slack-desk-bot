@@ -50,7 +50,7 @@ describe("runDoctor", () => {
     expect(result.diagnostics).toContainEqual({
       status: "pass",
       check: "Pi resources",
-      message: `Agent directory: ${getAgentDir()}. User extensions, skills, and prompt templates are disabled; only mode-approved tools are allowed`,
+      message: `Agent directory: ${getAgentDir()}. User extensions, skills, and prompt templates are disabled; only mode-approved tools are allowed; brokered commands are off`,
     });
   });
 

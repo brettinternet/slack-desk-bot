@@ -40,7 +40,7 @@ hum up
 
 ### Agent backend
 
-`SLACK_AGENT_BACKEND=pi` is the default. It reads model settings, `models.json`, and `auth.json` from the Pi agent directory reported by `task doctor`, but does not load that directory's extensions, skills, or prompt templates. Slack sessions allow only the tools selected by `SLACK_AGENT_MODE`; the same allowlist is enforced again at tool-call time. Authenticate with desktop Pi as usual—no credential copy is required.
+`SLACK_AGENT_BACKEND=pi` is the default. It reads model settings, `models.json`, and `auth.json` from the Pi agent directory reported by `task doctor`, but does not load that directory's extensions, skills, or prompt templates. Slack sessions allow only the tools selected by `SLACK_AGENT_MODE` and `SLACK_AGENT_COMMAND_MODE`; the same allowlist is enforced again at tool-call time. Authenticate with desktop Pi as usual—no credential copy is required.
 
 To use Codex CLI instead:
 
@@ -107,6 +107,20 @@ SLACK_AGENT_INSTRUCTIONS="Be concise, conversational, and avoid narrating tool u
 ```
 
 Restart after changes. These apply only to SlackDeskBot sessions; the target repository's `AGENTS.md` still provides project instructions. Pi appends them to its system prompt, Claude uses `--append-system-prompt`, and Codex uses `developer_instructions`. `task doctor` reports when an older CLI lacks the required option and SlackDeskBot must instead prefix instructions to each prompt.
+
+### Brokered inspection commands
+
+For the Pi backend, opt into fixed read-only command brokers without enabling a shell:
+
+```dotenv
+SLACK_AGENT_COMMAND_MODE=brokered
+```
+
+The `git_inspect` tool reports repository overview and status, branches, tags, bounded logs, literal-path diffs, historical file contents, blame, file history, contributor counts, frequently changed files, and tracked-file statistics. `SLACK_AGENT_CWD` must be the repository root; the broker refuses to discover an enclosing repository from a workspace subdirectory. Path-based actions remain confined to that root, and sensitive paths such as `.env`, `.git`, credentials, and private keys are rejected or omitted. Git runs as `/usr/bin/git` with exact arguments, no pager, hooks, lazy fetching, optional locks, global/system configuration, credential prompts, or inherited service environment. It cannot contact remotes or mutate the repository.
+
+The `system_info` tool reports the macOS host's battery, uptime/load, OS and kernel versions, workspace disk space, memory and thermal pressure, computer name, and local clock. Every action maps to a fixed Apple executable with fixed arguments. The broker never invokes a shell and does not accept executable names or free-form arguments.
+
+Brokered commands are off by default and currently supported only by Pi. They are independent of `SLACK_AGENT_MODE`, so read-only and read-write sessions receive the same inspection-only operations when enabled.
 
 ## Resource limits
 
@@ -216,11 +230,11 @@ Rollback: unload LaunchAgent, check out the previous tag/commit, rerun the insta
 
 **Allowlist:** `SLACK_ALLOWED_USER_IDS` (required) controls who can invoke the app. `SLACK_OPERATOR_USER_IDS` (optional subset) can cancel any active request. Rejected users get one reply per conversation every ten minutes. Find member IDs from **Profile → More → Copy member ID**.
 
-**Read-only by default.** `read`, `grep`, `find`, `ls` are allowed. Set `SLACK_AGENT_MODE=read-write` to enable `edit` and `write`. Read-write mode enforces one active conversation to protect the shared checkout.
+**Read-only by default.** `read`, `grep`, `find`, `ls` are allowed. Set `SLACK_AGENT_MODE=read-write` to enable `edit` and `write`. Read-write mode enforces one active conversation to protect the shared checkout. Optional brokered commands are separately controlled by `SLACK_AGENT_COMMAND_MODE` and never add a shell or mutation capability.
 
 **Path policy** blocks `.env` files (except templates), `.ssh`, `.git` contents, private keys, cloud credentials, `.netrc`, `.npmrc`, `.pypirc`. Applies in both modes, follows symlinks, normalizes `~`, `@`, and `file://` paths. This is path-based only, not secret detection. Use a dedicated checkout without secrets.
 
-**Tool paths** are confined to `SLACK_AGENT_CWD`. With Pi, a backend policy allows only the selected file tools and blocks sensitive paths. The target repository is treated as an untrusted Pi project: its `.pi/` directory cannot inject extensions, settings, or system prompts. User-level Pi extensions (`~/.pi/agent`) run as trusted code outside this policy.
+**Tool paths** are confined to `SLACK_AGENT_CWD`. With Pi, a backend policy allows only the selected file and brokered tools and blocks sensitive paths. The target repository is treated as an untrusted Pi project: its `.pi/` directory cannot inject extensions, settings, or system prompts. User-level Pi extensions (`~/.pi/agent`) run as trusted code outside this policy.
 
 **Codex security differs from Pi.** Codex receives a read-only native sandbox and also runs inside a SlackDeskBot-owned macOS Seatbelt boundary. The boundary denies _file contents_ under other user, temporary, and mounted-volume paths, allowing only the workspace, the Codex executable's install root, and its dedicated session home. Writes are confined to that session home. Path metadata stays readable because both CLIs canonicalize their own executable, home, and workspace during startup; denying it prevents them from launching at all. Codex commands inherit no service environment. Credentials live in an owner-only `auth.json` inside `SLACK_CODEX_HOME`; the Codex process can read it, while Codex's own read-only sandbox prevents model-issued commands from reading anything outside the workspace, including that file. Read-write mode, image attachments, Linux service deployment, MCP/connectors, and unrestricted command networking are not supported by this adapter.
 

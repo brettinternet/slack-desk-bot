@@ -25,6 +25,7 @@ function config(): Config {
     operatorUserIds: new Set(),
     agentBackend: "pi",
     agentMode: "read-only",
+    agentCommandMode: "off",
     instructions: undefined,
     codexExecutable: undefined,
     codexHome: undefined,

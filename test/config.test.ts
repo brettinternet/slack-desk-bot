@@ -20,6 +20,7 @@ describe("loadConfig", () => {
       operatorUserIds: new Set(),
       agentBackend: "pi",
       agentMode: "read-only",
+      agentCommandMode: "off",
       instructions: undefined,
       codexExecutable: undefined,
       codexHome: undefined,
@@ -51,6 +52,7 @@ describe("loadConfig", () => {
       SLACK_OPERATOR_USER_IDS: " U0789, U0789 ",
       SLACK_AGENT_BACKEND: "pi",
       SLACK_AGENT_MODE: "read-write",
+      SLACK_AGENT_COMMAND_MODE: "brokered",
       SLACK_AGENT_SESSION_DIR: "/tmp/slack-agent-sessions",
       SLACK_AGENT_MAX_ACTIVE_SESSIONS: "8",
       SLACK_AGENT_SESSION_IDLE_MS: "300000",
@@ -65,6 +67,7 @@ describe("loadConfig", () => {
     expect(config.operatorUserIds).toEqual(new Set(["U0789"]));
     expect(config.agentBackend).toBe("pi");
     expect(config.agentMode).toBe("read-write");
+    expect(config.agentCommandMode).toBe("brokered");
     expect(config).toMatchObject({
       sessionDir: "/tmp/slack-agent-sessions",
       maxActiveSessions: 8,
@@ -204,6 +207,16 @@ describe("loadConfig", () => {
       "SLACK_CLAUDE_EXECUTABLE",
     );
     expect(() => loadConfig({ ...valid, SLACK_AGENT_MODE: "write" })).toThrow("SLACK_AGENT_MODE");
+    expect(() => loadConfig({ ...valid, SLACK_AGENT_COMMAND_MODE: "shell" })).toThrow(
+      "SLACK_AGENT_COMMAND_MODE",
+    );
+    expect(() =>
+      loadConfig({
+        ...valid,
+        SLACK_AGENT_BACKEND: "claude",
+        SLACK_AGENT_COMMAND_MODE: "brokered",
+      }),
+    ).toThrow("currently requires SLACK_AGENT_BACKEND=pi");
     expect(() =>
       loadConfig({ ...valid, SLACK_AGENT_BACKEND: "codex", SLACK_AGENT_MODE: "read-write" }),
     ).toThrow("supports only");

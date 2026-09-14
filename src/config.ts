@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import type { QueueLimits } from "./agent.ts";
 
 export type AgentMode = "read-only" | "read-write";
+export type AgentCommandMode = "off" | "brokered";
 export type AgentBackendKind = "pi" | "codex" | "claude";
 
 export interface Config {
@@ -14,6 +15,7 @@ export interface Config {
   operatorUserIds: Set<string>;
   agentBackend: AgentBackendKind;
   agentMode: AgentMode;
+  agentCommandMode: AgentCommandMode;
   instructions?: string;
   codexExecutable?: string;
   codexHome?: string;
@@ -115,6 +117,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
   );
   const agentBackend = environment.SLACK_AGENT_BACKEND?.trim() || "pi";
   const agentMode = environment.SLACK_AGENT_MODE?.trim() || "read-only";
+  const agentCommandMode = environment.SLACK_AGENT_COMMAND_MODE?.trim() || "off";
   const codexExecutable = optional(environment, "SLACK_CODEX_EXECUTABLE");
   const codexHome = optional(environment, "SLACK_CODEX_HOME");
   const claudeExecutable = optional(environment, "SLACK_CLAUDE_EXECUTABLE");
@@ -136,6 +139,12 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
   }
   if (agentMode !== "read-only" && agentMode !== "read-write") {
     throw new Error("SLACK_AGENT_MODE must be read-only or read-write");
+  }
+  if (agentCommandMode !== "off" && agentCommandMode !== "brokered") {
+    throw new Error("SLACK_AGENT_COMMAND_MODE must be off or brokered");
+  }
+  if (agentCommandMode === "brokered" && agentBackend !== "pi") {
+    throw new Error("SLACK_AGENT_COMMAND_MODE=brokered currently requires SLACK_AGENT_BACKEND=pi");
   }
   if (agentBackend === "codex" && agentMode !== "read-only") {
     throw new Error("The Codex backend currently supports only SLACK_AGENT_MODE=read-only");
@@ -179,6 +188,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
     operatorUserIds,
     agentBackend,
     agentMode,
+    agentCommandMode,
     instructions: loadInstructions(environment),
     codexExecutable,
     codexHome: codexHome ? resolve(codexHome) : undefined,

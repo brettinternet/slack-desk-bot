@@ -87,9 +87,45 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 describe("Pi configuration", () => {
-  test("excludes write tools unless explicitly enabled", () => {
+  test("selects file and brokered tools independently", () => {
     expect(toolsForMode("read-only")).toEqual(["read", "grep", "find", "ls"]);
     expect(toolsForMode("read-write")).toEqual(["read", "grep", "find", "ls", "edit", "write"]);
+    expect(toolsForMode("read-only", "brokered")).toEqual([
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "git_inspect",
+      "system_info",
+    ]);
+    expect(toolsForMode("read-write", "brokered")).toEqual([
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "edit",
+      "write",
+      "git_inspect",
+      "system_info",
+    ]);
+  });
+
+  test("loads only the service-owned broker when explicitly enabled", async () => {
+    const disabled = createPiResources(process.cwd());
+    const enabled = createPiResources(process.cwd(), { commandMode: "brokered" });
+    await disabled.resourceLoader.reload();
+    await enabled.resourceLoader.reload();
+
+    expect(
+      disabled.resourceLoader
+        .getExtensions()
+        .extensions.some((extension) => extension.path === "<inline:slack-brokered-tools>"),
+    ).toBe(false);
+    expect(
+      enabled.resourceLoader
+        .getExtensions()
+        .extensions.some((extension) => extension.path === "<inline:slack-brokered-tools>"),
+    ).toBe(true);
   });
 
   test("appends Slack-specific instructions to the system prompt", async () => {

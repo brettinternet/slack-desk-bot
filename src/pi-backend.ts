@@ -20,17 +20,20 @@ import type {
   SessionCommand,
 } from "./agent.ts";
 import { prepareTextPrompt } from "./agent-prompt.ts";
-import type { AgentMode } from "./config.ts";
+import { brokeredTools, type BrokeredToolsOptions } from "./brokered-commands.ts";
+import type { AgentCommandMode, AgentMode } from "./config.ts";
 import { ConversationStore } from "./conversation-store.ts";
 import { writeStructuredLog } from "./log.ts";
 import { workspacePolicy } from "./workspace-policy.ts";
 
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
+const BROKERED_TOOLS = ["git_inspect", "system_info"];
 export const PI_RESOURCE_POLICY_DESCRIPTION =
   "User extensions, skills, and prompt templates are disabled; only mode-approved tools are allowed";
 
-export function toolsForMode(mode: AgentMode): string[] {
-  return mode === "read-write" ? [...READ_ONLY_TOOLS, "edit", "write"] : READ_ONLY_TOOLS;
+export function toolsForMode(mode: AgentMode, commandMode: AgentCommandMode = "off"): string[] {
+  const fileTools = mode === "read-write" ? [...READ_ONLY_TOOLS, "edit", "write"] : READ_ONLY_TOOLS;
+  return commandMode === "brokered" ? [...fileTools, ...BROKERED_TOOLS] : fileTools;
 }
 const SESSION_NAME_PREFIX = "slack-agent:";
 const DEFAULT_MAX_ACTIVE_SESSIONS = 32;
@@ -63,6 +66,8 @@ export interface PiBackendOptions {
   sessionLister?: () => Promise<SessionInfo[]>;
   freshSessionManagerFactory?: () => SessionManager;
   conversationStorePath?: string;
+  commandMode?: AgentCommandMode;
+  brokeredToolsOptions?: BrokeredToolsOptions;
 }
 
 export function preparePiPrompt(prompt: string, attachments: readonly AgentAttachment[] = []) {
@@ -129,19 +134,27 @@ export function defaultSessionDirectory(workspace: string): string {
 interface PiResourceOptions {
   instructions?: string;
   mode?: AgentMode;
+  commandMode?: AgentCommandMode;
+  brokeredToolsOptions?: BrokeredToolsOptions;
   agentDir?: string;
 }
 
 export function createPiResources(workspace: string, options: PiResourceOptions = {}) {
   const agentDir = options.agentDir ?? getAgentDir();
-  const allowedTools = toolsForMode(options.mode ?? "read-only");
+  const commandMode = options.commandMode ?? "off";
+  const allowedTools = toolsForMode(options.mode ?? "read-only", commandMode);
   const settingsManager = SettingsManager.create(workspace, agentDir, { projectTrusted: false });
   const resourceLoader = new DefaultResourceLoader({
     cwd: workspace,
     agentDir,
     settingsManager,
     appendSystemPrompt: options.instructions ? [options.instructions] : [],
-    extensionFactories: [workspacePolicy(workspace, allowedTools)],
+    extensionFactories: [
+      workspacePolicy(workspace, allowedTools),
+      ...(commandMode === "brokered"
+        ? [brokeredTools(workspace, options.brokeredToolsOptions)]
+        : []),
+    ],
     noExtensions: true,
     noSkills: true,
     noPromptTemplates: true,
@@ -321,9 +334,12 @@ export class PiBackend implements AgentBackend {
     if (this.options.sessionFactory) return this.options.sessionFactory(sessionManager);
 
     const mode = this.options.mode ?? "read-only";
+    const commandMode = this.options.commandMode ?? "off";
     const { settingsManager, resourceLoader } = createPiResources(this.workspace, {
       instructions: this.options.instructions,
       mode,
+      commandMode,
+      brokeredToolsOptions: this.options.brokeredToolsOptions,
     });
     await resourceLoader.reload();
     const { session } = await createAgentSession({
@@ -331,7 +347,7 @@ export class PiBackend implements AgentBackend {
       resourceLoader,
       settingsManager,
       sessionManager,
-      tools: toolsForMode(mode),
+      tools: toolsForMode(mode, commandMode),
     });
     return session;
   }

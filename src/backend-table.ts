@@ -27,6 +27,7 @@ export const BACKENDS: Record<AgentBackendKind, BackendDefinition> = {
     create: (config) =>
       new PiBackend(config.workspace, {
         mode: config.agentMode,
+        commandMode: config.agentCommandMode,
         instructions: config.instructions,
         sessionDir: config.sessionDir,
         maxActiveSessions: config.maxActiveSessions,
