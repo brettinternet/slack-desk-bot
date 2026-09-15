@@ -91,6 +91,8 @@ Run `task doctor` after switching backends.
 
 Mention the bot in a channel to start a conversation. In that thread, follow-up questions and requests do not need another mention, including after restarts; answers to the bot's questions are also inferred while the service remains running. General observations, acknowledgements, explicit no-reply notes, and messages addressed to another user are ignored. Prefix a short or ambiguous request with `laptop:` to address the bot without an @mention. DMs work without a mention. Only `SLACK_ALLOWED_USER_IDS` can invoke the app. After a successful response, the bot has a 20% chance of reacting with a random custom workspace emoji.
 
+When the service returns after being offline, it reconciles eligible DMs, mentions, and requests in existing bot threads from the previous 24 hours. Catch-up runs in the background, processes at most 10 messages, and bounds history reads to 25 conversations, prioritizing DMs and existing threads. A durable checkpoint beside the local control socket prevents duplicate agent calls; restarts within five minutes share a cooldown before another history scan. The first launch after installing this behavior establishes the checkpoint without replying to older messages.
+
 | Command              | Effect                                                |
 | -------------------- | ----------------------------------------------------- |
 | `!help`              | Show usage examples and all commands                  |

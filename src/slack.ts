@@ -20,6 +20,7 @@ import { EventDeduplicator } from "./event-deduplicator.ts";
 import { ingestSlackFiles } from "./slack-files.ts";
 import { type LogWriter, type RequestLogWriter, writeStructuredLog } from "./log.ts";
 import { type HealthState } from "./health.ts";
+import { SlackCatchUpStore } from "./slack-catch-up-store.ts";
 import {
   awaitsThreadReply,
   channelThreadIntent,
@@ -47,6 +48,14 @@ interface SlackAgentOptions {
   statusUpdateIntervalMs?: number;
   health?: HealthState;
   random?: () => number;
+  catchUp?: {
+    statePath: string;
+    lookbackMs?: number;
+    cooldownMs?: number;
+    maxMessages?: number;
+    maxHistoryRequests?: number;
+    now?: () => number;
+  };
 }
 
 export class SlackAuthenticationError extends Error {
@@ -59,6 +68,10 @@ export class SlackAuthenticationError extends Error {
 const MAX_CONCURRENT_RESPONSES = 8;
 const MISSING_CONVERSATION_TTL_MS = 60_000;
 const WORKSPACE_REACTION_PROBABILITY = 0.2;
+const DEFAULT_CATCH_UP_LOOKBACK_MS = 24 * 60 * 60 * 1_000;
+const DEFAULT_CATCH_UP_COOLDOWN_MS = 5 * 60 * 1_000;
+const DEFAULT_CATCH_UP_MAX_MESSAGES = 10;
+const DEFAULT_CATCH_UP_MAX_HISTORY_REQUESTS = 25;
 const WORKING_STATUS_MESSAGES = [
   { started: "On it…", ongoing: "Still on it…" },
   { started: "Looking…", ongoing: "Still looking…" },
@@ -86,11 +99,24 @@ interface SlackFileReference {
 
 interface SlackHistoryMessage {
   ts?: string;
+  thread_ts?: string;
+  subtype?: string;
+  client_msg_id?: string;
   user?: string;
   bot_id?: string;
   username?: string;
   text?: string;
-  files?: Array<{ name?: string; title?: string; mimetype?: string }>;
+  files?: Array<SlackFileReference & { name?: string; title?: string; mimetype?: string }>;
+}
+
+interface SlackConversation {
+  id?: string;
+  is_im?: boolean;
+}
+
+interface CatchUpCandidate extends InboundSlackMessage {
+  timestamp: number;
+  key: string;
 }
 
 interface InboundSlackMessage {
@@ -101,6 +127,7 @@ interface InboundSlackMessage {
   requesterId: string;
   prompt: string;
   files: readonly SlackFileReference[];
+  clientMessageId?: string;
 }
 
 interface RequestStatus {
@@ -187,6 +214,9 @@ export class SlackAgent {
   private botUserId = "";
   private activeResponses = 0;
   private responseCapacityWarningLogged = false;
+  private catchUpStore: SlackCatchUpStore | undefined;
+  private catchUpTimer: ReturnType<typeof setTimeout> | undefined;
+  private stopping = false;
 
   constructor(private readonly options: SlackAgentOptions) {
     this.receiver = new SocketModeReceiver({ appToken: options.appToken });
@@ -239,6 +269,7 @@ export class SlackAgent {
         requesterId: event.user,
         prompt,
         files,
+        ...(event.client_msg_id ? { clientMessageId: event.client_msg_id } : {}),
       });
     });
   }
@@ -287,6 +318,7 @@ export class SlackAgent {
         requesterId: event.user,
         prompt: intent.prompt,
         files,
+        ...(clientMessageId ? { clientMessageId } : {}),
       });
     });
   }
@@ -304,6 +336,7 @@ export class SlackAgent {
     this.botUserId = authentication.user_id;
     await this.loadWorkspaceEmoji();
     await this.app.start();
+    this.scheduleCatchUp();
     (this.options.operatorLog ?? writeStructuredLog)({
       event: "startup",
       component: "slack",
@@ -312,7 +345,221 @@ export class SlackAgent {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+    if (this.catchUpTimer) clearTimeout(this.catchUpTimer);
     await this.app.stop();
+  }
+
+  private scheduleCatchUp(): void {
+    const config = this.options.catchUp;
+    if (!config) return;
+    const now = config.now ?? Date.now;
+    try {
+      this.catchUpStore = new SlackCatchUpStore(config.statePath, now());
+    } catch (error) {
+      this.reportCatchUpError("Unable to initialize Slack catch-up state", error);
+      return;
+    }
+    const cooldownMs = config.cooldownMs ?? DEFAULT_CATCH_UP_COOLDOWN_MS;
+    const delayMs = Math.max(0, this.catchUpStore.lastReconciledAt + cooldownMs - now());
+    this.catchUpTimer = setTimeout(() => {
+      this.catchUpTimer = undefined;
+      void this.reconcileMissedMessages();
+    }, delayMs);
+    this.catchUpTimer.unref();
+  }
+
+  private async reconcileMissedMessages(): Promise<void> {
+    const config = this.options.catchUp;
+    const store = this.catchUpStore;
+    if (!config || !store || this.stopping) return;
+    const now = config.now ?? Date.now;
+    const reconciliationAt = now();
+    const lookbackMs = config.lookbackMs ?? DEFAULT_CATCH_UP_LOOKBACK_MS;
+    const oldestAt = Math.max(store.lastReconciledAt, reconciliationAt - lookbackMs);
+    const targets: Array<{ channel: string; threadTs?: string; directMessage: boolean }> = [];
+    let complete = true;
+
+    try {
+      const conversations = await this.options.agent.listConversations?.();
+      for (const conversation of conversations ?? []) {
+        if (conversation.conversationId.startsWith("dm:")) continue;
+        const separator = conversation.conversationId.indexOf(":");
+        if (separator > 0) {
+          targets.push({
+            channel: conversation.conversationId.slice(0, separator),
+            threadTs: conversation.conversationId.slice(separator + 1),
+            directMessage: false,
+          });
+        }
+      }
+    } catch (error) {
+      complete = false;
+      this.reportCatchUpError("Unable to list existing conversations for Slack catch-up", error);
+    }
+
+    try {
+      let cursor: string | undefined;
+      for (let page = 0; page < 5; page++) {
+        const response = await this.slackOperation(
+          this.app.client.users.conversations({
+            types: "public_channel,private_channel,im",
+            exclude_archived: true,
+            limit: 200,
+            ...(cursor ? { cursor } : {}),
+          }),
+        );
+        const conversations = (response.channels ?? []) as SlackConversation[];
+        for (const conversation of conversations.filter((item) => item.is_im)) {
+          if (conversation.id) targets.push({ channel: conversation.id, directMessage: true });
+        }
+        for (const conversation of conversations.filter((item) => !item.is_im)) {
+          if (conversation.id) targets.push({ channel: conversation.id, directMessage: false });
+        }
+        cursor = response.response_metadata?.next_cursor || undefined;
+        if (!cursor) break;
+      }
+    } catch (error) {
+      complete = false;
+      this.reportCatchUpError("Unable to list Slack conversations for catch-up", error);
+    }
+
+    const uniqueTargets = targets
+      .filter(
+        (target, index) =>
+          targets.findIndex(
+            (candidate) =>
+              candidate.channel === target.channel && candidate.threadTs === target.threadTs,
+          ) === index,
+      )
+      .sort((left, right) => {
+        const priority = (target: (typeof targets)[number]): number =>
+          target.directMessage ? 0 : target.threadTs ? 1 : 2;
+        return priority(left) - priority(right);
+      });
+    const historyRequestLimit = config.maxHistoryRequests ?? DEFAULT_CATCH_UP_MAX_HISTORY_REQUESTS;
+    const candidates: CatchUpCandidate[] = [];
+    for (const target of uniqueTargets.slice(0, historyRequestLimit)) {
+      if (this.stopping) return;
+      try {
+        const messages = target.threadTs
+          ? (
+              await this.slackOperation(
+                this.app.client.conversations.replies({
+                  channel: target.channel,
+                  ts: target.threadTs,
+                  oldest: String(oldestAt / 1_000),
+                  latest: String(reconciliationAt / 1_000),
+                  inclusive: false,
+                  limit: 100,
+                }),
+              )
+            ).messages
+          : (
+              await this.slackOperation(
+                this.app.client.conversations.history({
+                  channel: target.channel,
+                  oldest: String(oldestAt / 1_000),
+                  latest: String(reconciliationAt / 1_000),
+                  inclusive: false,
+                  limit: 100,
+                }),
+              )
+            ).messages;
+        for (const message of (messages ?? []) as SlackHistoryMessage[]) {
+          const candidate = this.catchUpCandidate(target, message);
+          if (candidate && !store.hasProcessed(candidate.key)) candidates.push(candidate);
+        }
+      } catch (error) {
+        complete = false;
+        this.reportCatchUpError("Unable to read a Slack conversation during catch-up", error);
+      }
+    }
+
+    const maxMessages = config.maxMessages ?? DEFAULT_CATCH_UP_MAX_MESSAGES;
+    const selected = candidates
+      .filter(
+        (candidate, index) =>
+          candidates.findIndex((message) => message.key === candidate.key) === index,
+      )
+      .sort((left, right) => left.timestamp - right.timestamp)
+      .slice(-maxMessages);
+    for (const candidate of selected) {
+      if (this.stopping) return;
+      if (
+        !this.acceptEvent(
+          `catch-up:${candidate.key}`,
+          candidate.channel,
+          candidate.messageTs,
+          candidate.clientMessageId,
+        )
+      ) {
+        continue;
+      }
+      await this.respondWithinLimit(this.app.client, candidate);
+    }
+    if (complete && !this.stopping) {
+      store.markReconciled(reconciliationAt, reconciliationAt - lookbackMs);
+    }
+  }
+
+  private catchUpCandidate(
+    target: { channel: string; threadTs?: string; directMessage: boolean },
+    message: SlackHistoryMessage,
+  ): CatchUpCandidate | undefined {
+    if (
+      !message.ts ||
+      !Number.isFinite(Number(message.ts)) ||
+      !message.user ||
+      message.bot_id ||
+      !this.options.allowedUserIds.has(message.user)
+    ) {
+      return undefined;
+    }
+    const supported = target.directMessage
+      ? isSupportedDirectMessage(message.subtype)
+      : isSupportedChannelMessage(message.subtype);
+    if (!supported) return undefined;
+    const rawText = message.text ?? "";
+    const files = message.files ?? [];
+    let prompt = rawText;
+    let threadTs = target.threadTs;
+    if (!target.directMessage && target.threadTs) {
+      const intent = channelThreadIntent(
+        rawText,
+        this.botUserId,
+        this.awaitingThreadReplies.has(conversationId(target.channel, target.threadTs)),
+      );
+      if (!intent.respond && files.length === 0) return undefined;
+      prompt = intent.prompt;
+    } else if (!target.directMessage) {
+      const mention = `<@${this.botUserId}>`;
+      if (!rawText.includes(mention)) return undefined;
+      prompt = stripBotMention(rawText, this.botUserId);
+      threadTs = message.thread_ts ?? message.ts;
+    }
+    if (!prompt && files.length === 0) return undefined;
+    return {
+      requestId: `catch-up:${target.channel}:${message.ts}`,
+      channel: target.channel,
+      messageTs: message.ts,
+      threadTs,
+      requesterId: message.user,
+      prompt,
+      files,
+      timestamp: Number(message.ts) * 1_000,
+      key: `${target.channel}:${message.ts}`,
+      ...(message.client_msg_id ? { clientMessageId: message.client_msg_id } : {}),
+    };
+  }
+
+  private reportCatchUpError(message: string, error: unknown): void {
+    (this.options.operatorLog ?? writeStructuredLog)({
+      event: "operator_error",
+      component: "slack",
+      message,
+      error_type: errorType(error),
+    });
   }
 
   async publishOperatorExchange(
@@ -653,6 +900,14 @@ export class SlackAgent {
     try {
       await this.respond(client, message);
     } finally {
+      try {
+        this.catchUpStore?.markProcessed(
+          `${message.channel}:${message.messageTs}`,
+          (this.options.catchUp?.now ?? Date.now)(),
+        );
+      } catch (error) {
+        this.reportCatchUpError("Unable to save processed Slack message state", error);
+      }
       this.activeResponses--;
       if (this.activeResponses < MAX_CONCURRENT_RESPONSES) {
         this.responseCapacityWarningLogged = false;

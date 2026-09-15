@@ -5,6 +5,7 @@ import {
   QueuedAgentBackend,
 } from "./agent.ts";
 import { BACKENDS } from "./backend-table.ts";
+import { dirname, join } from "node:path";
 import type { Config } from "./config.ts";
 import { ConversationCoordinator } from "./conversation-coordinator.ts";
 import { checkClaudeReadiness, checkCodexReadiness, checkPiReadiness } from "./doctor.ts";
@@ -101,6 +102,7 @@ export async function startApplication(
         agent,
         health,
         operatorLog: log,
+        catchUp: { statePath: join(dirname(config.socketPath), "slack-catch-up.json") },
       }))
   )({ config, agent, health });
   const local = (dependencies.createLocalControl ?? ((options) => new LocalControlServer(options)))(

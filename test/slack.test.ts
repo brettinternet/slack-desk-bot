@@ -1,4 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   AgentCancelledError,
   AgentTimeoutError,
@@ -62,18 +65,30 @@ class MockSlackApp {
     emoji: { list: mock(async () => ({ emoji: {} as Record<string, string> })) },
     chat: {
       postMessage: mock(async () => ({ ts: "operator-message" })),
+      update: mock(async () => ({})),
+      delete: mock(async () => ({})),
       getPermalink: mock(async () => ({ permalink: "https://example.slack.com/thread" })),
     },
+    reactions: { add: mock(async () => ({})) },
+    files: { info: mock(async () => ({ ok: true })) },
     conversations: {
       info: mock(async () => ({ channel: { name: "engineering" } })),
       replies: mock(async (): Promise<{ messages: Record<string, unknown>[] }> => ({
         messages: [],
       })),
-      history: mock(async (): Promise<{ messages: Record<string, unknown>[] }> => ({
-        messages: [],
-      })),
+      history: mock(
+        async (
+          _options?: Record<string, unknown>,
+        ): Promise<{ messages: Record<string, unknown>[] }> => ({ messages: [] }),
+      ),
     },
     users: {
+      conversations: mock(
+        async (): Promise<{
+          channels: Record<string, unknown>[];
+          response_metadata?: { next_cursor?: string };
+        }> => ({ channels: [] }),
+      ),
       info: mock(async ({ user }: { user: string }) => ({
         user: {
           id: user,
@@ -146,6 +161,14 @@ function createAgent(
   });
 }
 
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (predicate()) return;
+    await Bun.sleep(5);
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => {
@@ -201,6 +224,161 @@ describe("SlackAgent transport", () => {
     app.client.auth.test.mockImplementationOnce(async () => ({}));
     await expect(incomplete.start()).rejects.toBeInstanceOf(SlackAuthenticationError);
     expect(app.start).not.toHaveBeenCalled();
+  });
+
+  test("replies to bounded eligible messages missed while offline", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "slack-desk-catch-up-"));
+    const statePath = join(directory, "state.json");
+    const now = 1_710_000_000_000;
+    writeFileSync(
+      statePath,
+      `${JSON.stringify({ version: 1, lastReconciledAt: now - 60_000, processedMessages: [] })}\n`,
+    );
+    const run = mock(async (_request: unknown) => "caught up");
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(run),
+      catchUp: { statePath, cooldownMs: 0, now: () => now },
+      random: () => 1,
+    });
+    app.client.users.conversations
+      .mockImplementationOnce(async () => ({
+        channels: [{ id: "D1", is_im: true }],
+        response_metadata: { next_cursor: "page-2" },
+      }))
+      .mockImplementationOnce(async () => ({
+        channels: [{ id: "C1", is_im: false }],
+      }));
+    app.client.conversations.history.mockImplementation(
+      async (options?: Record<string, unknown>) =>
+        options?.channel === "D1"
+          ? { messages: [{ ts: "1709999990.000100", user: "U_ALLOWED", text: "offline dm" }] }
+          : {
+              messages: [
+                {
+                  ts: "1709999991.000100",
+                  user: "U_ALLOWED",
+                  text: "<@U_BOT> offline mention",
+                },
+                {
+                  ts: "1709999992.000100",
+                  user: "U_ALLOWED",
+                  text: "unrelated channel post",
+                  subtype: "file_share",
+                  files: [{ id: "F_UNRELATED" }],
+                },
+              ],
+            },
+    );
+
+    try {
+      await agent.start();
+      await waitUntil(() => run.mock.calls.length === 2);
+      expect(run.mock.calls.map((call) => call[0])).toEqual([
+        {
+          conversationId: "dm:D1",
+          requesterId: "U_ALLOWED",
+          prompt: "offline dm",
+        },
+        {
+          conversationId: "C1:1709999991.000100",
+          requesterId: "U_ALLOWED",
+          prompt: "offline mention",
+        },
+      ]);
+      expect(app.client.users.conversations).toHaveBeenCalledTimes(2);
+      expect(app.client.conversations.history).toHaveBeenCalledTimes(2);
+    } finally {
+      await agent.stop();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("deduplicates a message delivered live while catch-up scans it", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "slack-desk-catch-up-race-"));
+    const statePath = join(directory, "state.json");
+    const now = 1_710_000_000_000;
+    writeFileSync(
+      statePath,
+      `${JSON.stringify({ version: 1, lastReconciledAt: now - 60_000, processedMessages: [] })}\n`,
+    );
+    const result = deferred<string>();
+    const run = mock(async (_request: unknown) => result.promise);
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(run),
+      catchUp: { statePath, cooldownMs: 0, now: () => now },
+      random: () => 1,
+    });
+    app.client.users.conversations.mockImplementationOnce(async () => ({
+      channels: [{ id: "D1", is_im: true }],
+    }));
+    app.client.conversations.history.mockImplementationOnce(async () => ({
+      messages: [
+        {
+          ts: "1709999990.000100",
+          client_msg_id: "M1",
+          user: "U_ALLOWED",
+          text: "one request",
+        },
+      ],
+    }));
+
+    try {
+      await agent.start();
+      const live = app.handlers.get("message")!({
+        body: { event_id: "E_LIVE_DURING_CATCH_UP" },
+        event: {
+          user: "U_ALLOWED",
+          text: "one request",
+          channel: "D1",
+          channel_type: "im",
+          ts: "1709999990.000100",
+          client_msg_id: "M1",
+        },
+        client: client(),
+      });
+      await waitUntil(() => app.client.conversations.history.mock.calls.length === 1);
+      await Bun.sleep(10);
+      expect(run).toHaveBeenCalledTimes(1);
+      result.resolve("done");
+      await live;
+    } finally {
+      result.resolve("done");
+      await agent.stop();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("defers catch-up after a recent reconciliation", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "slack-desk-catch-up-cooldown-"));
+    const statePath = join(directory, "state.json");
+    const now = 1_710_000_000_000;
+    writeFileSync(
+      statePath,
+      `${JSON.stringify({ version: 1, lastReconciledAt: now - 1_000, processedMessages: [] })}\n`,
+    );
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+      catchUp: { statePath, cooldownMs: 300_000, now: () => now },
+    });
+
+    try {
+      await agent.start();
+      await Bun.sleep(20);
+      expect(app.client.users.conversations).not.toHaveBeenCalled();
+      expect(app.client.conversations.history).not.toHaveBeenCalled();
+    } finally {
+      await agent.stop();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("occasionally adds a random custom workspace emoji after a successful response", async () => {
