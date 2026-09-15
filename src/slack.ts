@@ -289,13 +289,7 @@ export class SlackAgent {
         if (!threadTs || !(await this.ownsChannelThread(conversationId(event.channel, threadTs))))
           return;
       }
-      if (!this.options.allowedUserIds.has(event.user)) {
-        const clientMessageId = "client_msg_id" in event ? event.client_msg_id : undefined;
-        if (this.acceptEvent(body.event_id, event.channel, event.ts, clientMessageId)) {
-          await this.deny(client, event.channel, threadTs, event.user, event.ts);
-        }
-        return;
-      }
+      if (!this.options.allowedUserIds.has(event.user)) return;
       const rawText = "text" in event ? (event.text ?? "") : "";
       const id = conversationId(event.channel, threadTs);
       const intent = directMessage

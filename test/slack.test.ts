@@ -1288,7 +1288,7 @@ describe("SlackAgent transport", () => {
     );
   });
 
-  test("filters unsafe events in owned channel threads", async () => {
+  test("filters unsafe events and silently ignores unauthorized messages", async () => {
     const run = mock(async () => "response");
     createAgent(run);
     const slack = client();
@@ -1340,13 +1340,24 @@ describe("SlackAgent transport", () => {
       },
       client: slack,
     });
+    await message({
+      body: { event_id: "E_DENIED_DM" },
+      event: {
+        channel_type: "im",
+        user: "U_DENIED",
+        text: "denied direct message",
+        channel: "D1",
+        ts: "14",
+      },
+      client: slack,
+    });
 
     expect(run).toHaveBeenCalledTimes(1);
-    expect(slack.chat.postMessage).toHaveBeenCalledWith({
-      channel: "C1",
-      thread_ts: "10",
-      text: "You are not authorized to use this agent.",
-    });
+    expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
+    expect(slack.chat.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: "You are not authorized to use this agent." }),
+    );
+    expect(slack.reactions.add).not.toHaveBeenCalled();
   });
 
   test("restores channel-thread ownership from a persisted conversation after restart", async () => {
