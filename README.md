@@ -1,10 +1,11 @@
 # SlackDeskBot
 
-A desktop coding agent in Slack. Slack transport and conversation routing use a small `AgentBackend` interface; the default backend is the Pi SDK.
+Add a desktop agent to your Slack and consult with your local agents.
+Use your own agent configuration with secure tool calls and have it talk to your own local codebase.
 
 ## Platform
 
-Single-user macOS desktop, managed by LaunchAgent and Hum. Requires macOS, Git, and [Mise](https://mise.jdx.dev/getting-started.html). Linux works for development and CI but has no service recipe.
+Single-user macOS desktop, managed by LaunchAgent and Hum. Requires macOS (for now), Git, and [Mise](https://mise.jdx.dev/getting-started.html).
 
 ## Quick start
 
