@@ -25,7 +25,7 @@ describe("configuration documents", () => {
       "id-token": "write",
     });
     const build = workflow.jobs?.image?.steps?.find(
-      (step: Record<string, unknown>) => step.uses === "docker/build-push-action@v6",
+      (step: Record<string, unknown>) => step.uses === "docker/build-push-action@v7",
     );
     expect(build?.with).toMatchObject({
       context: ".",
