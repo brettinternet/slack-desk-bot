@@ -3,7 +3,7 @@
 Stop saying, "My agent said..." and instead just have your agent yap to your coworkers directly.
 
 Add a desktop agent to your Slack and consult with your local agents.
-Use your own agent configuration with secure tool calls and have it talk to your own local codebase.
+Use your own agent configuration with secure tool calls and give it your own local codebase so it can git blame your teammates.
 
 <p align="center">
     <img width="496" src="./docs/profile.png" alt="slack profile of agent" style="padding:0.25rem" />
