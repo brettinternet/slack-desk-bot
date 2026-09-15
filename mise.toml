@@ -10,11 +10,11 @@ enter = [
 [tools]
 bun = "1.4.2"
 prettier = "3.9.6"
-gitleaks = "8.30.1"
-lefthook = "2.1.12"
-task = "3.53.1"
-"github:brettinternet/hum" = "0.12.1"
+gitleaks = "latest"
+lefthook = "latest"
+task = "latest"
+"github:brettinternet/hum" = "latest"
 
 [settings]
-disable_backends = ["asdf"]
-npm.bun = true
+npm.package_manager = "bun"
+lockfile = false
