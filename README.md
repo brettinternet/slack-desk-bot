@@ -89,7 +89,7 @@ Run `task doctor` after switching backends.
 
 ## Slack interaction
 
-Mention the bot in a channel to start a conversation. Replies in that thread do not need a mention, including after restarts. DMs work without a mention. Only `SLACK_ALLOWED_USER_IDS` can invoke the app. After a successful response, the bot has a 20% chance of reacting with a random custom workspace emoji.
+Mention the bot in a channel to start a conversation. In that thread, follow-up questions and requests do not need another mention, including after restarts; answers to the bot's questions are also inferred while the service remains running. General observations, acknowledgements, explicit no-reply notes, and messages addressed to another user are ignored. Prefix a short or ambiguous request with `laptop:` to address the bot without an @mention. DMs work without a mention. Only `SLACK_ALLOWED_USER_IDS` can invoke the app. After a successful response, the bot has a 20% chance of reacting with a random custom workspace emoji.
 
 | Command              | Effect                                                |
 | -------------------- | ----------------------------------------------------- |

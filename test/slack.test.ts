@@ -960,7 +960,7 @@ describe("SlackAgent transport", () => {
       event: {
         channel_type: "channel",
         user: "U_ALLOWED",
-        text: "follow up",
+        text: "Could you follow up?",
         channel: "C1",
         ts: "4",
         thread_ts: "3",
@@ -973,7 +973,7 @@ describe("SlackAgent transport", () => {
         channel_type: "channel",
         subtype: "thread_broadcast",
         user: "U_ALLOWED",
-        text: "broadcast follow up",
+        text: "Please broadcast the follow up",
         channel: "C1",
         ts: "5",
         thread_ts: "3",
@@ -986,13 +986,109 @@ describe("SlackAgent transport", () => {
       {
         conversationId: "C1:3",
         requesterId: "U_ALLOWED",
-        prompt: "broadcast follow up",
+        prompt: "Please broadcast the follow up",
       },
       {
         onQueued: expect.any(Function),
         onStarted: expect.any(Function),
         onToolUse: expect.any(Function),
       },
+    );
+  });
+
+  test("ignores general thread observations but accepts laptop-prefixed prompts", async () => {
+    const run = mock(async () => "response");
+    createAgent(run);
+    const slack = client();
+    const mention = app.handlers.get("app_mention")!;
+    const message = app.handlers.get("message")!;
+
+    await mention({
+      body: { event_id: "E_INTENT_THREAD" },
+      event: { user: "U_ALLOWED", text: "start", channel: "C1", ts: "6" },
+      client: slack,
+    });
+    for (const [eventId, text, ts] of [
+      ["E_OBSERVATION", "FYI, production is healthy.", "7"],
+      ["E_ACK", "Thanks!", "8"],
+      ["E_HUMAN", "<@U_JANE> can you review this?", "9"],
+    ]) {
+      await message({
+        body: { event_id: eventId },
+        event: {
+          channel_type: "channel",
+          user: "U_ALLOWED",
+          text,
+          channel: "C1",
+          ts,
+          thread_ts: "6",
+        },
+        client: slack,
+      });
+    }
+    await message({
+      body: { event_id: "E_HUMAN_FILE" },
+      event: {
+        channel_type: "channel",
+        subtype: "file_share",
+        user: "U_ALLOWED",
+        text: "<@U_JANE> here's the log",
+        files: [{ id: "F_HUMAN" }],
+        channel: "C1",
+        ts: "9.5",
+        thread_ts: "6",
+      },
+      client: slack,
+    });
+    await message({
+      body: { event_id: "E_LAPTOP_PREFIX" },
+      event: {
+        channel_type: "channel",
+        user: "U_ALLOWED",
+        text: "laptop: check staging",
+        channel: "C1",
+        ts: "10",
+        thread_ts: "6",
+      },
+      client: slack,
+    });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(slack.files.info).not.toHaveBeenCalled();
+    expect(run).toHaveBeenLastCalledWith(
+      expect.objectContaining({ conversationId: "C1:6", prompt: "check staging" }),
+      expect.any(Object),
+    );
+  });
+
+  test("treats a terse message as an answer when the bot asked a question", async () => {
+    const responses = ["Which branch should I inspect?", "I'll inspect main."];
+    const run = mock(async () => responses.shift()!);
+    createAgent(run);
+    const slack = client();
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_ASKING_THREAD" },
+      event: { user: "U_ALLOWED", text: "inspect a branch", channel: "C1", ts: "11" },
+      client: slack,
+    });
+    await app.handlers.get("message")!({
+      body: { event_id: "E_TERSE_ANSWER" },
+      event: {
+        channel_type: "channel",
+        user: "U_ALLOWED",
+        text: "main",
+        channel: "C1",
+        ts: "12",
+        thread_ts: "11",
+      },
+      client: slack,
+    });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenLastCalledWith(
+      expect.objectContaining({ conversationId: "C1:11", prompt: "main" }),
+      expect.any(Object),
     );
   });
 
@@ -1078,7 +1174,7 @@ describe("SlackAgent transport", () => {
     const reply = {
       channel_type: "channel",
       user: "U_ALLOWED",
-      text: "follow up",
+      text: "Could you follow up?",
       channel: "C1",
       ts: "21",
       thread_ts: "20",
@@ -1101,7 +1197,7 @@ describe("SlackAgent transport", () => {
 
     expect(restartedRun).toHaveBeenCalledTimes(1);
     expect(restartedRun).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: "C1:20", prompt: "follow up" }),
+      expect.objectContaining({ conversationId: "C1:20", prompt: "Could you follow up?" }),
       expect.any(Object),
     );
     expect(hasConversation.mock.calls).toEqual([["C1:20"], ["C1:29"]]);

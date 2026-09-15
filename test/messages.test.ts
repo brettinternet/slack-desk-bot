@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  awaitsThreadReply,
+  channelThreadIntent,
   conversationId,
   escapeSlackText,
   formatSlackText,
@@ -44,6 +46,37 @@ describe("Slack message helpers", () => {
   test("maps channel threads and DMs to stable conversations", () => {
     expect(conversationId("C123", "100.1")).toBe("C123:100.1");
     expect(conversationId("D123")).toBe("dm:D123");
+  });
+
+  test("recognizes channel-thread requests without requiring another mention", () => {
+    expect(channelThreadIntent("Could you check staging?", "U_BOT", false)).toEqual({
+      prompt: "Could you check staging?",
+      respond: true,
+    });
+    expect(channelThreadIntent("laptop: main", "U_BOT", false)).toEqual({
+      prompt: "main",
+      respond: true,
+    });
+    expect(channelThreadIntent("<@U_BOT> main", "U_BOT", false)).toEqual({
+      prompt: "main",
+      respond: true,
+    });
+  });
+
+  test("ignores acknowledgements, observations, and messages addressed to people", () => {
+    expect(channelThreadIntent("Thanks!", "U_BOT", false).respond).toBe(false);
+    expect(channelThreadIntent("FYI, production is healthy.", "U_BOT", false).respond).toBe(false);
+    expect(
+      channelThreadIntent("No reply needed; production is healthy.", "U_BOT", true).respond,
+    ).toBe(false);
+    expect(channelThreadIntent("<@U_JANE> can you check this?", "U_BOT", true).respond).toBe(false);
+  });
+
+  test("accepts terse answers only while the bot is awaiting a reply", () => {
+    expect(channelThreadIntent("the second one", "U_BOT", false).respond).toBe(false);
+    expect(channelThreadIntent("the second one", "U_BOT", true).respond).toBe(true);
+    expect(awaitsThreadReply("I found two options. Which one should I use?")).toBe(true);
+    expect(awaitsThreadReply("Production is healthy.")).toBe(false);
   });
 
   test("preserves only user mentions explicitly included in the request", () => {

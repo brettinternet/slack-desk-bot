@@ -12,7 +12,7 @@ export const HELP_MESSAGE = `SlackDeskBot commands:
 • !reset — start a fresh session
 • !cancel (or cancel) — stop the active request
 
-Send a prompt or attach a supported text/image file in a DM. In a channel, mention the bot to start or rejoin a thread; replies in that thread do not need another mention.`;
+Send a prompt or attach a supported text/image file in a DM. In a channel, mention the bot to start or rejoin a thread. Follow-up questions and requests do not need another mention; use \`laptop:\` when a short or ambiguous message is for the bot.`;
 
 export type SlackCommand =
   { kind: "agent"; command: AgentCommand } | { kind: "help" } | { kind: "unknown" };
@@ -38,6 +38,53 @@ export function isSupportedChannelMessage(subtype?: string): boolean {
 
 export function stripBotMention(text: string, botUserId: string): string {
   return text.replaceAll(`<@${botUserId}>`, "").trim();
+}
+
+const ACKNOWLEDGEMENT =
+  /^(?:thanks|thank you|thx|got it|okay|ok|sounds good|great|cool|perfect|done)[.!\s]*$/i;
+const NO_REPLY = /\b(?:no (?:reply|response) (?:needed|required)|no need to (?:reply|respond))\b/i;
+const HUMAN_ADDRESSEE = /^<@[A-Z0-9_]+>[,:]?\s*/;
+const REQUEST =
+  /^(?:(?:also|actually|and|but|no)[,\s]+)*(?:(?:can|could|would|will|should) you\b|please\b|(?:check|compare|create|debug|explain|find|fix|implement|investigate|look|open|review|run|show|summarize|test|try|update|verify)\b)|\b(?:what about|how about|can we|could we|should we)\b/i;
+const LAPTOP_PREFIX = /^laptop\s*[:,]\s*/i;
+
+export interface ChannelThreadIntent {
+  prompt: string;
+  respond: boolean;
+}
+
+/** Conservatively infers whether a reply in a bot-owned channel thread is for the bot. */
+export function channelThreadIntent(
+  text: string,
+  botUserId: string,
+  awaitingReply: boolean,
+): ChannelThreadIntent {
+  const trimmed = text.trim();
+  const explicitlyMentioned = trimmed.includes(`<@${botUserId}>`);
+  const laptopPrompt = trimmed.replace(LAPTOP_PREFIX, "");
+  const explicitlyAddressed = laptopPrompt !== trimmed;
+  const prompt = stripBotMention(explicitlyAddressed ? laptopPrompt : trimmed, botUserId);
+
+  if (explicitlyMentioned || explicitlyAddressed || parseSlackCommand(prompt)) {
+    return { prompt, respond: true };
+  }
+  if (NO_REPLY.test(prompt) || ACKNOWLEDGEMENT.test(prompt) || HUMAN_ADDRESSEE.test(prompt)) {
+    return { prompt, respond: false };
+  }
+  return {
+    prompt,
+    respond: awaitingReply || prompt.includes("?") || REQUEST.test(prompt),
+  };
+}
+
+/** True when the end of an agent response appears to hand the turn back to a user. */
+export function awaitsThreadReply(text: string): boolean {
+  const ending =
+    text
+      .trim()
+      .split(/\n\s*\n/)
+      .at(-1) ?? "";
+  return /\?|\b(?:let me know|which (?:one|option)|would you like|should I)\b/i.test(ending);
 }
 
 export function splitSlackMessage(

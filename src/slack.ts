@@ -21,6 +21,8 @@ import { ingestSlackFiles } from "./slack-files.ts";
 import { type LogWriter, type RequestLogWriter, writeStructuredLog } from "./log.ts";
 import { type HealthState } from "./health.ts";
 import {
+  awaitsThreadReply,
+  channelThreadIntent,
   conversationId,
   formatSlackText,
   HELP_MESSAGE,
@@ -178,6 +180,7 @@ export class SlackAgent {
   private readonly capacityReplies = new EventDeduplicator();
   private readonly missingConversations = new Map<string, number>();
   private readonly ownedChannelThreads = new Set<string>();
+  private readonly awaitingThreadReplies = new Set<string>();
   private readonly receiver: SocketModeReceiver;
   private workspaceEmojiNames: string[] = [];
   private readonly userCache = new Map<string, ConversationParticipant>();
@@ -223,7 +226,9 @@ export class SlackAgent {
         !this.acceptEvent(body.event_id, event.channel, event.ts, event.client_msg_id)
       )
         return;
-      this.ownedChannelThreads.add(conversationId(event.channel, threadTs));
+      const id = conversationId(event.channel, threadTs);
+      this.ownedChannelThreads.add(id);
+      this.awaitingThreadReplies.delete(id);
       await this.respondWithinLimit(client, {
         requestId: body.event_id,
         channel: event.channel,
@@ -256,21 +261,26 @@ export class SlackAgent {
         return;
       }
       const rawText = "text" in event ? (event.text ?? "") : "";
-      const prompt = directMessage ? rawText : stripBotMention(rawText, this.botUserId);
+      const id = conversationId(event.channel, threadTs);
+      const intent = directMessage
+        ? { prompt: rawText, respond: true }
+        : channelThreadIntent(rawText, this.botUserId, this.awaitingThreadReplies.has(id));
       const files = eventFiles(event);
       const clientMessageId = "client_msg_id" in event ? event.client_msg_id : undefined;
       if (
-        (!prompt && files.length === 0) ||
+        (!intent.prompt && files.length === 0) ||
+        (!intent.respond && intent.prompt.length > 0) ||
         !this.acceptEvent(body.event_id, event.channel, event.ts, clientMessageId)
       )
         return;
+      this.awaitingThreadReplies.delete(id);
       await this.respondWithinLimit(client, {
         requestId: body.event_id,
         channel: event.channel,
         messageTs: event.ts,
         threadTs,
         requesterId: event.user,
-        prompt,
+        prompt: intent.prompt,
         files,
       });
     });
@@ -719,7 +729,27 @@ export class SlackAgent {
     const status = await this.createRequestStatus(client, message);
     const execution = await this.executeRequest(client, message, command, admission, status);
     const delivery = await this.deliverRequest(client, message, status, execution);
+    this.updateThreadAttention(message, execution, delivery);
     this.recordRequest(message, status, execution, delivery, startedAt);
+  }
+
+  private updateThreadAttention(
+    message: InboundSlackMessage,
+    execution: ExecutionResult,
+    delivery: DeliveryResult,
+  ): void {
+    if (!message.threadTs) return;
+    const id = conversationId(message.channel, message.threadTs);
+    if (
+      execution.outcome === "success" &&
+      delivery.outcome !== "failure" &&
+      execution.finalOutput &&
+      awaitsThreadReply(execution.finalOutput)
+    ) {
+      this.awaitingThreadReplies.add(id);
+    } else {
+      this.awaitingThreadReplies.delete(id);
+    }
   }
 
   private async createRequestStatus(
