@@ -577,10 +577,54 @@ describe("macOS system information broker", () => {
     expect(results[9]).toContain("Restart count: 3");
   });
 
-  test("does not claim host support on non-macOS systems", async () => {
+  test("reports container-scoped Linux facts without claiming Docker host access", async () => {
     const workspace = temporaryWorkspace();
+    const calls: BrokeredCommandSpec[] = [];
+    const execute: BrokeredCommandExecutor = async (spec) => {
+      calls.push(spec);
+      return successful(
+        spec.executable === "/bin/df"
+          ? "Filesystem Size Used Avail Use% Mounted on\n/dev/test 10G 1G 9G 10% /workspace\n"
+          : "tool 1.0\n",
+      );
+    };
+
+    const os = await runSystemInfo(
+      { action: "os_version" },
+      workspace,
+      undefined,
+      execute,
+      "linux",
+    );
+    const memory = await runSystemInfo(
+      { action: "memory_summary" },
+      workspace,
+      undefined,
+      execute,
+      "linux",
+    );
+    const volume = await runSystemInfo(
+      { action: "volume_summary" },
+      workspace,
+      undefined,
+      execute,
+      "linux",
+    );
+    const pressure = await runSystemInfo(
+      { action: "system_pressure" },
+      workspace,
+      undefined,
+      execute,
+      "linux",
+    );
+
+    expect(os).toContain("container runtime, not the Docker host");
+    expect(memory).toContain("Linux runtime");
+    expect(volume).toContain("/workspace");
+    expect(pressure).toContain("Container pressure verdict:");
+    expect(calls.every(({ executable }) => executable === "/bin/df")).toBe(true);
     await expect(
-      runSystemInfo({ action: "battery" }, workspace, undefined, undefined, "linux"),
-    ).rejects.toThrow("only on macOS");
+      runSystemInfo({ action: "battery" }, workspace, undefined, execute, "linux"),
+    ).rejects.toThrow("unavailable in a Linux container runtime");
   });
 });

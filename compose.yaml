@@ -1,0 +1,42 @@
+services:
+  agent:
+    image: ${SLACK_DESK_IMAGE:-ghcr.io/brettinternet/slack-desk-bot:main}
+    build:
+      context: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 20s
+    environment:
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:?Set SLACK_BOT_TOKEN}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:?Set SLACK_APP_TOKEN}
+      SLACK_ALLOWED_USER_IDS: ${SLACK_ALLOWED_USER_IDS:?Set SLACK_ALLOWED_USER_IDS}
+      SLACK_OPERATOR_USER_IDS: ${SLACK_OPERATOR_USER_IDS:-}
+      SLACK_AGENT_BACKEND: pi
+      SLACK_AGENT_MODE: ${SLACK_AGENT_MODE:-read-only}
+      SLACK_AGENT_COMMAND_MODE: ${SLACK_AGENT_COMMAND_MODE:-off}
+      SLACK_AGENT_CWD: /workspace
+      SLACK_AGENT_HEALTH_HOST: 0.0.0.0
+      SLACK_AGENT_HEALTH_PORT: 3210
+      SLACK_AGENT_SESSION_DIR: /var/lib/slack-desk/sessions
+      SLACK_AGENT_SOCKET_PATH: /var/lib/slack-desk/control.sock
+      PI_CODING_AGENT_DIR: /config/pi-agent
+    volumes:
+      - type: bind
+        source: ${SLACK_AGENT_WORKSPACE:?Set SLACK_AGENT_WORKSPACE to an absolute host path}
+        target: /workspace
+        read_only: ${SLACK_AGENT_WORKSPACE_READ_ONLY:-true}
+      - type: bind
+        source: ${SLACK_DESK_PI_AGENT_DIR:?Set SLACK_DESK_PI_AGENT_DIR to the host Pi agent directory}
+        target: /config/pi-agent
+      - type: volume
+        source: state
+        target: /var/lib/slack-desk
+    ports:
+      - "127.0.0.1:${SLACK_AGENT_HEALTH_PORT:-3210}:3210"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  state:

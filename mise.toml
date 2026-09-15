@@ -9,6 +9,9 @@ enter = [
 
 [tools]
 bun = "1.4.2"
+colima = "latest"
+docker-cli = "latest"
+lima = "latest"
 prettier = "3.9.6"
 gitleaks = "latest"
 lefthook = "latest"

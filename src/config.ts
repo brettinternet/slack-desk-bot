@@ -26,6 +26,7 @@ export interface Config {
   sessionDir?: string;
   maxActiveSessions: number;
   sessionIdleMs: number;
+  healthHost: string;
   healthPort: number;
   socketPath: string;
 }
@@ -41,6 +42,7 @@ const DEFAULTS = {
   rateLimitRefillMs: 60_000,
   maxActiveSessions: 32,
   sessionIdleMs: 3_600_000,
+  healthHost: "127.0.0.1",
   healthPort: 3_210,
 } as const;
 
@@ -237,6 +239,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
       "SLACK_AGENT_SESSION_IDLE_MS",
       DEFAULTS.sessionIdleMs,
     ),
+    healthHost: optional(environment, "SLACK_AGENT_HEALTH_HOST") ?? DEFAULTS.healthHost,
     healthPort: port(environment, "SLACK_AGENT_HEALTH_PORT", DEFAULTS.healthPort),
     socketPath: resolve(socketPath),
   };

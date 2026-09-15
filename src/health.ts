@@ -87,6 +87,7 @@ function livenessSnapshot(state: HealthState) {
 }
 
 export interface HealthServerOptions {
+  host?: string;
   state?: HealthState;
   queue?: () => QueueSnapshot;
 }
@@ -103,7 +104,7 @@ export function startHealthServer(port = DEFAULT_HEALTH_PORT, options: HealthSer
   const state = options.state ?? new HealthState();
   const queue = options.queue ?? emptyQueueSnapshot;
   return Bun.serve({
-    hostname: "127.0.0.1",
+    hostname: options.host ?? "127.0.0.1",
     port,
     fetch(request) {
       const pathname = new URL(request.url).pathname;

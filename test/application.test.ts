@@ -43,6 +43,7 @@ function config(): Config {
     sessionDir: undefined,
     maxActiveSessions: 32,
     sessionIdleMs: 3_600_000,
+    healthHost: "127.0.0.1",
     healthPort: 0,
     socketPath: join(tmpdir(), `slack-desk-application-${process.pid}`, "control.sock"),
   };

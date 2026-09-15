@@ -151,6 +151,7 @@ export async function startApplication(
   let healthServer: HealthServer;
   try {
     healthServer = (dependencies.startHealthServer ?? startHealthServer)(config.healthPort, {
+      host: config.healthHost,
       state: health,
       queue: () => agent.snapshot(),
     });

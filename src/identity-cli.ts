@@ -18,7 +18,7 @@ async function repositoryRoot(cwd: string): Promise<string> {
   try {
     const { stdout } = await execFileAsync(
       "/usr/bin/git",
-      ["-C", cwd, "rev-parse", "--show-toplevel"],
+      ["-c", "safe.directory=*", "-C", cwd, "rev-parse", "--show-toplevel"],
       { encoding: "utf8" },
     );
     return stdout.trim();

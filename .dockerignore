@@ -1,0 +1,13 @@
+.git
+.github
+.worktrees
+.env
+.env.*
+!.env.example
+node_modules
+coverage
+.slack-desk
+*.log
+AGENTS.local.md
+CLAUDE.local.md
+GEMINI.local.md

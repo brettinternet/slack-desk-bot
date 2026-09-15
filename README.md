@@ -5,7 +5,7 @@ Use your own agent configuration with secure tool calls and have it talk to your
 
 ## Platform
 
-Single-user macOS desktop, managed by LaunchAgent and Hum. Requires macOS (for now), Git, and [Mise](https://mise.jdx.dev/getting-started.html).
+SlackDeskBot supports a macOS desktop deployment managed by LaunchAgent and Hum, plus a Linux container deployment published to GHCR. The Linux image currently supports the Pi backend; Codex and Claude remain macOS-only because their process confinement uses Seatbelt.
 
 ## Quick start
 
@@ -174,7 +174,7 @@ Project mappings go to `.slack-desk/identities.yaml`; global mappings go to `~/.
 
 **`repo_fun`** derives playful local-only reports from Git metadata: repository personality and birthday, ancient artifacts, hot zones, team constellations, commit weather, deterministic fortunes, activity sparklines, milestones, and trivia. Personality, weather, ownership, and concentration results are approximate.
 
-**`system_info`** reports battery/health, uptime/load, OS/kernel/CPU/runtime/tool versions, workspace disk and volume space, memory and thermal pressure, power settings, redacted display summaries, computer name, local clock, combined system pressure, and SlackDeskBot process health. Each action uses in-process facts or a fixed executable with fixed arguments; no shell or free-form arguments are accepted. Hardware serials and private scheduled activity returned by macOS are never included.
+**`system_info`** reports battery/health, uptime/load, OS/kernel/CPU/runtime/tool versions, workspace disk and volume space, memory and thermal pressure, power settings, redacted display summaries, computer name, local clock, combined system pressure, and SlackDeskBot process health. Each action uses in-process facts or a fixed executable with fixed arguments; no shell or free-form arguments are accepted. On Linux it reports container-runtime facts—not the Docker host—and explicitly rejects unavailable battery, thermal, power, and display actions. Hardware serials and private scheduled activity returned by macOS are never included.
 
 Brokered commands are off by default, currently Pi-only, and independent of `SLACK_AGENT_MODE`; read-only and read-write sessions receive the same inspection-only operations.
 
@@ -219,6 +219,56 @@ curl -fsS "http://127.0.0.1:${SLACK_AGENT_HEALTH_PORT:-3210}/readyz"
 ```
 
 Response includes start/uptime, queue counts, connection state, and last successful Slack operation time. No prompts, IDs, paths, tokens, or file data.
+
+## Linux container deployment
+
+The Pi-only Linux image is published as `ghcr.io/brettinternet/slack-desk-bot`. `main` tracks the default branch, `sha-…` tags are immutable, and version tags are published from `v*` Git tags. Images are built for `linux/amd64` and `linux/arm64`.
+
+The container runs as an unprivileged user and needs three separate locations:
+
+| Container path        | Purpose                                                           | Access               |
+| --------------------- | ----------------------------------------------------------------- | -------------------- |
+| `/workspace`          | Repository or parent directory exposed to the agent               | Read-only by default |
+| `/config/pi-agent`    | Pi credentials, model settings, and credential lock/refresh state | Persistent, writable |
+| `/var/lib/slack-desk` | Sessions, conversation mappings, socket, and catch-up checkpoint  | Persistent, writable |
+
+Authenticate Pi on the host first. Then export the Compose inputs; use the Pi agent directory reported by `task doctor` if it differs from `~/.pi/agent`.
+
+```sh
+export SLACK_BOT_TOKEN=xoxb-...
+export SLACK_APP_TOKEN=xapp-...
+export SLACK_ALLOWED_USER_IDS=U01234567
+export SLACK_AGENT_WORKSPACE=/absolute/path/to/repository
+export SLACK_DESK_PI_AGENT_DIR="$HOME/.pi/agent"
+docker compose up -d
+```
+
+```sh
+docker compose ps
+docker compose logs -f agent
+curl -fsS "http://127.0.0.1:${SLACK_AGENT_HEALTH_PORT:-3210}/readyz"
+docker compose exec agent bun src/local-cli.ts sessions
+docker compose down
+```
+
+The default workspace mount and agent mode are read-only. To deliberately enable writes, set both controls before starting:
+
+```sh
+export SLACK_AGENT_MODE=read-write
+export SLACK_AGENT_WORKSPACE_READ_ONLY=false
+docker compose up -d
+```
+
+The Pi agent directory must be writable because Pi locks credential reads beside `auth.json` and may refresh OAuth credentials. Agent file tools remain confined to `/workspace`; the directory is writable only by trusted service code. Do not mount the Docker socket, an entire home directory, or credentials beneath `/workspace`. Linux `system_info` describes the container runtime and cannot inspect the Docker host. Git inspection accepts bind-mounted repositories whose host UID differs from the container UID, while path validation still confines selection to `SLACK_AGENT_CWD`.
+
+The health endpoint binds to all container interfaces so Docker and orchestration probes can reach it; Compose publishes it only on host loopback. The process handles `SIGTERM`, and Compose allows 20 seconds for its 15-second graceful shutdown deadline. The named `state` volume must not be shared by concurrently running instances.
+
+To build locally instead of pulling GHCR:
+
+```sh
+docker compose build
+docker compose up -d
+```
 
 ## macOS deployment
 

@@ -16,6 +16,52 @@ describe("configuration documents", () => {
     });
   });
 
+  test("container image is validated and published to GHCR", async () => {
+    const workflow = await yaml(".github/workflows/container.yaml");
+    expect(workflow.jobs?.image?.permissions).toMatchObject({
+      contents: "read",
+      packages: "write",
+      attestations: "write",
+      "id-token": "write",
+    });
+    const build = workflow.jobs?.image?.steps?.find(
+      (step: Record<string, unknown>) => step.uses === "docker/build-push-action@v6",
+    );
+    expect(build?.with).toMatchObject({
+      context: ".",
+      push: "${{ github.event_name != 'pull_request' }}",
+      provenance: "mode=max",
+      sbom: true,
+    });
+    expect(build?.with?.platforms).toContain("linux/amd64,linux/arm64");
+
+    const dockerfile = await readFile("Dockerfile", "utf8");
+    expect(dockerfile).toContain("FROM oven/bun:1.4.2-slim");
+    expect(dockerfile).toContain("bun install --frozen-lockfile --production");
+    expect(dockerfile).toContain("USER bun");
+    expect(dockerfile).toContain('CMD ["bun", "src/healthcheck.ts"]');
+  });
+
+  test("Compose keeps workspace, credentials, and state in separate mounts", async () => {
+    const compose = await yaml("compose.yaml");
+    const agent = compose.services?.agent;
+    expect(agent).toMatchObject({
+      image: "${SLACK_DESK_IMAGE:-ghcr.io/brettinternet/slack-desk-bot:main}",
+      init: true,
+      stop_grace_period: "20s",
+      cap_drop: ["ALL"],
+      security_opt: ["no-new-privileges:true"],
+    });
+    expect(agent.environment).toMatchObject({
+      SLACK_AGENT_BACKEND: "pi",
+      SLACK_AGENT_CWD: "/workspace",
+      PI_CODING_AGENT_DIR: "/config/pi-agent",
+      SLACK_AGENT_SESSION_DIR: "/var/lib/slack-desk/sessions",
+    });
+    expect(agent.volumes).toHaveLength(3);
+    expect(agent.volumes[1]).not.toHaveProperty("read_only");
+  });
+
   test("Slack manifest enables the required Socket Mode events and scopes", async () => {
     const manifest = await yaml("slack-app-manifest.yaml");
     expect(manifest.features?.app_home).toEqual({

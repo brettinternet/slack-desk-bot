@@ -180,7 +180,17 @@ export async function gitAuthors(
 ): Promise<Array<{ name: string; email: string }>> {
   const { stdout } = await execFileAsync(
     "/usr/bin/git",
-    ["-C", repository, "shortlog", "--summary", "--numbered", "--email", "--all"],
+    [
+      "-c",
+      `safe.directory=${repository}`,
+      "-C",
+      repository,
+      "shortlog",
+      "--summary",
+      "--numbered",
+      "--email",
+      "--all",
+    ],
     { encoding: "utf8", maxBuffer: 1024 * 1024 },
   );
   const authors = new Map<string, { name: string; email: string }>();

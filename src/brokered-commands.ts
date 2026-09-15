@@ -1,6 +1,17 @@
 import { spawn } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  arch,
+  cpus,
+  freemem,
+  hostname,
+  loadavg,
+  platform as operatingSystem,
+  release,
+  totalmem,
+  tmpdir,
+  uptime as systemUptime,
+} from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import {
@@ -266,10 +277,18 @@ async function rawGit(
   signal: AbortSignal | undefined,
   execute: BrokeredCommandExecutor,
 ): Promise<BrokeredCommandResult> {
+  const canonicalRepository = realpathSync(repository);
   return execute(
     {
       executable: GIT,
-      arguments: [...BASE_GIT_ARGUMENTS, "-C", realpathSync(repository), ...arguments_],
+      arguments: [
+        ...BASE_GIT_ARGUMENTS,
+        "-c",
+        `safe.directory=${canonicalRepository}`,
+        "-C",
+        canonicalRepository,
+        ...arguments_,
+      ],
       cwd: repository,
     },
     signal,
@@ -1474,6 +1493,106 @@ function formatPowerSettings(output: string): string {
     .join("\n");
 }
 
+function formatLinuxMemory(): string {
+  const total = totalmem();
+  const available = freemem();
+  const used = Math.max(0, total - available);
+  const percent = total > 0 ? ((used / total) * 100).toFixed(1) : "unknown";
+  return [
+    `Total: ${formatByteCount(total)}`,
+    `Available: ${formatByteCount(available)}`,
+    `Used estimate: ${formatByteCount(used)} (${percent}%)`,
+    "Scope: Linux runtime; container limits depend on runtime/cgroup reporting",
+  ].join("\n");
+}
+
+function linuxUnavailable(action: SystemAction): never {
+  throw new Error(`${action} is unavailable in a Linux container runtime`);
+}
+
+async function runLinuxSystemInfo(
+  input: SystemInfoInput,
+  workspace: string,
+  signal: AbortSignal | undefined,
+  execute: BrokeredCommandExecutor,
+): Promise<string> {
+  switch (input.action) {
+    case "battery":
+    case "battery_health":
+    case "thermal_pressure":
+    case "power_settings":
+    case "display_summary":
+      return linuxUnavailable(input.action);
+    case "uptime":
+      return `Uptime: ${Math.floor(systemUptime())} seconds\nLoad averages: ${loadavg()
+        .map((value) => value.toFixed(2))
+        .join(", ")}`;
+    case "os_version":
+      return `Operating system: ${operatingSystem()} ${release()}\nArchitecture: ${arch()}\nScope: container runtime, not the Docker host`;
+    case "memory_pressure":
+    case "memory_summary":
+      return formatLinuxMemory();
+    case "computer_name":
+      return `Hostname: ${hostname()}\nScope: container runtime`;
+    case "clock":
+      return new Date().toString();
+    case "kernel":
+      return `${operatingSystem()} ${release()} ${arch()}`;
+    case "cpu_summary": {
+      const processors = cpus();
+      return [
+        `CPU: ${processors[0]?.model ?? "unknown"}`,
+        `Logical cores visible: ${processors.length}`,
+        `Architecture: ${arch()}`,
+        "Scope: container runtime; CPU quotas may be lower than visible cores",
+      ].join("\n");
+    }
+    case "disk_space":
+    case "volume_summary": {
+      const output = await fixedSystemCommand(
+        "/bin/df",
+        ["-h", realpathSync(workspace)],
+        input.action,
+        workspace,
+        signal,
+        execute,
+      );
+      return input.action === "volume_summary"
+        ? `Workspace volume:\n${output.trim()}`
+        : present(output);
+    }
+    case "developer_tools":
+    case "runtime_versions": {
+      const tools: Array<[string, string, string[]]> = [
+        ["Git", GIT, ["--version"]],
+        ["Bun", process.execPath, ["--version"]],
+      ];
+      return (
+        await Promise.all(
+          tools.map(
+            async ([label, executable, arguments_]) =>
+              `${label}: ${(await fixedSystemCommand(executable, arguments_, input.action, workspace, signal, execute)).trim().split("\n")[0]}`,
+          ),
+        )
+      ).join("\n");
+    }
+    case "service_health":
+      return "SlackDeskBot is running inside a Linux container. Use /readyz and the container runtime for readiness and restart status.";
+    case "system_pressure": {
+      const [memory, volume] = await Promise.all([
+        runLinuxSystemInfo({ action: "memory_summary" }, workspace, signal, execute),
+        runLinuxSystemInfo({ action: "volume_summary" }, workspace, signal, execute),
+      ]);
+      const capacity = Number(/\s(\d+)%\s/.exec(volume)?.[1] ?? 0);
+      const used = totalmem() > 0 ? (totalmem() - freemem()) / totalmem() : 0;
+      const verdict = capacity >= 90 || used >= 0.9 ? "attention recommended" : "normal";
+      return present(
+        `Container pressure verdict: ${verdict}\n\nMemory:\n${memory}\n\nDisk:\n${volume}`,
+      );
+    }
+  }
+}
+
 function formatMemorySummary(vmOutput: string, memoryBytes: number, swap: string): string {
   const pageSize = Number(/page size of (\d+) bytes/.exec(vmOutput)?.[1] ?? 4096);
   const pages = (name: string) =>
@@ -1499,7 +1618,8 @@ export async function runSystemInfo(
   execute: BrokeredCommandExecutor = executeBrokeredCommand,
   platform: NodeJS.Platform = process.platform,
 ): Promise<string> {
-  if (platform !== "darwin") throw new Error("system_info is supported only on macOS");
+  if (platform === "linux") return runLinuxSystemInfo(input, workspace, signal, execute);
+  if (platform !== "darwin") throw new Error("system_info is supported only on macOS and Linux");
   switch (input.action) {
     case "battery_health":
       return formatBatteryHealth(
@@ -1822,11 +1942,11 @@ export function brokeredTools(
         name: "system_info",
         label: "System Info",
         description:
-          "Read benign, redacted macOS host facts through fixed commands without a shell. Reports battery and battery health, uptime/load, OS/kernel/CPU/runtime/tool versions, disk/volume/memory/thermal pressure, power settings, connected display summaries, computer name, local clock, combined system pressure, or SlackDeskBot process health. No arbitrary command or arguments are accepted; hardware serial numbers and private activity are omitted.",
+          "Read benign, redacted macOS host or Linux container-runtime facts through in-process APIs and fixed commands without a shell. Reports supported battery, uptime/load, OS/kernel/CPU/runtime/tool versions, disk/volume/memory/thermal pressure, power, display, clock, and process-health facts. Linux results describe the container runtime, never the Docker host; unavailable hardware actions fail explicitly. No arbitrary command or arguments are accepted; hardware serial numbers and private activity are omitted.",
         promptSnippet:
-          "Check macOS battery health, pressure, CPU, memory, displays, tools, service health, disk, clock, and versions",
+          "Check supported macOS host or Linux container runtime health, pressure, tools, disk, clock, and versions",
         promptGuidelines: [
-          "Use system_info when the user asks about the desktop host's health, battery, clock, or OS details.",
+          "Use system_info for supported runtime health, clock, or OS details; Linux results describe the container, not the Docker host.",
         ],
         parameters: Type.Object({
           action: StringEnum(SYSTEM_ACTIONS, {

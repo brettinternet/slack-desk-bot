@@ -40,6 +40,7 @@ describe("loadConfig", () => {
       sessionDir: undefined,
       maxActiveSessions: 32,
       sessionIdleMs: 3_600_000,
+      healthHost: "127.0.0.1",
       healthPort: 3_210,
       socketPath: defaultSocketPath(valid),
     });
@@ -59,6 +60,7 @@ describe("loadConfig", () => {
       SLACK_AGENT_TIMEOUT_MS: "100",
       SLACK_AGENT_MAX_CONCURRENT_CONVERSATIONS: "7",
       SLACK_AGENT_RATE_LIMIT_BURST: "4",
+      SLACK_AGENT_HEALTH_HOST: "0.0.0.0",
       SLACK_AGENT_HEALTH_PORT: "4321",
       SLACK_AGENT_SOCKET_PATH: "/tmp/slack-desk-control.sock",
     });
@@ -72,6 +74,7 @@ describe("loadConfig", () => {
       sessionDir: "/tmp/slack-agent-sessions",
       maxActiveSessions: 8,
       sessionIdleMs: 300_000,
+      healthHost: "0.0.0.0",
       healthPort: 4_321,
       socketPath: "/tmp/slack-desk-control.sock",
       configuredMaxConcurrentConversations: 7,
