@@ -1,10 +1,10 @@
 # SlackDeskBot
 
-A desktop coding agent available in Slack. Slack transport and conversation routing depend on a small `AgentBackend` interface; the default backend uses the Pi SDK.
+A desktop coding agent in Slack. Slack transport and conversation routing use a small `AgentBackend` interface; the default backend is the Pi SDK.
 
 ## Platform
 
-Single-user macOS desktop running under LaunchAgent and Hum. Requires macOS, Git, and [Mise](https://mise.jdx.dev/getting-started.html). Linux works for development and CI but has no service recipe.
+Single-user macOS desktop, managed by LaunchAgent and Hum. Requires macOS, Git, and [Mise](https://mise.jdx.dev/getting-started.html). Linux works for development and CI but has no service recipe.
 
 ## Quick start
 
@@ -20,7 +20,7 @@ mise exec task -- task init
 1. Optionally rename the app in [`slack-app-manifest.yaml`](slack-app-manifest.yaml).
 2. Create a Slack app from the manifest.
 3. Under **Basic Information → App-Level Tokens**, create a token with `connections:write`.
-4. Install the app into the workspace. Reinstall existing apps to grant the manifest scopes and event subscriptions.
+4. Install the app into the workspace. Reinstall existing apps to pick up manifest scopes and event subscriptions.
 5. Copy the bot token (`xoxb-…`) and app token (`xapp-…`).
 
 Socket Mode is enabled, so no public endpoint is needed.
@@ -36,16 +36,20 @@ task doctor    # validates settings, tokens, paths, ports, Slack auth, and backe
 hum up
 ```
 
-`hum status`, `hum logs agent`, and `hum down` inspect and control the service.
+```sh
+hum status
+hum logs agent
+hum down
+```
 
 ### Agent backend
 
-**Pi (default):** `SLACK_AGENT_BACKEND=pi`.
+**Pi (default):** `SLACK_AGENT_BACKEND=pi`
 
 - Reads model settings, `models.json`, and `auth.json` from the Pi agent directory reported by `task doctor`.
 - Does not load that directory's extensions, skills, or prompt templates.
-- Tools are restricted to the `SLACK_AGENT_MODE` and `SLACK_AGENT_COMMAND_MODE` allowlist, enforced again at call time.
-- Authenticate with desktop Pi as usual. No credential copy is required.
+- Tools restricted to the `SLACK_AGENT_MODE` and `SLACK_AGENT_COMMAND_MODE` allowlist, enforced again at call time.
+- Authenticate with desktop Pi as usual. No credential copy needed.
 
 **Codex:**
 
@@ -89,9 +93,9 @@ Run `task doctor` after switching backends.
 
 ## Slack interaction
 
-Mention the bot in a channel to start a conversation. In that thread, follow-up questions and requests do not need another mention, including after restarts; answers to the bot's questions are also inferred while the service remains running. General observations, acknowledgements, explicit no-reply notes, and messages addressed to another user are ignored. Prefix a short or ambiguous request with `laptop:` to address the bot without an @mention. DMs work without a mention. Only `SLACK_ALLOWED_USER_IDS` can invoke the app. After a successful response, the bot has a 20% chance of reacting with a random custom workspace emoji.
+Mention the bot in a channel to start a conversation. Follow-ups in that thread need no mention, including after restarts; answers to the bot's questions are also inferred while the service remains running. General observations, acknowledgements, explicit no-reply notes, and messages addressed to another user are ignored. Prefix a short or ambiguous message with `laptop:` to address the bot without an @mention. DMs work without a mention. Only `SLACK_ALLOWED_USER_IDS` can invoke the app. After a successful response, the bot has a 20% chance of reacting with a random custom workspace emoji.
 
-When the service returns after being offline, it reconciles eligible DMs, mentions, and requests in existing bot threads from the previous 24 hours. Catch-up runs in the background, processes at most 10 messages, and bounds history reads to 25 conversations, prioritizing DMs and existing threads. A durable checkpoint beside the local control socket prevents duplicate agent calls; restarts within five minutes share a cooldown before another history scan. The first launch after installing this behavior establishes the checkpoint without replying to older messages.
+When the service starts after being offline, it reconciles eligible DMs, mentions, and thread requests from the previous 24 hours. Catch-up runs in the background, processes at most 10 messages, and reads at most 25 conversations, prioritizing DMs and existing threads. A durable checkpoint beside the local control socket prevents duplicates; restarts within five minutes share a cooldown before another scan. The first launch after installing this behavior sets the checkpoint without replying to older messages.
 
 | Command              | Effect                                                |
 | -------------------- | ----------------------------------------------------- |
@@ -104,24 +108,22 @@ Commands are case-insensitive exact messages. An unsupported `!`-prefixed messag
 
 ## Local terminal attachment
 
-SlackDeskBot remains the sole owner of mutable agent sessions. A local client joins over an owner-only Unix socket:
+SlackDeskBot owns all mutable agent sessions. A local client joins over an owner-only Unix socket:
 
 ```sh
 bun link                 # once, from this checkout
-slack-desk sessions
+slack-desk sessions      # labels and participants when Slack metadata is available
 slack-desk attach f82ab719
 slack-desk attach f82ab719 --history 50  # default: 20; --no-history to disable
 ```
 
-`slack-desk sessions` shows conversation labels and participants when Slack metadata is available. Attaching prints thread/DM identity, participants, permalink, and recent history, then switches to live events.
+Attaching prints thread/DM identity, participants, permalink, and recent history, then streams live events. Inside an attachment, use prompts normally or `/status`, `/cancel`, `/quit`. Slack and local prompts share one per-conversation queue. Local operator prompts and replies post back to the originating Slack thread with attribution; disconnecting does not stop the session or an active request.
 
 Scopes `channels:read`, `groups:read`, `im:read`, `users:read`, and `users:read.email` are required; reinstall an existing app after adding them. History and automatic Git identity matching fall back gracefully when Slack denies access.
 
-Inside an attachment use prompts normally, or `/status`, `/cancel`, `/quit`. Slack and local prompts share the same per-conversation queue. Local operator prompts and replies post back to the originating Slack thread with attribution; disconnecting does not stop the session or an active request.
+On macOS, the socket defaults to `~/Library/Application Support/SlackDeskBot/control.sock`. Override with `SLACK_AGENT_SOCKET_PATH` (absolute); the client reads the same variable or accepts `--socket <path>`.
 
-On macOS, the socket defaults to `~/Library/Application Support/SlackDeskBot/control.sock`. Override with `SLACK_AGENT_SOCKET_PATH` (absolute); the client reads the same variable or takes `--socket <path>`.
-
-The protocol is versioned newline-delimited JSON, local-only. It bounds frames, clients, pending requests, subscriptions, and buffered output. Session state and bounded Slack metadata/history are exposed only to the local operator.
+The protocol is versioned newline-delimited JSON, local-only, with bounded frames, clients, pending requests, subscriptions, and buffered output. Session state and bounded Slack metadata/history are exposed only to the local operator.
 
 ### Custom instructions
 
@@ -160,20 +162,20 @@ slack-desk identities link U012ABCDEF brett@users.noreply.github.com
 slack-desk identities link U012ABCDEF brett@company.com --global
 ```
 
-Project mappings are written to `.slack-desk/identities.yaml`; global mappings use `~/.config/slack-desk/identities.yaml`. Project mappings take precedence. `scan` requires `SLACK_BOT_TOKEN` and the `users:read.email` scope. The `contributors`, `identities`, and `bus_factor` Git inspection actions include resolved Slack names and stable user IDs without exposing workspace email addresses.
+Project mappings go to `.slack-desk/identities.yaml`; global mappings go to `~/.config/slack-desk/identities.yaml`. Project mappings take precedence. `scan` requires `SLACK_BOT_TOKEN` and the `users:read.email` scope. The `contributors`, `identities`, and `bus_factor` actions include resolved Slack names and stable user IDs without exposing workspace email addresses.
 
-- `SLACK_AGENT_CWD` is the outer access boundary: a single repo root or a parent of multiple repos.
+- `SLACK_AGENT_CWD` is the outer access boundary, either a single repo root or a parent of multiple repos.
 - In nested layouts, `git_inspect` resolves a workspace-relative repo root and uses paths relative to it.
 - Other file tools stay relative to `SLACK_AGENT_CWD`, reaching files across allowed projects without changing directories.
 - Repository selection rejects traversal, symlink escapes, non-root subdirectories, and paths outside `SLACK_AGENT_CWD`.
 - Sensitive paths (`.env`, `.git`, credentials, private keys) are rejected or omitted.
 - Git runs as `/usr/bin/git` with exact arguments, no pager, hooks, lazy fetching, optional locks, global/system config, credential prompts, or inherited service environment. It cannot contact remotes or mutate the repository.
 
-**`repo_fun`** derives playful local-only reports from Git metadata: repository personality and birthday, ancient artifacts, hot zones, team constellations, commit weather, deterministic fortunes, activity sparklines, milestones, and trivia. Interpret personality, weather, ownership, and concentration results as approximate.
+**`repo_fun`** derives playful local-only reports from Git metadata: repository personality and birthday, ancient artifacts, hot zones, team constellations, commit weather, deterministic fortunes, activity sparklines, milestones, and trivia. Personality, weather, ownership, and concentration results are approximate.
 
-**`system_info`** reports battery and battery health, uptime/load, OS/kernel/CPU/runtime/tool versions, workspace disk and volume space, memory and thermal pressure, power settings, redacted connected-display summaries, computer name, local clock, combined system pressure, and SlackDeskBot process health. Each action uses in-process facts or a fixed executable with fixed arguments; no shell or free-form arguments are accepted. Hardware serials and private scheduled activity returned by macOS are never included in tool output.
+**`system_info`** reports battery/health, uptime/load, OS/kernel/CPU/runtime/tool versions, workspace disk and volume space, memory and thermal pressure, power settings, redacted display summaries, computer name, local clock, combined system pressure, and SlackDeskBot process health. Each action uses in-process facts or a fixed executable with fixed arguments; no shell or free-form arguments are accepted. Hardware serials and private scheduled activity returned by macOS are never included.
 
-Brokered commands are off by default, currently Pi-only, and independent of `SLACK_AGENT_MODE` (read-only and read-write sessions receive the same inspection-only operations).
+Brokered commands are off by default, currently Pi-only, and independent of `SLACK_AGENT_MODE`; read-only and read-write sessions receive the same inspection-only operations.
 
 ## Resource limits
 
@@ -200,7 +202,7 @@ Brokered commands are off by default, currently Pi-only, and independent of `SLA
 | Text types        | plain text, Markdown, JSON, XML |
 | Image types       | PNG, JPEG, GIF, WebP            |
 
-Files are downloaded from Slack into memory only and never written to disk. Pi accepts all listed text and image types. Codex and Claude inline text attachments but reject images (their CLIs require an image file path).
+Files are downloaded from Slack into memory and never written to disk. Pi accepts all listed text and image types. Codex and Claude inline text attachments but reject images (their CLIs require an image file path).
 
 See [`.env.example`](.env.example) for all tunable `SLACK_AGENT_*` settings.
 
@@ -220,21 +222,17 @@ Response includes start/uptime, queue counts, connection state, and last success
 ## macOS deployment
 
 ```sh
-# External secrets and durable sessions
 mkdir -p "$HOME/.config/slack-desk-bot" "$HOME/Library/Application Support/SlackDeskBot/sessions"
 cp .env.example "$HOME/.config/slack-desk-bot/service.env"
 chmod 600 "$HOME/.config/slack-desk-bot/service.env"
 # Edit service.env: tokens, allowed users, SLACK_AGENT_CWD, SLACK_AGENT_SESSION_DIR
-
-# Verify
-set -a; source "$HOME/.config/slack-desk-bot/service.env"; set +a
-task doctor
-
-# Install LaunchAgent and start
-task service:install
 ```
 
-Operate:
+```sh
+set -a; source "$HOME/.config/slack-desk-bot/service.env"; set +a
+task doctor
+task service:install
+```
 
 ```sh
 hum status
@@ -260,7 +258,7 @@ tar -C "$HOME/Library/Application Support/SlackDeskBot" -czf "slackdeskbot-sessi
 
 Restore: stop the service, move existing sessions aside, extract the archive, verify permissions, run `task doctor`, then `task service:install`. Never merge two session directories or run two instances against one.
 
-**Offline resume** is recovery-only. Stop SlackDeskBot first. Concurrent access outside the service does not join the in-memory queue and can fork history.
+**Offline resume** is recovery-only. Stop SlackDeskBot first. Concurrent access outside the service bypasses the in-memory queue and can fork history.
 
 | Backend | Offline resume command                                             |
 | ------- | ------------------------------------------------------------------ |
@@ -281,7 +279,7 @@ task doctor
 task service:install
 ```
 
-Rollback: unload LaunchAgent, check out the previous tag/commit, rerun the install and verify steps.
+Rollback: unload LaunchAgent, check out the previous tag or commit, rerun install and verify steps.
 
 ### Smoke checklist
 
@@ -289,7 +287,7 @@ Rollback: unload LaunchAgent, check out the previous tag/commit, rerun the insta
 2. `task doctor` passes.
 3. `task service:install`, then `hum status` reports ready and `/readyz` returns 200.
 4. Send `!help` in a DM, then send a prompt and confirm a reply.
-5. `slack-desk sessions`, attach, then alternate one Slack turn and one terminal turn. Confirm both replies use the same backend session and Slack thread without another process opening the session.
+5. `slack-desk sessions`, attach, alternate one Slack turn and one terminal turn. Confirm both replies use the same backend session and Slack thread without another process opening the session.
 
 ## Security
 
@@ -297,13 +295,9 @@ Rollback: unload LaunchAgent, check out the previous tag/commit, rerun the insta
 
 **Read-only by default.** `read`, `grep`, `find`, `ls` are allowed. Set `SLACK_AGENT_MODE=read-write` to enable `edit` and `write` (enforces one active conversation). Brokered commands are separately controlled by `SLACK_AGENT_COMMAND_MODE` and never add a shell or mutation capability.
 
-**Path policy** blocks `.env` files (except templates), `.ssh`, `.git` contents, private keys, cloud credentials, `.netrc`, `.npmrc`, `.pypirc`. It applies in both modes, follows symlinks, and normalizes `~`, `@`, and `file://` paths.
+**Path policy** blocks `.env` files (except templates), `.ssh`, `.git` contents, private keys, cloud credentials, `.netrc`, `.npmrc`, `.pypirc`. It applies in both modes, follows symlinks, and normalizes `~`, `@`, and `file://` paths. This is path-based only, not secret detection. Use a dedicated checkout without secrets.
 
-This is path-based only, not secret detection. Use a dedicated checkout without secrets.
-
-**Tool paths** are confined to `SLACK_AGENT_CWD`. Pi allows only the selected file and brokered tools and blocks sensitive paths.
-
-The target repository's `.pi/` directory cannot inject extensions, settings, or system prompts. User-level Pi extensions (`~/.pi/agent`) run as trusted code outside this policy.
+**Tool paths** are confined to `SLACK_AGENT_CWD`. Pi allows only the selected file and brokered tools and blocks sensitive paths. The target repository's `.pi/` directory cannot inject extensions, settings, or system prompts. User-level Pi extensions (`~/.pi/agent`) run as trusted code outside this policy.
 
 ### Backend-specific sandboxing
 
@@ -317,11 +311,11 @@ The target repository's `.pi/` directory cannot inject extensions, settings, or 
 
 **Claude** runs with:
 
-- inherited project and user settings ignored;
-- no MCP servers, slash commands, or permission prompts;
-- an explicit file-tool list;
-- the same Seatbelt boundary as Codex, plus required writes to `/tmp/claude-<uid>` and `/tmp/cc-socks`;
-- workspace writes only in read-write mode.
+- Inherited project and user settings ignored.
+- No MCP servers, slash commands, or permission prompts.
+- An explicit file-tool list.
+- The same Seatbelt boundary as Codex, plus required writes to `/tmp/claude-<uid>` and `/tmp/cc-socks`.
+- Workspace writes only in read-write mode.
 
 | Capability                      | Codex | Claude |
 | ------------------------------- | ----- | ------ |
