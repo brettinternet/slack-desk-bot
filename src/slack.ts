@@ -216,7 +216,9 @@ export class SlackAgent {
       if (!event.user || event.bot_id) return;
       const threadTs = event.thread_ts ?? event.ts;
       if (!this.options.allowedUserIds.has(event.user)) {
-        await this.deny(client, event.channel, threadTs, event.user);
+        if (this.acceptEvent(body.event_id, event.channel, event.ts, event.client_msg_id)) {
+          await this.deny(client, event.channel, threadTs, event.user, event.ts);
+        }
         return;
       }
       const prompt = stripBotMention(event.text, this.botUserId);
@@ -257,7 +259,10 @@ export class SlackAgent {
           return;
       }
       if (!this.options.allowedUserIds.has(event.user)) {
-        await this.deny(client, event.channel, threadTs, event.user);
+        const clientMessageId = "client_msg_id" in event ? event.client_msg_id : undefined;
+        if (this.acceptEvent(body.event_id, event.channel, event.ts, clientMessageId)) {
+          await this.deny(client, event.channel, threadTs, event.user, event.ts);
+        }
         return;
       }
       const rawText = "text" in event ? (event.text ?? "") : "";
@@ -589,21 +594,27 @@ export class SlackAgent {
     ]);
   }
 
-  /** Replies once per unauthorized user and conversation per dedupe window so repeated messages cannot drive Slack API traffic. */
+  /** Explains the denial once, then uses a quiet reaction for later messages in the dedupe window. */
   private async deny(
     client: App["client"],
     channel: string,
     threadTs: string | undefined,
     userId: string,
+    messageTs: string,
   ): Promise<void> {
     (this.options.operatorLog ?? writeStructuredLog)({ event: "unauthorized", channel });
-    if (!this.denials.accept([`deny:${conversationId(channel, threadTs)}:${userId}`])) return;
-    await this.bestEffortChatOperation(() =>
-      client.chat.postMessage({
-        channel,
-        thread_ts: threadTs,
-        text: "You are not authorized to use this agent.",
-      }),
+    if (this.denials.accept([`deny:${conversationId(channel, threadTs)}:${userId}`])) {
+      await this.bestEffortChatOperation(() =>
+        client.chat.postMessage({
+          channel,
+          thread_ts: threadTs,
+          text: "You are not authorized to use this agent.",
+        }),
+      );
+      return;
+    }
+    await this.bestEffortSlackOperation(
+      client.reactions.add({ channel, timestamp: messageTs, name: "no_entry" }),
     );
   }
 

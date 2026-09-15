@@ -509,7 +509,7 @@ describe("SlackAgent transport", () => {
     expect(slack.reactions.add).not.toHaveBeenCalled();
   });
 
-  test("rejects unauthorized mentions before invoking the backend", async () => {
+  test("explains an unauthorized mention once, then reacts to later messages", async () => {
     const run = mock(async () => "response");
     const operatorLogs: StructuredLog[] = [];
     new SlackAgent({
@@ -551,7 +551,25 @@ describe("SlackAgent transport", () => {
         }),
       ),
     );
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_DENIED_0" },
+      event: {
+        user: "U_DENIED",
+        text: "duplicate delivery",
+        channel: "C1",
+        ts: "2",
+        thread_ts: "1",
+      },
+      client: slack,
+    });
+
     expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
+    expect(slack.reactions.add).toHaveBeenCalledTimes(20);
+    expect(slack.reactions.add).toHaveBeenCalledWith({
+      channel: "C1",
+      timestamp: "2",
+      name: "no_entry",
+    });
     expect(slack.files.info).not.toHaveBeenCalled();
     expect(operatorLogs).toHaveLength(21);
     expect(operatorLogs[0]).toEqual({ event: "unauthorized", channel: "C1" });
