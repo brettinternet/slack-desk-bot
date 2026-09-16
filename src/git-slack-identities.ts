@@ -8,7 +8,7 @@ import { WebClient } from "@slack/web-api";
 const execFileAsync = promisify(execFile);
 const MAX_IDENTITY_FILE_BYTES = 256 * 1024;
 const SLACK_USER_ID = /^[UW][A-Z0-9]+$/;
-export const PROJECT_IDENTITY_PATH = ".slack-desk/identities.yaml";
+export const PROJECT_IDENTITY_PATH = ".slack-desk-bot/identities.yaml";
 
 export interface GitSlackIdentity {
   slackUserId: string;
@@ -75,7 +75,7 @@ function parseIdentityFile(path: string): IdentityFile {
 }
 
 export function defaultGlobalIdentityPath(): string {
-  return join(homedir(), ".config", "slack-desk", "identities.yaml");
+  return join(homedir(), ".config", "slack-desk-bot", "identities.yaml");
 }
 
 export function projectIdentityPath(repository: string): string {

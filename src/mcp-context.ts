@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -12,7 +13,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 
-export const DEFAULT_MCP_CONFIG_RELATIVE_PATH = ".slack-desk/mcp.json";
+export const DEFAULT_MCP_CONFIG_RELATIVE_PATH = ".slack-desk-bot/mcp.json";
+
+export function defaultGlobalMcpConfigPath(): string {
+  return join(homedir(), ".config", "slack-desk-bot", "mcp.json");
+}
 const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const SERVER_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -140,18 +145,20 @@ function validateUrl(value: unknown, label: string): string {
 export function loadMcpConfig(
   workspace: string,
   configuredPath?: string,
+  globalPath = defaultGlobalMcpConfigPath(),
 ): { path: string; config: McpConfig } | undefined {
-  const path = configuredPath ?? join(workspace, DEFAULT_MCP_CONFIG_RELATIVE_PATH);
+  const projectPath = join(workspace, DEFAULT_MCP_CONFIG_RELATIVE_PATH);
   if (configuredPath && !isAbsolute(configuredPath)) {
     throw new Error("SLACK_AGENT_MCP_CONFIG_FILE must be an absolute path");
   }
+  const path = configuredPath ?? (existsSync(projectPath) ? projectPath : globalPath);
   if (!existsSync(path)) {
     if (configuredPath) throw new Error(`SLACK_AGENT_MCP_CONFIG_FILE is not a file: ${path}`);
     return undefined;
   }
   if (!statSync(path).isFile()) throw new Error(`MCP configuration is not a file: ${path}`);
-  if (configuredPath && isInside(workspace, path)) {
-    throw new Error("SLACK_AGENT_MCP_CONFIG_FILE must be outside SLACK_AGENT_CWD");
+  if (path !== projectPath && isInside(workspace, path)) {
+    throw new Error("MCP configuration outside .slack-desk-bot must be outside SLACK_AGENT_CWD");
   }
 
   let parsed: unknown;

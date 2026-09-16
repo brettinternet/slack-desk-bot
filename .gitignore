@@ -15,8 +15,7 @@ mise.*.local.toml
 /.worktrees/
 
 # Agent-local configuration
-/.slack-desk/identities.yaml
-/.slack-desk/mcp.json
+/.slack-desk-bot/
 .claude/settings.local.json
 .opencode/
 AGENTS.local.md

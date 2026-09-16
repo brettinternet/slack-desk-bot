@@ -169,7 +169,7 @@ slack-desk identities link U012ABCDEF brett@users.noreply.github.com
 slack-desk identities link U012ABCDEF brett@company.com --global
 ```
 
-Project mappings go to `.slack-desk/identities.yaml`; global mappings go to `~/.config/slack-desk/identities.yaml`. Project mappings take precedence. `scan` requires `SLACK_BOT_TOKEN` and the `users:read.email` scope. The `contributors`, `identities`, and `bus_factor` actions include resolved Slack names and stable user IDs without exposing workspace email addresses.
+Project mappings go to `.slack-desk-bot/identities.yaml`; global mappings go to `~/.config/slack-desk-bot/identities.yaml`. Project mappings take precedence. `scan` requires `SLACK_BOT_TOKEN` and the `users:read.email` scope. The `contributors`, `identities`, and `bus_factor` actions include resolved Slack names and stable user IDs without exposing workspace email addresses.
 
 - `SLACK_AGENT_CWD` is the outer access boundary, either a single repo root or a parent of multiple repos.
 - In nested layouts, `git_inspect` resolves a workspace-relative repo root and uses paths relative to it.
@@ -186,7 +186,7 @@ Brokered commands are off by default, currently Pi-only, and independent of `SLA
 
 ### Read-only MCP context
 
-The Pi backend can dynamically expose an operator-approved subset of tools from Streamable HTTP MCP servers. Create `.slack-desk/mcp.json`; this path is gitignored and blocked from agent file tools. To keep the configuration elsewhere, set `SLACK_AGENT_MCP_CONFIG_FILE` to an absolute path. MCP is disabled when neither path exists.
+The Pi backend can dynamically expose an operator-approved subset of tools from Streamable HTTP MCP servers. Create `.slack-desk-bot/mcp.json`; this directory is gitignored and blocked from agent file tools. If no project configuration exists, SlackDeskBot reads `~/.config/slack-desk-bot/mcp.json`. Set `SLACK_AGENT_MCP_CONFIG_FILE` to use another absolute path. MCP is disabled when none of these paths exists.
 
 ```json
 {

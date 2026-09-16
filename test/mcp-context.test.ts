@@ -12,7 +12,7 @@ function fixture() {
   const root = mkdtempSync(join(Bun.env.TMPDIR ?? "/tmp", "slack-desk-mcp-test-"));
   const workspace = join(root, "workspace");
   const secrets = join(root, "secrets");
-  mkdirSync(join(workspace, ".slack-desk"), { recursive: true });
+  mkdirSync(join(workspace, ".slack-desk-bot"), { recursive: true });
   mkdirSync(secrets);
   const tokenFile = join(secrets, "token");
   writeFileSync(tokenFile, "test-token\n", { mode: 0o600 });
@@ -22,6 +22,7 @@ function fixture() {
     workspace,
     tokenFile,
     configPath: join(workspace, DEFAULT_MCP_CONFIG_RELATIVE_PATH),
+    globalConfigPath: join(root, "global", "mcp.json"),
   };
 }
 
@@ -46,7 +47,7 @@ describe("MCP configuration", () => {
     const paths = fixture();
     writeFileSync(paths.configPath, JSON.stringify(config(paths.tokenFile)));
 
-    const loaded = loadMcpConfig(paths.workspace);
+    const loaded = loadMcpConfig(paths.workspace, undefined, paths.globalConfigPath);
 
     expect(loaded?.path).toBe(realpathSync(paths.configPath));
     expect(loaded?.config.servers.linear).toEqual({
@@ -58,9 +59,19 @@ describe("MCP configuration", () => {
     });
   });
 
+  test("uses the global configuration when the project has none", () => {
+    const paths = fixture();
+    mkdirSync(join(paths.root, "global"), { recursive: true });
+    writeFileSync(paths.globalConfigPath, JSON.stringify(config(paths.tokenFile)));
+
+    const loaded = loadMcpConfig(paths.workspace, undefined, paths.globalConfigPath);
+
+    expect(loaded?.path).toBe(realpathSync(paths.globalConfigPath));
+  });
+
   test("is optional by default and rejects executable transports and workspace tokens", () => {
     const paths = fixture();
-    expect(loadMcpConfig(paths.workspace)).toBeUndefined();
+    expect(loadMcpConfig(paths.workspace, undefined, paths.globalConfigPath)).toBeUndefined();
 
     writeFileSync(
       paths.configPath,
@@ -71,12 +82,16 @@ describe("MCP configuration", () => {
         },
       }),
     );
-    expect(() => loadMcpConfig(paths.workspace)).toThrow("only streamable-http");
+    expect(() => loadMcpConfig(paths.workspace, undefined, paths.globalConfigPath)).toThrow(
+      "only streamable-http",
+    );
 
     const workspaceToken = join(paths.workspace, "token");
     writeFileSync(workspaceToken, "secret", { mode: 0o600 });
     writeFileSync(paths.configPath, JSON.stringify(config(workspaceToken)));
-    expect(() => loadMcpConfig(paths.workspace)).toThrow("outside SLACK_AGENT_CWD");
+    expect(() => loadMcpConfig(paths.workspace, undefined, paths.globalConfigPath)).toThrow(
+      "outside SLACK_AGENT_CWD",
+    );
 
     const customConfig = join(paths.workspace, "mcp-config.json");
     writeFileSync(customConfig, JSON.stringify(config(paths.tokenFile)));
@@ -88,7 +103,9 @@ describe("MCP configuration", () => {
     const value = config(paths.tokenFile);
     value.servers.linear.url = "http://example.com/mcp";
     writeFileSync(paths.configPath, JSON.stringify(value));
-    expect(() => loadMcpConfig(paths.workspace)).toThrow("must use HTTPS");
+    expect(() => loadMcpConfig(paths.workspace, undefined, paths.globalConfigPath)).toThrow(
+      "must use HTTPS",
+    );
 
     writeFileSync(
       paths.configPath,
@@ -105,7 +122,9 @@ describe("MCP configuration", () => {
         },
       }),
     );
-    expect(() => loadMcpConfig(paths.workspace)).toThrow("Duplicate local MCP tool name");
+    expect(() => loadMcpConfig(paths.workspace, undefined, paths.globalConfigPath)).toThrow(
+      "Duplicate local MCP tool name",
+    );
   });
 });
 
