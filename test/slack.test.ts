@@ -296,6 +296,143 @@ describe("SlackAgent transport", () => {
     }
   });
 
+  test("ignores a thread parent Slack returns outside the catch-up window", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "slack-desk-catch-up-parent-"));
+    const statePath = join(directory, "state.json");
+    const now = 1_710_000_000_000;
+    writeFileSync(
+      statePath,
+      `${JSON.stringify({ version: 1, lastReconciledAt: now - 60_000, processedMessages: [] })}\n`,
+    );
+    const run = mock(async (_request: unknown) => "caught up");
+    const reconciler = backend(run);
+    reconciler.listConversations = async () => [
+      {
+        conversationId: "C1:1709000000.000100",
+        sessionId: "session-1",
+        state: "inactive",
+        lastActiveAt: now - 120_000,
+      },
+    ];
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: reconciler,
+      catchUp: { statePath, cooldownMs: 0, now: () => now },
+    });
+    app.client.conversations.replies.mockImplementationOnce(async () => ({
+      messages: [
+        {
+          ts: "1709000000.000100",
+          user: "U_ALLOWED",
+          text: "<@U_BOT> already answered thread parent",
+        },
+      ],
+    }));
+
+    try {
+      await agent.start();
+      await waitUntil(() => app.client.conversations.replies.mock.calls.length === 1);
+      await Bun.sleep(10);
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      await agent.stop();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("only catches up messages with no evidence of a later reply or prior handling", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "slack-desk-catch-up-unanswered-"));
+    const statePath = join(directory, "state.json");
+    const now = 1_710_000_000_000;
+    writeFileSync(
+      statePath,
+      `${JSON.stringify({ version: 1, lastReconciledAt: now - 60_000, processedMessages: [] })}\n`,
+    );
+    const run = mock(async (_request: unknown) => "caught up");
+    const reconciler = backend(run);
+    reconciler.listConversations = async () => [
+      {
+        conversationId: "C1:1709999900.000100",
+        sessionId: "session-1",
+        state: "inactive",
+        lastActiveAt: now - 120_000,
+      },
+      {
+        conversationId: "C3:1709999901.000100",
+        sessionId: "session-3",
+        state: "inactive",
+        lastActiveAt: now - 10_000,
+      },
+    ];
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: reconciler,
+      catchUp: { statePath, cooldownMs: 0, now: () => now },
+      random: () => 1,
+    });
+    app.client.users.conversations.mockImplementationOnce(async () => ({
+      channels: [
+        { id: "D1", is_im: true },
+        { id: "C2", is_im: false },
+      ],
+    }));
+    app.client.conversations.replies.mockImplementation(
+      async (options?: Record<string, unknown>) =>
+        options?.channel === "C1"
+          ? {
+              messages: [
+                { ts: "1709999960.000100", user: "U_ALLOWED", text: "please check this" },
+                { ts: "1709999970.000100", user: "U_BOT", bot_id: "B1", text: "done" },
+              ],
+            }
+          : {
+              messages: [{ ts: "1709999960.000200", user: "U_ALLOWED", text: "please check this" }],
+            },
+    );
+    app.client.conversations.history.mockImplementation(
+      async (options?: Record<string, unknown>) =>
+        options?.channel === "D1"
+          ? {
+              messages: [
+                { ts: "1709999950.000100", user: "U_ALLOWED", text: "offline dm" },
+                { ts: "1709999960.000100", user: "U_BOT", bot_id: "B1", text: "handled" },
+              ],
+            }
+          : {
+              messages: [
+                {
+                  ts: "1709999970.000100",
+                  user: "U_ALLOWED",
+                  text: "<@U_BOT> already answered",
+                  reply_count: 1,
+                },
+                {
+                  ts: "1709999980.000100",
+                  user: "U_ALLOWED",
+                  text: "<@U_BOT> actually missed",
+                },
+              ],
+            },
+    );
+
+    try {
+      await agent.start();
+      await waitUntil(() => run.mock.calls.length === 1);
+      expect(run.mock.calls[0]?.[0]).toEqual({
+        conversationId: "C2:1709999980.000100",
+        requesterId: "U_ALLOWED",
+        prompt: "actually missed",
+      });
+    } finally {
+      await agent.stop();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("deduplicates a message delivered live while catch-up scans it", async () => {
     const directory = mkdtempSync(join(tmpdir(), "slack-desk-catch-up-race-"));
     const statePath = join(directory, "state.json");
@@ -966,6 +1103,7 @@ describe("SlackAgent transport", () => {
       channel: "C1",
       ts: "status-ts",
       text: "response",
+      blocks: [],
     });
     expect(slack.reactions.add).not.toHaveBeenCalled();
     expect(slack.reactions.remove).not.toHaveBeenCalled();
@@ -1026,6 +1164,7 @@ describe("SlackAgent transport", () => {
       channel: "C1",
       ts: "status-ts",
       text: "&lt;!channel&gt; see *this* &lt;@U999&gt; &amp; &lt;https://evil.example|docs&gt;",
+      blocks: [],
     });
   });
 
@@ -1048,6 +1187,7 @@ describe("SlackAgent transport", () => {
       channel: "C1",
       ts: "status-ts",
       text: "<@U04ET2XUC3B> — nice work!",
+      blocks: [],
     });
   });
 
@@ -1486,6 +1626,7 @@ describe("SlackAgent transport", () => {
       channel: "C1",
       ts: "status-ts",
       text: "The request failed unexpectedly. Try again or contact the operator with request ID `E_FAILURE`.",
+      blocks: [],
     });
     expect(JSON.stringify(slack.chat.update.mock.calls)).not.toContain("secret-token");
     expect(operatorLogs).toEqual([
@@ -1535,6 +1676,28 @@ describe("SlackAgent transport", () => {
       "Request cancelled.",
     ]);
     expect(messages.slice(0, -1).every((message) => /wait|try/i.test(message))).toBe(true);
+  });
+
+  test("publishes Markdown bold using Slack mrkdwn delimiters", async () => {
+    const run = mock(
+      async () =>
+        "**Still can’t execute privileged shell commands here.** Save your work, then run:\n\n```bash\nsudo shutdown -r now\n```",
+    );
+    createAgent(run);
+    const slack = client();
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_MARKDOWN" },
+      event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "3" },
+      client: slack,
+    });
+
+    expect(slack.chat.update).toHaveBeenCalledWith({
+      channel: "C1",
+      ts: "status-ts",
+      text: "*Still can’t execute privileged shell commands here.* Save your work, then run:\n\n```bash\nsudo shutdown -r now\n```",
+      blocks: [],
+    });
   });
 
   test("publishes long responses as ordered Slack-safe chunks", async () => {
@@ -1871,6 +2034,7 @@ describe("SlackAgent transport", () => {
       channel: "C1",
       ts: "status-2",
       text: "<@U_OPERATOR> cancelled the active request.",
+      blocks: [],
     });
     expect(records).toContainEqual(
       expect.objectContaining({
@@ -1939,6 +2103,7 @@ describe("SlackAgent transport", () => {
       channel: "C1",
       ts: "status-ts",
       text: "The request failed unexpectedly. Try again or contact the operator with request ID `E_REACTION_FAILURE`.",
+      blocks: [],
     });
   });
 

@@ -106,12 +106,20 @@ interface SlackHistoryMessage {
   bot_id?: string;
   username?: string;
   text?: string;
+  reply_count?: number;
   files?: Array<SlackFileReference & { name?: string; title?: string; mimetype?: string }>;
 }
 
 interface SlackConversation {
   id?: string;
   is_im?: boolean;
+}
+
+interface CatchUpTarget {
+  channel: string;
+  threadTs?: string;
+  directMessage: boolean;
+  handledThrough?: number;
 }
 
 interface CatchUpCandidate extends InboundSlackMessage {
@@ -371,19 +379,27 @@ export class SlackAgent {
     const reconciliationAt = now();
     const lookbackMs = config.lookbackMs ?? DEFAULT_CATCH_UP_LOOKBACK_MS;
     const oldestAt = Math.max(store.lastReconciledAt, reconciliationAt - lookbackMs);
-    const targets: Array<{ channel: string; threadTs?: string; directMessage: boolean }> = [];
+    const targets: CatchUpTarget[] = [];
     let complete = true;
 
     try {
       const conversations = await this.options.agent.listConversations?.();
       for (const conversation of conversations ?? []) {
-        if (conversation.conversationId.startsWith("dm:")) continue;
+        if (conversation.conversationId.startsWith("dm:")) {
+          targets.push({
+            channel: conversation.conversationId.slice(3),
+            directMessage: true,
+            handledThrough: conversation.lastActiveAt,
+          });
+          continue;
+        }
         const separator = conversation.conversationId.indexOf(":");
         if (separator > 0) {
           targets.push({
             channel: conversation.conversationId.slice(0, separator),
             threadTs: conversation.conversationId.slice(separator + 1),
             directMessage: false,
+            handledThrough: conversation.lastActiveAt,
           });
         }
       }
@@ -460,7 +476,20 @@ export class SlackAgent {
                 }),
               )
             ).messages;
-        for (const message of (messages ?? []) as SlackHistoryMessage[]) {
+        const boundedMessages = ((messages ?? []) as SlackHistoryMessage[]).filter((message) => {
+          const timestamp = Number(message.ts) * 1_000;
+          return (
+            Number.isFinite(timestamp) &&
+            timestamp > oldestAt &&
+            timestamp < reconciliationAt &&
+            timestamp > (target.handledThrough ?? 0)
+          );
+        });
+        const messagesToInspect =
+          target.directMessage || target.threadTs
+            ? boundedMessages.sort((left, right) => Number(right.ts) - Number(left.ts)).slice(0, 1)
+            : boundedMessages;
+        for (const message of messagesToInspect) {
           const candidate = this.catchUpCandidate(target, message);
           if (candidate && !store.hasProcessed(candidate.key)) candidates.push(candidate);
         }
@@ -498,7 +527,7 @@ export class SlackAgent {
   }
 
   private catchUpCandidate(
-    target: { channel: string; threadTs?: string; directMessage: boolean },
+    target: CatchUpTarget,
     message: SlackHistoryMessage,
   ): CatchUpCandidate | undefined {
     if (
@@ -528,7 +557,7 @@ export class SlackAgent {
       prompt = intent.prompt;
     } else if (!target.directMessage) {
       const mention = `<@${this.botUserId}>`;
-      if (!rawText.includes(mention)) return undefined;
+      if (!rawText.includes(mention) || (message.reply_count ?? 0) > 0) return undefined;
       prompt = stripBotMention(rawText, this.botUserId);
       threadTs = message.thread_ts ?? message.ts;
     }
@@ -1280,7 +1309,9 @@ export class SlackAgent {
     let updated = false;
     if (statusTs) {
       try {
-        await this.chatOperation(() => client.chat.update({ channel, ts: statusTs, text: first }));
+        await this.chatOperation(() =>
+          client.chat.update({ channel, ts: statusTs, text: first, blocks: [] }),
+        );
         updated = true;
         publishedMessages++;
       } catch {}
