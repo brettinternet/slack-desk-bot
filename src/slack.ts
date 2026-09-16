@@ -186,6 +186,13 @@ function errorType(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
 
+function slackApiError(error: unknown): string | undefined {
+  if (!error || typeof error !== "object" || !("data" in error)) return undefined;
+  const data = error.data;
+  if (!data || typeof data !== "object" || !("error" in data)) return undefined;
+  return typeof data.error === "string" ? data.error : undefined;
+}
+
 function boundedLocalText(text: string, maxCharacters: number): string {
   const singleLine = text
     .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "")
@@ -494,6 +501,7 @@ export class SlackAgent {
           if (candidate && !store.hasProcessed(candidate.key)) candidates.push(candidate);
         }
       } catch (error) {
+        if (slackApiError(error) === "channel_not_found") continue;
         complete = false;
         this.reportCatchUpError("Unable to read a Slack conversation during catch-up", error);
       }

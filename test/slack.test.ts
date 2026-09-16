@@ -342,6 +342,50 @@ describe("SlackAgent transport", () => {
     }
   });
 
+  test("silently skips stored conversations the bot can no longer access", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "slack-desk-catch-up-stale-"));
+    const statePath = join(directory, "state.json");
+    const now = 1_710_000_000_000;
+    writeFileSync(
+      statePath,
+      `${JSON.stringify({ version: 1, lastReconciledAt: now - 60_000, processedMessages: [] })}\n`,
+    );
+    const reconciler = backend(mock(async () => "caught up"));
+    reconciler.listConversations = async () => [
+      {
+        conversationId: "C_STALE:1709999900.000100",
+        sessionId: "session-stale",
+        state: "inactive",
+        lastActiveAt: now - 60_000,
+      },
+    ];
+    const operatorLogs: StructuredLog[] = [];
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: reconciler,
+      operatorLog: (record) => operatorLogs.push(record),
+      catchUp: { statePath, cooldownMs: 0, now: () => now },
+    });
+    app.client.conversations.replies.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("An API error occurred: channel_not_found"), {
+        data: { error: "channel_not_found" },
+      });
+    });
+
+    try {
+      await agent.start();
+      await waitUntil(() => app.client.conversations.replies.mock.calls.length === 1);
+      await Bun.sleep(10);
+      expect(operatorLogs.filter((record) => record.event === "operator_error")).toEqual([]);
+      expect(JSON.parse(await Bun.file(statePath).text()).lastReconciledAt).toBe(now);
+    } finally {
+      await agent.stop();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("only catches up messages with no evidence of a later reply or prior handling", async () => {
     const directory = mkdtempSync(join(tmpdir(), "slack-desk-catch-up-unanswered-"));
     const statePath = join(directory, "state.json");

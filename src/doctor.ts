@@ -50,6 +50,7 @@ export interface DoctorResult {
 
 interface DoctorDependencies {
   slackAuth?: (token: string) => Promise<{ user_id?: string }>;
+  slackCatchUpAccess?: (token: string) => Promise<void>;
   portAvailable?: (port: number) => Promise<boolean>;
   socketAvailable?: (path: string) => Promise<boolean>;
   piReady?: (workspace: string) => Promise<string>;
@@ -568,6 +569,32 @@ export async function runDoctor(
         "fail",
         "Slack authentication",
         "Slack auth.test failed; verify SLACK_BOT_TOKEN and reinstall the app if needed",
+      );
+    }
+
+    try {
+      const checkCatchUpAccess =
+        dependencies.slackCatchUpAccess ??
+        (async (token: string) => {
+          await new WebClient(token).users.conversations({
+            types: "public_channel,private_channel,im",
+            exclude_archived: true,
+            limit: 1,
+          });
+        });
+      await checkCatchUpAccess(config.slackBotToken);
+      diagnostic(
+        diagnostics,
+        "pass",
+        "Slack catch-up access",
+        "Slack conversation discovery permissions succeeded",
+      );
+    } catch {
+      diagnostic(
+        diagnostics,
+        "fail",
+        "Slack catch-up access",
+        "Slack conversation discovery failed; update the app from slack-app-manifest.yaml, reinstall it, and refresh SLACK_BOT_TOKEN",
       );
     }
   }

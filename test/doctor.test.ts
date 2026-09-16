@@ -17,6 +17,7 @@ const valid = {
 function dependencies() {
   return {
     slackAuth: mock(async () => ({ user_id: "U_BOT" })),
+    slackCatchUpAccess: mock(async () => {}),
     portAvailable: mock(async () => true),
     socketAvailable: mock(async () => true),
     piReady: mock(async () => "Pi model test/model is available"),
@@ -39,11 +40,13 @@ describe("runDoctor", () => {
         ["pass", "Health port"],
         ["pass", "Local control socket"],
         ["pass", "Slack authentication"],
+        ["pass", "Slack catch-up access"],
         ["pass", "Pi resources"],
         ["pass", "Pi readiness"],
       ]),
     );
     expect(checks.slackAuth).toHaveBeenCalledWith("xoxb-test-secret");
+    expect(checks.slackCatchUpAccess).toHaveBeenCalledWith("xoxb-test-secret");
     expect(checks.portAvailable).toHaveBeenCalledWith(3210);
     expect(checks.socketAvailable).toHaveBeenCalledTimes(1);
     expect(checks.piReady).toHaveBeenCalledWith(process.cwd());
@@ -51,6 +54,23 @@ describe("runDoctor", () => {
       status: "pass",
       check: "Pi resources",
       message: `Agent directory: ${getAgentDir()}. User extensions, skills, and prompt templates are disabled; only mode-approved tools are allowed; brokered commands are off`,
+    });
+  });
+
+  test("fails when the installed Slack app lacks catch-up permissions", async () => {
+    const checks = dependencies();
+    checks.slackCatchUpAccess.mockImplementationOnce(async () => {
+      throw new Error("missing_scope");
+    });
+
+    const result = await runDoctor(valid, checks);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContainEqual({
+      status: "fail",
+      check: "Slack catch-up access",
+      message:
+        "Slack conversation discovery failed; update the app from slack-app-manifest.yaml, reinstall it, and refresh SLACK_BOT_TOKEN",
     });
   });
 
