@@ -186,7 +186,7 @@ Brokered commands are off by default, currently Pi-only, and independent of `SLA
 
 ### Read-only MCP context
 
-The Pi backend can dynamically expose an operator-approved subset of tools from Streamable HTTP MCP servers. Create `.slack-desk-bot/mcp.json`; this directory is gitignored and blocked from agent file tools. If no project configuration exists, SlackDeskBot reads `~/.config/slack-desk-bot/mcp.json`. Set `SLACK_AGENT_MCP_CONFIG_FILE` to use another absolute path. MCP is disabled when none of these paths exists.
+The Pi backend can dynamically expose an operator-approved subset of tools from Streamable HTTP MCP servers. By default, SlackDeskBot reads `$SLACK_AGENT_CWD/.slack-desk-bot/mcp.json`, then `~/.config/slack-desk-bot/mcp.json`. Set `SLACK_AGENT_MCP_CONFIG_FILE` to an absolute path when the configuration lives elsewhere, such as the service repository's gitignored `.slack-desk-bot/mcp.json` when the service repository and `SLACK_AGENT_CWD` differ. MCP configuration under `SLACK_AGENT_CWD` is blocked from agent file tools and should be gitignored by that workspace. MCP is disabled when none of these paths exists.
 
 ```json
 {

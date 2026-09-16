@@ -7,7 +7,7 @@
     chmod 600 /absolute/path/outside/workspace/linear-token
     ```
 
-3. Create `.slack-desk-bot/mcp.json` in one repository, or `~/.config/slack-desk-bot/mcp.json` as the global fallback:
+3. Create `$SLACK_AGENT_CWD/.slack-desk-bot/mcp.json`, or `~/.config/slack-desk-bot/mcp.json` as the global fallback. If the configuration instead lives in the service repository's gitignored `.slack-desk-bot/` directory, set `SLACK_AGENT_MCP_CONFIG_FILE` to its absolute path:
 
     ```json
     {
@@ -27,6 +27,6 @@
     }
     ```
 
-The project `.slack-desk-bot/` directory is gitignored. SlackDeskBot sends the API key as a bearer token and exposes only the listed tools from Linear's read-only endpoint.
+The service repository's `.slack-desk-bot/` directory is gitignored. If you use the default workspace path, ensure `$SLACK_AGENT_CWD/.slack-desk-bot/` is also ignored by that workspace. SlackDeskBot sends the API key as a bearer token and exposes only the listed tools from Linear's read-only endpoint.
 
 Run `task doctor`, then restart SlackDeskBot.
