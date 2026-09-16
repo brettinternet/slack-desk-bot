@@ -934,6 +934,60 @@ describe("SlackAgent transport", () => {
     expect(operatorLogs[0]).toEqual({ event: "unauthorized", channel: "C1" });
   });
 
+  test("reacts to a repeated authorization denial after restart", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "slack-desk-denials-"));
+    const denialStatePath = join(directory, "slack-denials.json");
+    try {
+      new SlackAgent({
+        botToken: "xoxb-test",
+        appToken: "xapp-test",
+        allowedUserIds: new Set(["U_ALLOWED"]),
+        agent: backend(mock(async () => "response")),
+        denialStatePath,
+      });
+      const firstSlack = client();
+      await app.handlers.get("app_mention")!({
+        body: { event_id: "E_DENIED_BEFORE_RESTART" },
+        event: { user: "U_DENIED", text: "request", channel: "C1", ts: "1" },
+        client: firstSlack,
+      });
+
+      new SlackAgent({
+        botToken: "xoxb-test",
+        appToken: "xapp-test",
+        allowedUserIds: new Set(["U_ALLOWED"]),
+        agent: backend(mock(async () => "response")),
+        denialStatePath,
+      });
+      const restartedSlack = client();
+      await app.handlers.get("app_mention")!({
+        body: { event_id: "E_DENIED_AFTER_RESTART" },
+        event: {
+          user: "U_DENIED",
+          text: "again",
+          channel: "C1",
+          ts: "2",
+          thread_ts: "1",
+        },
+        client: restartedSlack,
+      });
+
+      expect(firstSlack.chat.postMessage).toHaveBeenCalledWith({
+        channel: "C1",
+        thread_ts: "1",
+        text: "You are not authorized to use this agent.",
+      });
+      expect(restartedSlack.chat.postMessage).not.toHaveBeenCalled();
+      expect(restartedSlack.reactions.add).toHaveBeenCalledWith({
+        channel: "C1",
+        timestamp: "2",
+        name: "no_entry",
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("bounds Slack calls for a burst beyond requester admission", async () => {
     const held = deferred<string>();
     const rawBackend: AgentBackend = {

@@ -102,6 +102,7 @@ export async function startApplication(
         agent,
         health,
         operatorLog: log,
+        denialStatePath: join(dirname(config.socketPath), "slack-denials.json"),
         catchUp: { statePath: join(dirname(config.socketPath), "slack-catch-up.json") },
       }))
   )({ config, agent, health });

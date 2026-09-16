@@ -48,6 +48,7 @@ interface SlackAgentOptions {
   statusUpdateIntervalMs?: number;
   health?: HealthState;
   random?: () => number;
+  denialStatePath?: string;
   catchUp?: {
     statePath: string;
     lookbackMs?: number;
@@ -218,7 +219,7 @@ function slackDestination(conversation: string): { channel: string; thread_ts?: 
 export class SlackAgent {
   private readonly app: App;
   private readonly events = new EventDeduplicator();
-  private readonly denials = new EventDeduplicator();
+  private readonly denials: EventDeduplicator;
   private readonly capacityReplies = new EventDeduplicator();
   private readonly missingConversations = new Map<string, number>();
   private readonly ownedChannelThreads = new Set<string>();
@@ -234,6 +235,7 @@ export class SlackAgent {
   private stopping = false;
 
   constructor(private readonly options: SlackAgentOptions) {
+    this.denials = new EventDeduplicator({ statePath: options.denialStatePath });
     this.receiver = new SocketModeReceiver({ appToken: options.appToken });
     this.receiver.client.on("connecting", () => options.health?.setSlackConnection("connecting"));
     this.receiver.client.on("connected", () => options.health?.setSlackConnection("connected"));
