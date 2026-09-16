@@ -10,3 +10,8 @@ pre-commit:
         - CLAUDE.md
     - name: Check for secret leaks
       run: mise exec gitleaks -- gitleaks git --pre-commit --redact --staged --verbose --no-banner
+
+pre-push:
+  jobs:
+    - name: Run CI checks
+      run: task check && task test

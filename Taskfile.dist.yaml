@@ -44,8 +44,10 @@ tasks:
     cmd: mise exec lefthook -- lefthook run pre-commit
 
   fix:
-    desc: Format project files
-    cmd: mise exec prettier -- prettier --write --ignore-unknown .
+    desc: Format staged files
+    cmd: >-
+      git diff --cached --name-only --diff-filter=ACMR -z |
+      xargs -0 sh -c 'test "$#" -eq 0 || exec mise exec prettier -- prettier --write --ignore-unknown -- "$@"' sh
 
   test:
     desc: Run tests

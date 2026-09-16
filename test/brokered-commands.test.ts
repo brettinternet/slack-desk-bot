@@ -111,8 +111,8 @@ describe("brokered command process", () => {
     ).rejects.toThrow("timed out");
     await expect(
       executeBrokeredCommand({
-        executable: "/usr/bin/yes",
-        arguments: [],
+        executable: process.execPath,
+        arguments: ["-e", 'process.stdout.write("x".repeat(1024 * 1024 + 1))'],
         cwd: workspace,
       }),
     ).rejects.toThrow("capture limit");
