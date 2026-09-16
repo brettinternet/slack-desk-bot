@@ -17,6 +17,7 @@
   "dependencies": {
     "@earendil-works/pi-ai": "^0.85.1",
     "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@slack/bolt": "^5.1.0",
     "@slack/web-api": "^8.1.1",
     "undici-real": "npm:undici@^7.29.0"

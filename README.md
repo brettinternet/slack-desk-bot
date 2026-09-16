@@ -184,6 +184,51 @@ Project mappings go to `.slack-desk/identities.yaml`; global mappings go to `~/.
 
 Brokered commands are off by default, currently Pi-only, and independent of `SLACK_AGENT_MODE`; read-only and read-write sessions receive the same inspection-only operations.
 
+### Read-only MCP context
+
+The Pi backend can dynamically expose an operator-approved subset of tools from Streamable HTTP MCP servers. Create `.slack-desk/mcp.json`; this path is gitignored and blocked from agent file tools. To keep the configuration elsewhere, set `SLACK_AGENT_MCP_CONFIG_FILE` to an absolute path. MCP is disabled when neither path exists.
+
+```json
+{
+    "version": 1,
+    "servers": {
+        "linear": {
+            "transport": "streamable-http",
+            "url": "https://mcp.linear.app/mcp/readonly",
+            "tokenFile": "/absolute/path/to/linear-token",
+            "allowedTools": {
+                "search_issues": { "localName": "linear_search" },
+                "get_issue": { "localName": "linear_get_issue" }
+            }
+        },
+        "notion": {
+            "transport": "streamable-http",
+            "url": "http://127.0.0.1:4312/mcp",
+            "tokenFile": "/absolute/path/to/notion-token",
+            "allowedTools": {
+                "search": { "localName": "notion_search" },
+                "fetch": { "localName": "notion_fetch" }
+            }
+        }
+    }
+}
+```
+
+At startup, SlackDeskBot calls `tools/list`, intersects the result with each exact `allowedTools` entry, and registers the advertised input schemas with Pi. Unlisted tools are never registered and are rejected again at call time. Tool descriptions, schemas, arguments, call durations, and text results are bounded; binary results are omitted. Servers marked as destructive are rejected. MCP content is treated as untrusted external context.
+
+Only HTTPS endpoints are accepted, except loopback HTTP for a local adapter. `stdio` is intentionally unsupported because a configurable command would execute arbitrary code. Token files must be absolute, readable files outside `SLACK_AGENT_CWD`; token values are never exposed to the model. For containers, mount token files at the exact paths named in the container-side configuration.
+
+For change-controlled schemas, add the SHA-256 of the canonical input schema:
+
+```json
+"search_issues": {
+  "localName": "linear_search",
+  "schemaSha256": "64-lowercase-hex-characters"
+}
+```
+
+A mismatch fails startup. Without `schemaSha256`, schema changes for that exact allowed tool are accepted dynamically. Upstream credentials must still be read-only: use Linear's `/readonly` endpoint, and place a read-only Notion API integration behind a local MCP adapter because Notion's hosted MCP is not read-only.
+
 ## Resource limits
 
 | Limit                                 | Default               |
@@ -374,13 +419,13 @@ Rollback: unload LaunchAgent, check out the previous tag or commit, rerun instal
 - The same Seatbelt boundary as Codex, plus required writes to `/tmp/claude-<uid>` and `/tmp/cc-socks`.
 - Workspace writes only in read-write mode.
 
-| Capability                      | Codex | Claude |
-| ------------------------------- | ----- | ------ |
-| Read-write mode                 | No    | Yes    |
-| Image attachments               | No    | No     |
-| Linux service deployment        | No    | No     |
-| MCP/connectors                  | No    | No     |
-| Unrestricted command networking | No    | No     |
+| Capability                       | Codex   | Claude |
+| -------------------------------- | ------- | ------ |
+| Read-write mode                  | No      | Yes    |
+| Image attachments                | No      | No     |
+| Linux service deployment         | No      | No     |
+| Read-only configured MCP context | Pi only | No     |
+| Unrestricted command networking  | No      | No     |
 
 Claude also denies Bash, shell/code tools, WebFetch, and WebSearch.
 

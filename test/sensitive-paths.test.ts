@@ -24,6 +24,7 @@ const sensitivePaths = [
   ".config/gcloud/application_default_credentials.json",
   ".docker/config.json",
   ".slack-desk/identities.yaml",
+  ".slack-desk/mcp.json",
   ".netrc",
   ".npmrc",
   ".pypirc",

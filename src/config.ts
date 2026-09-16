@@ -2,6 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { QueueLimits } from "./agent.ts";
+import { loadMcpConfig, type McpConfig } from "./mcp-context.ts";
 
 export type AgentMode = "read-only" | "read-write";
 export type AgentCommandMode = "off" | "brokered";
@@ -21,6 +22,7 @@ export interface Config {
   codexHome?: string;
   claudeExecutable?: string;
   claudeHome?: string;
+  mcp?: { path: string; config: McpConfig };
   queueLimits: QueueLimits;
   configuredMaxConcurrentConversations: number;
   sessionDir?: string;
@@ -176,6 +178,11 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
     throw new Error("SLACK_AGENT_SOCKET_PATH must be an absolute path");
   }
 
+  const mcp = loadMcpConfig(workspace, optional(environment, "SLACK_AGENT_MCP_CONFIG_FILE"));
+  if (mcp && agentBackend !== "pi") {
+    throw new Error("MCP context tools currently require SLACK_AGENT_BACKEND=pi");
+  }
+
   const configuredMaxConcurrentConversations = positiveInteger(
     environment,
     "SLACK_AGENT_MAX_CONCURRENT_CONVERSATIONS",
@@ -196,6 +203,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
     codexHome: codexHome ? resolve(codexHome) : undefined,
     claudeExecutable,
     claudeHome: claudeHome ? resolve(claudeHome) : undefined,
+    mcp,
     queueLimits: {
       timeoutMs: positiveInteger(environment, "SLACK_AGENT_TIMEOUT_MS", DEFAULTS.timeoutMs),
       queueWaitMs: positiveInteger(environment, "SLACK_AGENT_QUEUE_WAIT_MS", DEFAULTS.queueWaitMs),

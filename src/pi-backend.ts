@@ -24,6 +24,7 @@ import { brokeredTools, type BrokeredToolsOptions } from "./brokered-commands.ts
 import type { AgentCommandMode, AgentMode } from "./config.ts";
 import { ConversationStore } from "./conversation-store.ts";
 import { writeStructuredLog } from "./log.ts";
+import { type DiscoveredMcpTool, McpContextProvider, mcpContextTools } from "./mcp-context.ts";
 import { workspacePolicy } from "./workspace-policy.ts";
 
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
@@ -31,9 +32,14 @@ const BROKERED_TOOLS = ["git_inspect", "repo_fun", "system_info"];
 export const PI_RESOURCE_POLICY_DESCRIPTION =
   "User extensions, skills, and prompt templates are disabled; only mode-approved tools are allowed";
 
-export function toolsForMode(mode: AgentMode, commandMode: AgentCommandMode = "off"): string[] {
+export function toolsForMode(
+  mode: AgentMode,
+  commandMode: AgentCommandMode = "off",
+  contextTools: readonly string[] = [],
+): string[] {
   const fileTools = mode === "read-write" ? [...READ_ONLY_TOOLS, "edit", "write"] : READ_ONLY_TOOLS;
-  return commandMode === "brokered" ? [...fileTools, ...BROKERED_TOOLS] : fileTools;
+  const localTools = commandMode === "brokered" ? [...fileTools, ...BROKERED_TOOLS] : fileTools;
+  return [...localTools, ...contextTools];
 }
 const SESSION_NAME_PREFIX = "slack-agent:";
 const DEFAULT_MAX_ACTIVE_SESSIONS = 32;
@@ -68,6 +74,7 @@ export interface PiBackendOptions {
   conversationStorePath?: string;
   commandMode?: AgentCommandMode;
   brokeredToolsOptions?: BrokeredToolsOptions;
+  mcpProvider?: McpContextProvider;
 }
 
 export function preparePiPrompt(prompt: string, attachments: readonly AgentAttachment[] = []) {
@@ -136,13 +143,16 @@ interface PiResourceOptions {
   mode?: AgentMode;
   commandMode?: AgentCommandMode;
   brokeredToolsOptions?: BrokeredToolsOptions;
+  mcpProvider?: McpContextProvider;
+  mcpCatalog?: readonly DiscoveredMcpTool[];
   agentDir?: string;
 }
 
 export function createPiResources(workspace: string, options: PiResourceOptions = {}) {
   const agentDir = options.agentDir ?? getAgentDir();
   const commandMode = options.commandMode ?? "off";
-  const allowedTools = toolsForMode(options.mode ?? "read-only", commandMode);
+  const contextToolNames = options.mcpCatalog?.map((tool) => tool.localName) ?? [];
+  const allowedTools = toolsForMode(options.mode ?? "read-only", commandMode, contextToolNames);
   const settingsManager = SettingsManager.create(workspace, agentDir, { projectTrusted: false });
   const resourceLoader = new DefaultResourceLoader({
     cwd: workspace,
@@ -153,6 +163,9 @@ export function createPiResources(workspace: string, options: PiResourceOptions 
       workspacePolicy(workspace, allowedTools),
       ...(commandMode === "brokered"
         ? [brokeredTools(workspace, options.brokeredToolsOptions)]
+        : []),
+      ...(options.mcpProvider && options.mcpCatalog
+        ? [mcpContextTools(options.mcpProvider, options.mcpCatalog)]
         : []),
     ],
     noExtensions: true,
@@ -335,11 +348,14 @@ export class PiBackend implements AgentBackend {
 
     const mode = this.options.mode ?? "read-only";
     const commandMode = this.options.commandMode ?? "off";
+    const mcpCatalog = await this.options.mcpProvider?.catalog();
     const { settingsManager, resourceLoader } = createPiResources(this.workspace, {
       instructions: this.options.instructions,
       mode,
       commandMode,
       brokeredToolsOptions: this.options.brokeredToolsOptions,
+      mcpProvider: this.options.mcpProvider,
+      mcpCatalog,
     });
     await resourceLoader.reload();
     const { session } = await createAgentSession({
@@ -347,7 +363,11 @@ export class PiBackend implements AgentBackend {
       resourceLoader,
       settingsManager,
       sessionManager,
-      tools: toolsForMode(mode, commandMode),
+      tools: toolsForMode(
+        mode,
+        commandMode,
+        mcpCatalog?.map((tool) => tool.localName),
+      ),
     });
     return session;
   }

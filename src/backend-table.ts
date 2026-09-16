@@ -4,6 +4,7 @@ import { CodexBackend, defaultCodexHome } from "./codex-backend.ts";
 import type { AgentBackendKind, Config } from "./config.ts";
 import { GitSlackIdentityResolver, loadSlackUsers } from "./git-slack-identities.ts";
 import { defaultSessionDirectory, PiBackend } from "./pi-backend.ts";
+import { McpContextProvider } from "./mcp-context.ts";
 
 export interface BackendReadinessChecks {
   pi(workspace: string): Promise<string>;
@@ -38,8 +39,14 @@ export const BACKENDS: Record<AgentBackendKind, BackendDefinition> = {
             loadSlackUsers(config.slackBotToken),
           ),
         },
+        mcpProvider: config.mcp ? new McpContextProvider(config.mcp.config) : undefined,
       }),
-    checkReady: (config, checks) => checks.pi(config.workspace),
+    checkReady: async (config, checks) => {
+      const model = await checks.pi(config.workspace);
+      if (!config.mcp) return model;
+      const catalog = await new McpContextProvider(config.mcp.config).catalog();
+      return `${model}; ${catalog.length} allowed MCP context tool${catalog.length === 1 ? "" : "s"} available`;
+    },
     sessionHome: (config) => config.sessionDir ?? defaultSessionDirectory(config.workspace),
   },
   codex: {

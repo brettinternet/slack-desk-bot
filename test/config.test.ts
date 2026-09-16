@@ -26,6 +26,7 @@ describe("loadConfig", () => {
       codexHome: undefined,
       claudeExecutable: undefined,
       claudeHome: undefined,
+      mcp: undefined,
       queueLimits: {
         timeoutMs: 300_000,
         queueWaitMs: 600_000,
@@ -220,6 +221,9 @@ describe("loadConfig", () => {
         SLACK_AGENT_COMMAND_MODE: "brokered",
       }),
     ).toThrow("currently requires SLACK_AGENT_BACKEND=pi");
+    expect(() => loadConfig({ ...valid, SLACK_AGENT_MCP_CONFIG_FILE: "mcp.json" })).toThrow(
+      "SLACK_AGENT_MCP_CONFIG_FILE must be an absolute path",
+    );
     expect(() =>
       loadConfig({ ...valid, SLACK_AGENT_BACKEND: "codex", SLACK_AGENT_MODE: "read-write" }),
     ).toThrow("supports only");
