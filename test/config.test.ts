@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { type AgentBackend, QueuedAgentBackend } from "../src/agent.ts";
 import { defaultSocketPath, loadConfig, type AgentMode } from "../src/config.ts";
 
+const workspace = join(process.cwd(), "test");
 const valid = {
   SLACK_BOT_TOKEN: "xoxb-test",
   SLACK_APP_TOKEN: "xapp-test",
-  SLACK_AGENT_CWD: process.cwd(),
+  SLACK_AGENT_CWD: workspace,
   SLACK_ALLOWED_USER_IDS: "U0123,U0456",
 };
 
@@ -15,7 +16,7 @@ describe("loadConfig", () => {
     expect(loadConfig(valid)).toEqual({
       slackBotToken: "xoxb-test",
       slackAppToken: "xapp-test",
-      workspace: process.cwd(),
+      workspace,
       allowedUserIds: new Set(["U0123", "U0456"]),
       operatorUserIds: new Set(),
       agentBackend: "pi",

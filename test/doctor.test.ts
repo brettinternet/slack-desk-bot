@@ -6,10 +6,11 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../src/config.ts";
 import { checkClaudeReadiness, checkCodexReadiness, runDoctor } from "../src/doctor.ts";
 
+const workspace = join(process.cwd(), "test");
 const valid = {
   SLACK_BOT_TOKEN: "xoxb-test-secret",
   SLACK_APP_TOKEN: "xapp-test-secret",
-  SLACK_AGENT_CWD: process.cwd(),
+  SLACK_AGENT_CWD: workspace,
   SLACK_AGENT_SESSION_DIR: join(tmpdir(), "slack-desk-doctor-sessions"),
   SLACK_ALLOWED_USER_IDS: "U0123",
 };
@@ -49,7 +50,7 @@ describe("runDoctor", () => {
     expect(checks.slackCatchUpAccess).toHaveBeenCalledWith("xoxb-test-secret");
     expect(checks.portAvailable).toHaveBeenCalledWith(3210);
     expect(checks.socketAvailable).toHaveBeenCalledTimes(1);
-    expect(checks.piReady).toHaveBeenCalledWith(process.cwd());
+    expect(checks.piReady).toHaveBeenCalledWith(workspace);
     expect(result.diagnostics).toContainEqual({
       status: "pass",
       check: "Pi resources",
