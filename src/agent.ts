@@ -14,11 +14,29 @@ export type AgentAttachment =
       data: string;
     };
 
+export interface ThreadHistoryOptions {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ThreadHistoryPage {
+  messages: readonly ConversationHistoryEntry[];
+  nextCursor?: string;
+}
+
+export interface AgentConversationContext {
+  readThreadHistory?(
+    options: ThreadHistoryOptions,
+    signal?: AbortSignal,
+  ): Promise<ThreadHistoryPage>;
+}
+
 export interface AgentRequest {
   conversationId: string;
   requesterId: string;
   prompt: string;
   attachments?: readonly AgentAttachment[];
+  context?: AgentConversationContext;
   signal?: AbortSignal;
 }
 

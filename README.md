@@ -55,6 +55,7 @@ hum down
 
 - Reads model settings, `models.json`, and `auth.json` from the Pi agent directory reported by `task doctor`.
 - Does not load that directory's extensions, skills, or prompt templates.
+- Can read the current Slack thread on demand when asked to catch up, summarize, or use earlier thread context. History is not loaded unless the model calls the conversation-scoped tool.
 - Tools restricted to the `SLACK_AGENT_MODE` and `SLACK_AGENT_COMMAND_MODE` allowlist, enforced again at call time.
 - Authenticate with desktop Pi as usual. No credential copy needed.
 
@@ -100,7 +101,7 @@ Run `task doctor` after switching backends.
 
 ## Slack interaction
 
-Mention the bot in a channel to start a conversation. Follow-ups in that thread need no mention, including after restarts; answers to the bot's questions are also inferred while the service remains running. General observations, acknowledgements, explicit no-reply notes, and messages addressed to another user are ignored. Prefix a short or ambiguous message with `laptop:` to address the bot without an @mention. DMs work without a mention. Only `SLACK_ALLOWED_USER_IDS` can invoke the app. The first unauthorized mention explains the denial; repeated mentions from the same user and conversation within ten minutes receive a `:no_entry:` reaction, including across service restarts. After a successful response, the bot has a 20% chance of reacting with a random custom workspace emoji.
+Mention the bot in a channel to start a conversation. With the Pi backend, ask it to catch up on or summarize an existing thread and it can dynamically read the thread's paginated history; the tool is restricted to the current conversation. Follow-ups in that thread need no mention, including after restarts; answers to the bot's questions are also inferred while the service remains running. General observations, acknowledgements, explicit no-reply notes, and messages addressed to another user are ignored. Prefix a short or ambiguous message with `laptop:` to address the bot without an @mention. DMs work without a mention. Only `SLACK_ALLOWED_USER_IDS` can invoke the app. The first unauthorized mention explains the denial; repeated mentions from the same user and conversation within ten minutes receive a `:no_entry:` reaction, including across service restarts. After a successful response, the bot has a 20% chance of reacting with a random custom workspace emoji.
 
 When the service starts after being offline, it conservatively reconciles eligible DMs, mentions, and thread requests from the previous 24 hours. It skips messages already covered by an agent session, thread starters with replies, and DMs or threads with any later message. Catch-up runs in the background, processes at most 10 messages, and reads at most 25 conversations, prioritizing DMs and existing threads. A durable checkpoint beside the local control socket prevents duplicates; restarts within five minutes share a cooldown before another scan. The first launch after installing this behavior sets the checkpoint without replying to older messages.
 

@@ -286,6 +286,7 @@ describe("SlackAgent transport", () => {
           conversationId: "C1:1709999991.000100",
           requesterId: "U_ALLOWED",
           prompt: "offline mention",
+          context: { readThreadHistory: expect.any(Function) },
         },
       ]);
       expect(app.client.users.conversations).toHaveBeenCalledTimes(2);
@@ -470,6 +471,7 @@ describe("SlackAgent transport", () => {
         conversationId: "C2:1709999980.000100",
         requesterId: "U_ALLOWED",
         prompt: "actually missed",
+        context: { readThreadHistory: expect.any(Function) },
       });
     } finally {
       await agent.stop();
@@ -1185,6 +1187,7 @@ describe("SlackAgent transport", () => {
         conversationId: "C1:1",
         requesterId: "U_ALLOWED",
         prompt: "request",
+        context: { readThreadHistory: expect.any(Function) },
       },
       {
         onQueued: expect.any(Function),
@@ -1323,6 +1326,7 @@ describe("SlackAgent transport", () => {
         conversationId: "C1:1",
         requesterId: "U_ALLOWED",
         prompt: "thread request",
+        context: { readThreadHistory: expect.any(Function) },
       },
       {
         onQueued: expect.any(Function),
@@ -1351,6 +1355,47 @@ describe("SlackAgent transport", () => {
       channel: "D1",
       thread_ts: undefined,
       text: "Queued…",
+    });
+  });
+
+  test("provides paginated current-thread history to the agent on demand", async () => {
+    let history: unknown;
+    const run = mock(async (request: Parameters<AgentBackend["run"]>[0]) => {
+      history = await request.context?.readThreadHistory?.({ limit: 2 });
+      return "summary";
+    });
+    createAgent(run);
+    app.client.conversations.replies.mockImplementationOnce(async () => ({
+      messages: [
+        { ts: "1700000000.000100", user: "U_ALLOWED", text: "First decision" },
+        { ts: "1700000001.000100", bot_id: "B1", user: "U_BOT", text: "Earlier answer" },
+      ],
+      response_metadata: { next_cursor: "page-2" },
+    }));
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_CATCH_UP" },
+      event: {
+        user: "U_ALLOWED",
+        text: "<@U_BOT> summarize this thread",
+        channel: "C1",
+        ts: "1700000002.000100",
+        thread_ts: "1700000000.000100",
+      },
+      client: client(),
+    });
+
+    expect(app.client.conversations.replies).toHaveBeenCalledWith({
+      channel: "C1",
+      ts: "1700000000.000100",
+      limit: 2,
+    });
+    expect(history).toMatchObject({
+      messages: [
+        { authorName: "Jane", kind: "user", text: "First decision" },
+        { authorName: "Agent", kind: "agent", text: "Earlier answer" },
+      ],
+      nextCursor: "page-2",
     });
   });
 
@@ -1421,6 +1466,7 @@ describe("SlackAgent transport", () => {
         conversationId: "C1:3",
         requesterId: "U_ALLOWED",
         prompt: "Please broadcast the follow up",
+        context: { readThreadHistory: expect.any(Function) },
       },
       {
         onQueued: expect.any(Function),

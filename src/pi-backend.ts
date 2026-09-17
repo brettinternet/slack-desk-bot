@@ -14,6 +14,7 @@ import {
 import type {
   AgentAttachment,
   AgentBackend,
+  AgentConversationContext,
   AgentRequest,
   AgentRunObserver,
   ConversationSummary,
@@ -25,6 +26,11 @@ import type { AgentCommandMode, AgentMode } from "./config.ts";
 import { ConversationStore } from "./conversation-store.ts";
 import { writeStructuredLog } from "./log.ts";
 import { type DiscoveredMcpTool, McpContextProvider, mcpContextTools } from "./mcp-context.ts";
+import {
+  slackThreadHistoryTool,
+  THREAD_HISTORY_TOOL,
+  type ThreadHistoryReader,
+} from "./thread-history-tool.ts";
 import { workspacePolicy } from "./workspace-policy.ts";
 
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
@@ -145,13 +151,17 @@ interface PiResourceOptions {
   brokeredToolsOptions?: BrokeredToolsOptions;
   mcpProvider?: McpContextProvider;
   mcpCatalog?: readonly DiscoveredMcpTool[];
+  threadHistoryReader?: ThreadHistoryReader;
   agentDir?: string;
 }
 
 export function createPiResources(workspace: string, options: PiResourceOptions = {}) {
   const agentDir = options.agentDir ?? getAgentDir();
   const commandMode = options.commandMode ?? "off";
-  const contextToolNames = options.mcpCatalog?.map((tool) => tool.localName) ?? [];
+  const contextToolNames = [
+    ...(options.mcpCatalog?.map((tool) => tool.localName) ?? []),
+    ...(options.threadHistoryReader ? [THREAD_HISTORY_TOOL] : []),
+  ];
   const allowedTools = toolsForMode(options.mode ?? "read-only", commandMode, contextToolNames);
   const settingsManager = SettingsManager.create(workspace, agentDir, { projectTrusted: false });
   const resourceLoader = new DefaultResourceLoader({
@@ -167,6 +177,7 @@ export function createPiResources(workspace: string, options: PiResourceOptions 
       ...(options.mcpProvider && options.mcpCatalog
         ? [mcpContextTools(options.mcpProvider, options.mcpCatalog)]
         : []),
+      ...(options.threadHistoryReader ? [slackThreadHistoryTool(options.threadHistoryReader)] : []),
     ],
     noExtensions: true,
     noSkills: true,
@@ -180,6 +191,7 @@ export class PiBackend implements AgentBackend {
   private readonly sessionDir: string;
   private readonly store: ConversationStore<StoredPiConversation>;
   private readonly mappings = new Map<string, StoredPiConversation>();
+  private readonly activeContexts = new Map<string, AgentConversationContext>();
   private indexInitialized: boolean;
   private scanPromise?: Promise<void>;
   private readonly maxActiveSessions: number;
@@ -250,10 +262,11 @@ export class PiBackend implements AgentBackend {
   }
 
   async run(
-    { conversationId, prompt, attachments, signal }: AgentRequest,
+    { conversationId, prompt, attachments, context, signal }: AgentRequest,
     observer?: AgentRunObserver,
   ): Promise<string> {
     const entry = this.cachedSessionFor(conversationId);
+    if (context) this.activeContexts.set(conversationId, context);
     entry.activeRuns++;
     entry.lastUsedAt = this.now();
 
@@ -284,6 +297,9 @@ export class PiBackend implements AgentBackend {
         unsubscribe();
       }
     } finally {
+      if (context && this.activeContexts.get(conversationId) === context) {
+        this.activeContexts.delete(conversationId);
+      }
       entry.activeRuns--;
       entry.lastUsedAt = this.now();
       this.sweep();
@@ -329,7 +345,7 @@ export class PiBackend implements AgentBackend {
     const manager = persisted
       ? SessionManager.open(persisted.path, this.sessionDir, this.workspace)
       : this.createPersistentManager();
-    const session = await this.createSession(manager);
+    const session = await this.createSession(manager, conversationId);
     if (!persisted) {
       session.setSessionName(this.sessionName(conversationId));
       this.indexSession(conversationId, session);
@@ -338,12 +354,15 @@ export class PiBackend implements AgentBackend {
   }
 
   private async createFreshSession(conversationId: string): Promise<AgentSession> {
-    const session = await this.createSession(this.createPersistentManager());
+    const session = await this.createSession(this.createPersistentManager(), conversationId);
     session.setSessionName(this.sessionName(conversationId));
     return session;
   }
 
-  private async createSession(sessionManager: SessionManager): Promise<AgentSession> {
+  private async createSession(
+    sessionManager: SessionManager,
+    conversationId: string,
+  ): Promise<AgentSession> {
     if (this.options.sessionFactory) return this.options.sessionFactory(sessionManager);
 
     const mode = this.options.mode ?? "read-only";
@@ -356,6 +375,11 @@ export class PiBackend implements AgentBackend {
       brokeredToolsOptions: this.options.brokeredToolsOptions,
       mcpProvider: this.options.mcpProvider,
       mcpCatalog,
+      threadHistoryReader: (options, signal) => {
+        const reader = this.activeContexts.get(conversationId)?.readThreadHistory;
+        if (!reader) throw new Error("Slack thread history is unavailable for this request");
+        return reader(options, signal);
+      },
     });
     await resourceLoader.reload();
     const { session } = await createAgentSession({
@@ -363,11 +387,10 @@ export class PiBackend implements AgentBackend {
       resourceLoader,
       settingsManager,
       sessionManager,
-      tools: toolsForMode(
-        mode,
-        commandMode,
-        mcpCatalog?.map((tool) => tool.localName),
-      ),
+      tools: toolsForMode(mode, commandMode, [
+        ...(mcpCatalog?.map((tool) => tool.localName) ?? []),
+        THREAD_HISTORY_TOOL,
+      ]),
     });
     return session;
   }

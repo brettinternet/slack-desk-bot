@@ -15,6 +15,8 @@ import {
   type ConversationDetails,
   type ConversationHistoryEntry,
   type ConversationParticipant,
+  type ThreadHistoryOptions,
+  type ThreadHistoryPage,
 } from "./agent.ts";
 import { EventDeduplicator } from "./event-deduplicator.ts";
 import { ingestSlackFiles } from "./slack-files.ts";
@@ -678,6 +680,52 @@ export class SlackAgent {
     };
   }
 
+  private async readThreadHistoryPage(
+    channel: string,
+    threadTs: string,
+    options: ThreadHistoryOptions,
+    signal?: AbortSignal,
+  ): Promise<ThreadHistoryPage> {
+    if (signal?.aborted) throw signal.reason;
+    const limit = Math.max(1, Math.min(50, options.limit ?? 50));
+    const response = await this.slackOperation(
+      this.app.client.conversations.replies({
+        channel,
+        ts: threadTs,
+        limit,
+        ...(options.cursor ? { cursor: options.cursor } : {}),
+      }),
+    );
+    if (signal?.aborted) throw signal.reason;
+    const messages = Array.isArray(response.messages)
+      ? (response.messages as SlackHistoryMessage[])
+      : [];
+    const participantIds = [
+      ...new Set(
+        messages.flatMap((message) => (message.user && !message.bot_id ? [message.user] : [])),
+      ),
+    ].filter((id) => id !== this.botUserId);
+    const participants: ConversationParticipant[] = [];
+    for (let index = 0; index < participantIds.length; index += 4) {
+      participants.push(
+        ...(await Promise.all(
+          participantIds.slice(index, index + 4).map((id) => this.resolveUser(id)),
+        )),
+      );
+    }
+    const participantById = new Map(
+      participants.map((participant) => [participant.id, participant]),
+    );
+    const nextCursor = response.response_metadata?.next_cursor || undefined;
+    return {
+      messages: messages
+        .filter((message) => Number.isFinite(Number(message.ts)))
+        .sort((left, right) => Number(left.ts) - Number(right.ts))
+        .map((message) => this.historyEntry(message, participantById)),
+      ...(nextCursor ? { nextCursor } : {}),
+    };
+  }
+
   private async conversationMessages(
     destination: { channel: string; thread_ts?: string },
     fetchAllPages: boolean,
@@ -1210,6 +1258,14 @@ export class SlackAgent {
       requesterId: message.requesterId,
       prompt: message.prompt,
       ...(attachments.length > 0 ? { attachments } : {}),
+      ...(message.threadTs
+        ? {
+            context: {
+              readThreadHistory: (options: ThreadHistoryOptions, signal?: AbortSignal) =>
+                this.readThreadHistoryPage(message.channel, message.threadTs!, options, signal),
+            },
+          }
+        : {}),
     };
     const output = admission
       ? await this.options.agent.run(request, observer, admission)
