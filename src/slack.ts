@@ -1292,13 +1292,31 @@ export class SlackAgent {
   ): Promise<DeliveryResult> {
     let delivery = execution.delivery ?? { outcome: "failure", publishedMessages: 0 };
     if (execution.finalOutput !== undefined) {
+      const allowedUserMentions = new Set([
+        ...slackUserMentions(message.prompt),
+        `<@${message.requesterId}>`,
+      ]);
+      if (message.threadTs) {
+        const unresolvedMentions = new Set(
+          [...slackUserMentions(execution.finalOutput)].filter(
+            (mention) => !allowedUserMentions.has(mention),
+          ),
+        );
+        for (const mention of await this.explicitThreadUserMentions(
+          message.channel,
+          message.threadTs,
+          unresolvedMentions,
+        )) {
+          allowedUserMentions.add(mention);
+        }
+      }
       delivery = await this.publishResult(
         client,
         message.channel,
         message.threadTs,
         status.statusTs,
         execution.finalOutput,
-        new Set([...slackUserMentions(message.prompt), `<@${message.requesterId}>`]),
+        allowedUserMentions,
       );
       if (delivery.outcome !== "success") {
         this.reportOperatorError(
@@ -1360,6 +1378,40 @@ export class SlackAgent {
       published_messages: delivery.publishedMessages,
       ...(execution.cancelledBy ? { cancelled_by: execution.cancelledBy } : {}),
     });
+  }
+
+  /** Allows only mentions that an authorized user previously wrote in this thread. */
+  private async explicitThreadUserMentions(
+    channel: string,
+    threadTs: string,
+    requestedMentions: ReadonlySet<string>,
+  ): Promise<ReadonlySet<string>> {
+    const found = new Set<string>();
+    if (requestedMentions.size === 0) return found;
+
+    let cursor: string | undefined;
+    do {
+      const response = await this.bestEffortSlackOperation(
+        this.app.client.conversations.replies({
+          channel,
+          ts: threadTs,
+          limit: 100,
+          ...(cursor ? { cursor } : {}),
+        }),
+      );
+      if (!response || !Array.isArray(response.messages)) return found;
+      for (const message of response.messages as SlackHistoryMessage[]) {
+        if (!message.user || message.bot_id || !this.options.allowedUserIds.has(message.user)) {
+          continue;
+        }
+        for (const mention of slackUserMentions(message.text ?? "")) {
+          if (requestedMentions.has(mention)) found.add(mention);
+        }
+      }
+      cursor = response.response_metadata?.next_cursor || undefined;
+    } while (cursor && found.size < requestedMentions.size);
+
+    return found;
   }
 
   private async publishResult(

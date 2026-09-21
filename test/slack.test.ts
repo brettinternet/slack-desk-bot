@@ -1292,6 +1292,39 @@ describe("SlackAgent transport", () => {
     });
   });
 
+  test("renders a user mention established by an authorized user earlier in the thread", async () => {
+    createAgent(mock(async () => "<@U04ET2XUC3B> — fair pushback."));
+    app.client.conversations.replies.mockImplementation(async () => ({
+      messages: [
+        {
+          user: "U_ALLOWED",
+          text: "<@U_BOT> review <@U04ET2XUC3B>'s recent work",
+          ts: "1",
+        },
+      ],
+    }));
+    const slack = client();
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_THREAD_USER_MENTION" },
+      event: {
+        user: "U_ALLOWED",
+        text: "<@U_BOT> respond to the attached screenshot",
+        channel: "C1",
+        ts: "2",
+        thread_ts: "1",
+      },
+      client: slack,
+    });
+
+    expect(slack.chat.update).toHaveBeenCalledWith({
+      channel: "C1",
+      ts: "status-ts",
+      text: "<@U04ET2XUC3B> — fair pushback.",
+      blocks: [],
+    });
+  });
+
   test("routes existing threads and direct messages to stable conversations", async () => {
     const run = mock(async () => "response");
     createAgent(run);
