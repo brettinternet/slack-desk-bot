@@ -1,9 +1,8 @@
 # SlackDeskBot
 
-Stop saying, "My agent said..." and instead just have your agent yap to your coworkers directly.
+Bring your local coding agent into Slack. It answers questions in channels and threads with context from your local codebase.
 
-Add a desktop agent to your Slack and consult with your local agents.
-Use your own agent configuration with secure tool calls and give it your own local codebase so it can git blame your teammates.
+Use your existing agent configuration and credentials. SlackDeskBot exposes only the tools you enable.
 
 <p align="center">
     <img width="496" src="./docs/profile.png" alt="slack profile of agent" style="padding:0.25rem" />
@@ -101,9 +100,18 @@ Run `task doctor` after switching backends.
 
 ## Slack interaction
 
-Mention the bot in a channel to start a conversation. With the Pi backend, ask it to catch up on or summarize an existing thread and it can dynamically read the thread's paginated history; the tool is restricted to the current conversation. Follow-ups in that thread need no mention, including after restarts; answers to the bot's questions are also inferred while the service remains running. General observations, acknowledgements, explicit no-reply notes, and messages addressed to another user are ignored. Prefix a short or ambiguous message with `laptop:` to address the bot without an @mention. DMs work without a mention. Only `SLACK_ALLOWED_USER_IDS` can invoke the app. The first unauthorized mention explains the denial; repeated mentions from the same user and conversation within ten minutes receive a `:no_entry:` reaction, including across service restarts. After a successful response, the bot has a 20% chance of reacting with a random custom workspace emoji.
+Mention the bot in a channel to start a conversation, or message it directly in a DM:
 
-When the service starts after being offline, it conservatively reconciles eligible DMs, mentions, and thread requests from the previous 24 hours. It skips messages already covered by an agent session, thread starters with replies, and DMs or threads with any later message. Catch-up runs in the background, processes at most 10 messages, and reads at most 25 conversations, prioritizing DMs and existing threads. A durable checkpoint beside the local control socket prevents duplicates; restarts within five minutes share a cooldown before another scan. The first launch after installing this behavior sets the checkpoint without replying to older messages.
+```text
+@bot summarize this thread
+laptop: check the failing test
+```
+
+Follow-ups in an active thread need no mention, even across restarts. While the service remains running, answers to the bot's questions are inferred automatically. General observations, acknowledgements, explicit no-reply notes, and messages addressed to another user are ignored. Prefix short or ambiguous messages with `laptop:` to address the bot without an @mention.
+
+With the Pi backend, the bot can read paginated history for its current thread on demand when asked to catch up or summarize. Only `SLACK_ALLOWED_USER_IDS` can invoke the bot. The first unauthorized mention explains the denial; repeated attempts from the same user and conversation within ten minutes receive a `:no_entry:` reaction, persisting across restarts. After a successful response, the bot has a 20% chance of adding a random custom workspace emoji reaction.
+
+When starting after downtime, background catch-up reconciles eligible DMs, mentions, and thread requests from the past 24 hours. It reads at most 25 conversations and processes up to 10 messages, prioritizing DMs and existing threads. Messages already covered by an agent session, thread starters with replies, and DMs or threads with later messages are skipped. A durable checkpoint file beside the local control socket prevents duplicate replies, rapid restarts within five minutes share a cooldown before another scan, and the initial launch sets the checkpoint without replying to older messages.
 
 | Command              | Effect                                                |
 | -------------------- | ----------------------------------------------------- |
@@ -159,9 +167,9 @@ For the Pi backend, opt into fixed read-only command brokers without enabling a 
 SLACK_AGENT_COMMAND_MODE=brokered
 ```
 
-**`git_inspect`** reports status, branches, tags, bounded logs and diffs, historical contents, blame, commit search/details, release notes, branch divergence, contributors and file ownership, activity and streaks, code/file age, largest files, change coupling, hotspots, bus-factor estimates, repository health, tracked-file statistics, and Git-author-to-Slack identity matches.
+**`git_inspect`** provides read-only Git analysis, including status, history, diffs, blame, contributor stats, coupling hotspots, and Slack identity mapping.
 
-Git identities use `.mailmap`-canonicalized author emails. Exact workspace-email matches are automatic; names are never fuzzy-matched. Explicit aliases can be stored globally or in a local, gitignored project file:
+Git author identities resolve through `.mailmap` and match Slack profiles by workspace email. Names are never fuzzy-matched. You can map explicit aliases locally or globally:
 
 ```sh
 slack-desk identities scan
@@ -215,9 +223,9 @@ The Pi backend can dynamically expose an operator-approved subset of tools from 
 }
 ```
 
-At startup, SlackDeskBot calls `tools/list`, intersects the result with each exact `allowedTools` entry, and registers the advertised input schemas with Pi. Unlisted tools are never registered and are rejected again at call time. Tool descriptions, schemas, arguments, call durations, and text results are bounded; binary results are omitted. Servers marked as destructive are rejected. MCP content is treated as untrusted external context.
+At startup, SlackDeskBot calls `tools/list`, intersects the result with each exact `allowedTools` entry, and registers only those advertised schemas with Pi. Unlisted tools are never registered and are rejected again at call time. Tool descriptions, schemas, arguments, call durations, and text results are bounded; binary results are omitted, and servers marked destructive are rejected. MCP responses are treated as untrusted external context.
 
-Only HTTPS endpoints are accepted, except loopback HTTP for a local adapter. `stdio` is intentionally unsupported because a configurable command would execute arbitrary code. Token files must be absolute, readable files outside `SLACK_AGENT_CWD`; token values are never exposed to the model. For containers, mount token files at the exact paths named in the container-side configuration.
+Endpoints must use HTTPS, with loopback HTTP allowed only for local adapters. The `stdio` transport is unsupported to prevent arbitrary command execution. Token files must be absolute, readable paths outside `SLACK_AGENT_CWD`, and token contents are never exposed to the model. In container deployments, mount token files at the exact container paths specified in `tokenFile`.
 
 For change-controlled schemas, add the SHA-256 of the canonical input schema:
 
