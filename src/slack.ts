@@ -21,6 +21,7 @@ import {
   type ThreadHistoryPage,
 } from "./agent.ts";
 import { MAX_DIRECT_MESSAGE_CHARACTERS } from "./direct-message-tool.ts";
+import type { ScheduleService } from "./schedules.ts";
 import { EventDeduplicator } from "./event-deduplicator.ts";
 import { ingestSlackFiles } from "./slack-files.ts";
 import { type LogWriter, type RequestLogWriter, writeStructuredLog } from "./log.ts";
@@ -46,6 +47,7 @@ interface SlackAgentOptions {
   allowedUserIds: ReadonlySet<string>;
   operatorUserIds?: ReadonlySet<string>;
   agent: CancellableAgentBackend;
+  schedules?: ScheduleService;
   fetch?: typeof fetch;
   log?: RequestLogWriter;
   operatorLog?: LogWriter;
@@ -1259,6 +1261,10 @@ export class SlackAgent {
       return { outcome: "success", finalOutput: output };
     }
     let directMessages = 0;
+    let scheduleChanges = 0;
+    const countScheduleChange = () => {
+      if (++scheduleChanges > 5) throw new Error("At most 5 schedule changes per request");
+    };
     const request = {
       conversationId: id,
       requesterId: message.requesterId,
@@ -1269,6 +1275,41 @@ export class SlackAgent {
           ? {
               readThreadHistory: (options: ThreadHistoryOptions, signal?: AbortSignal) =>
                 this.readThreadHistoryPage(message.channel, message.threadTs!, options, signal),
+            }
+          : {}),
+        ...(this.options.schedules
+          ? {
+              schedules: {
+                list: () =>
+                  this.options.schedules!.list(
+                    message.requesterId,
+                    this.options.operatorUserIds?.has(message.requesterId),
+                  ),
+                create: (input: import("./schedules.ts").ScheduleInput) => {
+                  countScheduleChange();
+                  return this.options.schedules!.create(
+                    { ...input, userId: input.userId || message.requesterId },
+                    message.requesterId,
+                  );
+                },
+                update: (scheduleId: string, input: import("./schedules.ts").ScheduleInput) => {
+                  countScheduleChange();
+                  return this.options.schedules!.update(
+                    scheduleId,
+                    input,
+                    message.requesterId,
+                    this.options.operatorUserIds?.has(message.requesterId),
+                  );
+                },
+                cancel: (scheduleId: string) => {
+                  countScheduleChange();
+                  return this.options.schedules!.cancel(
+                    scheduleId,
+                    message.requesterId,
+                    this.options.operatorUserIds?.has(message.requesterId),
+                  );
+                },
+              },
             }
           : {}),
         sendDirectMessage: async (directMessage: DirectMessage, signal?: AbortSignal) => {

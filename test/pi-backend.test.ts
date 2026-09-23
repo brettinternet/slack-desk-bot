@@ -161,6 +161,27 @@ describe("Pi configuration", () => {
     ).toBe(true);
   });
 
+  test("loads the conversation-scoped schedule tool when configured", async () => {
+    const { resourceLoader } = createPiResources(process.cwd(), {
+      scheduleActions: () => ({
+        list: () => [],
+        create: () => {
+          throw new Error("test");
+        },
+        update: () => {
+          throw new Error("test");
+        },
+        cancel: () => {},
+      }),
+    });
+    await resourceLoader.reload();
+    expect(
+      resourceLoader
+        .getExtensions()
+        .extensions.some((extension) => extension.path === "<inline:slack-schedule-tool>"),
+    ).toBe(true);
+  });
+
   test("appends Slack-specific instructions to the system prompt", async () => {
     const { resourceLoader } = createPiResources(process.cwd(), {
       instructions: "Keep Slack replies brief.",

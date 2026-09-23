@@ -5,6 +5,7 @@ import { createInterface } from "node:readline";
 import type { ConversationSummary, DirectMessageReceipt } from "./agent.ts";
 import { defaultSocketPath } from "./config.ts";
 import type { ConversationEvent } from "./conversation-coordinator.ts";
+import type { Schedule, ScheduleInput } from "./schedules.ts";
 import { IDENTITY_USAGE, runIdentityCommand } from "./identity-cli.ts";
 import {
   isLocalServerMessage,
@@ -84,7 +85,7 @@ class LocalClient {
   }
 }
 
-const USAGE = `Usage: slack-desk [--socket <path>] sessions | slack-desk [--socket <path>] attach <session-id> [--history <0-100> | --no-history] | slack-desk [--socket <path>] dm <slack-user-id> <message...>\n${IDENTITY_USAGE}`;
+const USAGE = `Usage: slack-desk [--socket <path>] sessions | slack-desk [--socket <path>] attach <session-id> [--history <0-100> | --no-history] | slack-desk [--socket <path>] dm <slack-user-id> <message...>\n       slack-desk [--socket <path>] schedule list | cancel <id> | add <user-id> (--at <ISO-offset> | --daily <HH:mm> --tz <IANA-zone> | --weekly <0-6,...> --time <HH:mm> --tz <IANA-zone>) <message...>\n       slack-desk [--socket <path>] schedule update <id> <user-id> (--at ... | --daily ... | --weekly ...) <message...>\n${IDENTITY_USAGE}`;
 
 function terminalText(text: string): string {
   return text
@@ -293,7 +294,102 @@ export function parseArguments(args: readonly string[]): {
   return { command, sessionId, socketPath, historyLimit };
 }
 
+export function parseScheduleArguments(args: readonly string[]): {
+  socketPath?: string;
+  type: LocalRequestType;
+  id?: string;
+  input?: ScheduleInput;
+} {
+  const tokens = [...args];
+  let socketPath: string | undefined;
+  if (tokens[0] === "--socket") {
+    socketPath = tokens[1];
+    tokens.splice(0, 2);
+    if (!socketPath) throw new Error("--socket requires a path");
+  } else if (tokens[0]?.startsWith("--socket=")) {
+    socketPath = tokens.shift()!.slice(9);
+    if (!socketPath) throw new Error("--socket requires a path");
+  }
+  if (tokens.shift() !== "schedule") throw new Error(USAGE);
+  const verb = tokens.shift();
+  if (verb === "list" && tokens.length === 0) return { socketPath, type: "schedule-list" };
+  if (verb === "cancel" && tokens.length === 1)
+    return { socketPath, type: "schedule-cancel", id: tokens[0] };
+  if (verb !== "add" && verb !== "update") throw new Error(USAGE);
+  const id = verb === "update" ? tokens.shift() : undefined;
+  const userId = tokens.shift();
+  if (!userId || (verb === "update" && !id)) throw new Error(USAGE);
+  let at: string | undefined;
+  let time: string | undefined;
+  let timezone: string | undefined;
+  let weekdays: number[] | undefined;
+  let scheduleKind: "daily" | "weekly" | undefined;
+  while (tokens[0]?.startsWith("--")) {
+    const flag = tokens.shift();
+    const value = tokens.shift();
+    if (!value) throw new Error(`${flag} requires a value`);
+    if (flag === "--at") at = value;
+    else if (flag === "--daily") {
+      scheduleKind = "daily";
+      time = value;
+    } else if (flag === "--weekly") {
+      scheduleKind = "weekly";
+      weekdays = value.split(",").map(Number);
+    } else if (flag === "--time") time = value;
+    else if (flag === "--tz") timezone = value;
+    else throw new Error(USAGE);
+  }
+  const text = tokens.join(" ").trim();
+  if (
+    !text ||
+    (at
+      ? Boolean(scheduleKind || time || timezone || weekdays)
+      : !scheduleKind || !time || !timezone) ||
+    (scheduleKind === "weekly" && !weekdays)
+  )
+    throw new Error(USAGE);
+  const input: ScheduleInput = {
+    userId,
+    text,
+    ...(at
+      ? { at }
+      : { recurrence: { time: time!, timezone: timezone!, ...(weekdays ? { weekdays } : {}) } }),
+  };
+  return { socketPath, type: verb === "add" ? "schedule-create" : "schedule-update", id, input };
+}
+
 export async function main(args: string[] = process.argv.slice(2)): Promise<void> {
+  if (
+    args[0] === "schedule" ||
+    (args[0] === "--socket" && args[2] === "schedule") ||
+    (args[0]?.startsWith("--socket=") && args[1] === "schedule")
+  ) {
+    const { socketPath: requested, type, id, input } = parseScheduleArguments(args);
+    const socketPath =
+      requested ?? (process.env.SLACK_AGENT_SOCKET_PATH?.trim() || defaultSocketPath());
+    let client: LocalClient;
+    try {
+      client = await LocalClient.connect(socketPath);
+    } catch {
+      throw new Error(`Cannot connect to SlackDeskBot at ${socketPath}`);
+    }
+    try {
+      const result = await client.request(type, { ...(id ? { id } : {}), ...input });
+      if (type === "schedule-list") {
+        for (const item of result as Schedule[])
+          console.log(
+            `${item.id} ${item.status} ${item.nextAt} ${item.userId} ${item.recurrence ? `${item.recurrence.time} ${item.recurrence.timezone} ${item.recurrence.weekdays?.join(",") ?? "daily"}` : "once"} ${terminalLine(item.text)}${item.lastError ? ` [last error: ${terminalLine(item.lastError)}]` : ""}`,
+          );
+      } else if (type === "schedule-cancel") console.log(`Cancelled ${id}`);
+      else {
+        const item = result as Schedule;
+        console.log(`Scheduled ${item.id} for ${item.nextAt}`);
+      }
+    } finally {
+      client.close();
+    }
+    return;
+  }
   if (args[0] === "identities") {
     await runIdentityCommand(args.slice(1), { botToken: process.env.SLACK_BOT_TOKEN });
     return;

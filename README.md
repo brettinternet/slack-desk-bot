@@ -133,7 +133,17 @@ slack-desk sessions      # labels and participants when Slack metadata is availa
 slack-desk attach f82ab719
 slack-desk attach f82ab719 --history 50  # default: 20; --no-history to disable
 slack-desk dm U0123456789 Deploy finished  # DM a member ID as the bot
+slack-desk schedule add U0123456789 --at 2026-12-01T09:00:00-05:00 Deploy finished
+slack-desk schedule add U0123456789 --daily 09:00 --tz America/New_York Morning update
+slack-desk schedule add U0123456789 --weekly 1,3,5 --time 09:00 --tz America/New_York Standup
+slack-desk schedule list
+slack-desk schedule update <id> U0123456789 --at 2026-12-02T09:00:00-05:00 Revised text
+slack-desk schedule cancel <id>
 ```
+
+Schedules and `slack-desk dm` do not need an attached session. CLI-created scheduled messages speak as the bot without requester attribution. With Pi, ask the bot to schedule a DM or a reminder to yourself, list your schedules, replace one by ID, or cancel one. Messages scheduled or edited from Slack name the most recent editor when delivered; CLI edits send in the bot's voice. Only the creator can manage a schedule through Slack, except users in `SLACK_OPERATOR_USER_IDS`, who can manage all schedules; the local CLI can manage all. The bot needs an explicit time zone for daily/weekly reminders. Weekdays are `0` (Sunday) through `6` (Saturday).
+
+Schedules persist in an owner-only `schedules.json` beside the socket (or under `~/.local/state/slack-desk-bot/` when Linux uses an `XDG_RUNTIME_DIR` socket). Overdue one-off messages send when the service restarts; missed recurring occurrences are skipped (one current delivery, then the next calendar slot). A due slot is recorded before sending to prevent restart duplicates: if Slack delivery fails or the process stops during delivery, it is **not retried** automatically. Check `schedule list` for failed one-offs or the last error on a recurring schedule, and update the schedule if needed.
 
 `slack-desk dm` sends the message as the bot without requester attribution and does not need an attached session. It works only for people, not bots or deactivated accounts. To prevent recipients from replying, set `messages_tab_read_only_enabled: true` in the Slack app manifest. This also stops users from starting DM conversations with the bot.
 

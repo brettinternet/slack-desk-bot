@@ -3,7 +3,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { QueueSnapshot } from "../src/agent.ts";
-import { startApplication } from "../src/application.ts";
+import { scheduleStorePath, startApplication } from "../src/application.ts";
 import type { Config } from "../src/config.ts";
 import type { StructuredLog } from "../src/log.ts";
 import { SlackAuthenticationError } from "../src/slack.ts";
@@ -60,6 +60,23 @@ function backend() {
 }
 
 describe("application startup", () => {
+  test("keeps Linux runtime sockets separate from persistent schedules", () => {
+    const runtimeDir = "/run/user/1234";
+    expect(
+      scheduleStorePath(
+        `${runtimeDir}/control.sock`,
+        { XDG_RUNTIME_DIR: runtimeDir },
+        "linux",
+      ).startsWith(runtimeDir),
+    ).toBe(false);
+    expect(
+      scheduleStorePath(
+        "/var/lib/slack-desk/control.sock",
+        { XDG_RUNTIME_DIR: runtimeDir },
+        "linux",
+      ),
+    ).toBe("/var/lib/slack-desk/schedules.json");
+  });
   test("assembles startup, reports readiness, and shuts down gracefully", async () => {
     const agent = backend();
     const slackStop = mock(async () => {});

@@ -18,6 +18,7 @@ import {
 } from "../src/agent.ts";
 import type { RequestLog, StructuredLog } from "../src/log.ts";
 import { SLACK_MESSAGE_LIMIT } from "../src/messages.ts";
+import { ScheduleService } from "../src/schedules.ts";
 
 interface SlackEventHandler {
   (input: {
@@ -1478,6 +1479,77 @@ describe("SlackAgent transport", () => {
       requester: "U_ALLOWED",
       messages: 1,
     });
+  });
+
+  test("scopes bot schedule management to creators and configured Slack operators", async () => {
+    const schedules = new ScheduleService(
+      join(mkdtempSync(join(tmpdir(), "slack-bot-schedules-")), "schedules.json"),
+      async () => {},
+    );
+    const results: unknown[] = [];
+    const run = mock(async (request: Parameters<AgentBackend["run"]>[0]) => {
+      const actions = request.context!.schedules!;
+      if (request.requesterId === "U0ALICE") {
+        results.push(
+          actions.create({
+            userId: "",
+            text: "remind me",
+            at: new Date(Date.now() + 86_400_000).toISOString(),
+          }),
+        );
+      } else {
+        results.push(actions.list());
+        if (request.requesterId === "U0ADMIN") {
+          results.push(
+            actions.update((results[0] as { id: string }).id, {
+              userId: "",
+              text: "updated",
+              at: new Date(Date.now() + 86_400_000).toISOString(),
+            }),
+          );
+        }
+        try {
+          actions.cancel((results[0] as { id: string }).id);
+          results.push("cancelled");
+        } catch (error) {
+          results.push((error as Error).message);
+        }
+      }
+      return "done";
+    });
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U0ALICE", "U0OTHER", "U0ADMIN"]),
+      operatorUserIds: new Set(["U0ADMIN"]),
+      agent: backend(run),
+      schedules,
+    });
+    for (const [index, user] of ["U0ALICE", "U0OTHER", "U0ADMIN"].entries()) {
+      await app.handlers.get("message")!({
+        body: { event_id: `E_SCHEDULE_${index}` },
+        event: {
+          user,
+          text: "manage schedules",
+          channel: `D${index}`,
+          channel_type: "im",
+          ts: `${index + 1}`,
+        },
+        client: client(),
+      });
+    }
+    expect(results[0]).toMatchObject({ creatorId: "U0ALICE", userId: "U0ALICE" });
+    expect(results[1]).toEqual([]);
+    expect(results[2]).toBe("Schedule not found");
+    expect(results[3]).toHaveLength(1);
+    expect(results[4]).toMatchObject({
+      userId: "U0ALICE",
+      creatorId: "U0ALICE",
+      authorId: "U0ADMIN",
+      text: "updated",
+    });
+    expect(results[5]).toBe("cancelled");
+    expect(schedules.list("local-operator", true)).toEqual([]);
   });
 
   test("rejects direct messages to bots, missing users, and malformed IDs", async () => {

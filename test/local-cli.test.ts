@@ -4,6 +4,7 @@ import {
   formatHistory,
   formatSessions,
   parseArguments,
+  parseScheduleArguments,
 } from "../src/local-cli.ts";
 import { isLocalServerMessage, LOCAL_PROTOCOL_VERSION } from "../src/local-protocol.ts";
 
@@ -40,6 +41,52 @@ describe("slack-desk argument parsing", () => {
     });
     expect(() => parseArguments(["dm", "U0BOB"])).toThrow("Usage");
     expect(() => parseArguments(["dm"])).toThrow("Usage");
+  });
+});
+
+describe("schedule CLI parsing", () => {
+  test("accepts one-off, daily, weekly, update and cancellation", () => {
+    expect(
+      parseScheduleArguments([
+        "schedule",
+        "add",
+        "U0BOB",
+        "--at",
+        "2026-12-01T09:00:00Z",
+        "hello",
+        "--flag",
+      ]),
+    ).toMatchObject({
+      type: "schedule-create",
+      input: { userId: "U0BOB", text: "hello --flag", at: "2026-12-01T09:00:00Z" },
+    });
+    expect(
+      parseScheduleArguments([
+        "--socket",
+        "/tmp/bot.sock",
+        "schedule",
+        "update",
+        "abc",
+        "U0BOB",
+        "--weekly",
+        "1,3",
+        "--time",
+        "09:00",
+        "--tz",
+        "America/New_York",
+        "standup",
+      ]),
+    ).toMatchObject({
+      socketPath: "/tmp/bot.sock",
+      type: "schedule-update",
+      id: "abc",
+      input: { recurrence: { time: "09:00", timezone: "America/New_York", weekdays: [1, 3] } },
+    });
+    expect(parseScheduleArguments(["schedule", "list"]).type).toBe("schedule-list");
+    expect(parseScheduleArguments(["schedule", "cancel", "abc"]).type).toBe("schedule-cancel");
+    expect(() =>
+      parseScheduleArguments(["schedule", "add", "U0BOB", "--daily", "09:00", "text"]),
+    ).toThrow("Usage");
   });
 });
 

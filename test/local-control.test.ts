@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { QueuedAgentBackend, type AgentBackend, type QueueLimits } from "../src/agent.ts";
 import { ConversationCoordinator } from "../src/conversation-coordinator.ts";
 import { LocalControlServer, MAX_LOCAL_FRAME_BYTES } from "../src/local-control.ts";
+import { ScheduleService } from "../src/schedules.ts";
 
 const limits: QueueLimits = {
   timeoutMs: 1_000,
@@ -253,6 +254,29 @@ describe("local conversation control", () => {
     expect((await client.response("bad")).error).toBe("userId and text are required");
     expect(sent).toEqual([{ userId: "U0BOB", text: "hello" }]);
 
+    client.socket.destroy();
+    await server.stop();
+    coordinator.dispose();
+  });
+
+  test("manages persisted schedules from the local socket without attaching", async () => {
+    const path = await socketPath();
+    const schedules = new ScheduleService(join(dirname(path), "schedules.json"), async () => {});
+    const { coordinator } = fixture();
+    const server = new LocalControlServer({ socketPath: path, coordinator, schedules });
+    await server.start();
+    const client = await ProtocolClient.connect(path);
+    client.send("schedule-create", "create", {
+      userId: "U0BOB",
+      text: "hi",
+      at: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    const created = (await client.response("create")).result;
+    expect(created.creatorId).toBe("local-operator");
+    client.send("schedule-list", "list");
+    expect((await client.response("list")).result).toHaveLength(1);
+    client.send("schedule-cancel", "cancel", { id: created.id });
+    expect((await client.response("cancel")).result).toEqual({ cancelled: created.id });
     client.socket.destroy();
     await server.stop();
     coordinator.dispose();

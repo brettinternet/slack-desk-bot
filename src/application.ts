@@ -8,6 +8,7 @@ import {
 } from "./agent.ts";
 import { BACKENDS } from "./backend-table.ts";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import { ConversationCoordinator } from "./conversation-coordinator.ts";
 import { checkClaudeReadiness, checkCodexReadiness, checkPiReadiness } from "./doctor.ts";
@@ -15,12 +16,13 @@ import { HealthState, startHealthServer } from "./health.ts";
 import { LocalControlServer } from "./local-control.ts";
 import { type LogWriter, writeStructuredLog } from "./log.ts";
 import { SlackAgent } from "./slack.ts";
+import { ScheduleService } from "./schedules.ts";
 
 interface SlackLifecycle extends Partial<ConversationInspector> {
   start(): Promise<void>;
   stop(): Promise<void>;
   publishOperatorExchange?(conversationId: string, prompt: string, response: string): Promise<void>;
-  sendDirectMessage?(message: DirectMessage): Promise<DirectMessageReceipt>;
+  sendDirectMessage?(message: DirectMessage, requesterId?: string): Promise<DirectMessageReceipt>;
 }
 
 interface LocalControlLifecycle {
@@ -47,6 +49,7 @@ interface ApplicationDependencies {
     config: Config;
     agent: RuntimeBackend;
     health: HealthState;
+    schedules: ScheduleService;
   }) => SlackLifecycle;
   startHealthServer?: (
     port: number,
@@ -57,6 +60,7 @@ interface ApplicationDependencies {
     coordinator: ConversationCoordinator;
     inspector?: ConversationInspector;
     sendDirectMessage?: (message: DirectMessage) => Promise<DirectMessageReceipt>;
+    schedules: ScheduleService;
   }) => LocalControlLifecycle;
 }
 
@@ -69,6 +73,18 @@ export interface RunningApplication {
 
 function defaultBackend(config: Config): RuntimeBackend {
   return new QueuedAgentBackend(BACKENDS[config.agentBackend].create(config), config.queueLimits);
+}
+
+export function scheduleStorePath(
+  socketPath: string,
+  environment: NodeJS.ProcessEnv = process.env,
+  platform = process.platform,
+): string {
+  // XDG_RUNTIME_DIR is often tmpfs; keep schedules outside it across reboots.
+  const runtimeDir = environment.XDG_RUNTIME_DIR?.trim();
+  return platform !== "darwin" && runtimeDir && socketPath === join(runtimeDir, "control.sock")
+    ? join(homedir(), ".local", "state", "slack-desk-bot", "schedules.json")
+    : join(dirname(socketPath), "schedules.json");
 }
 
 export async function startApplication(
@@ -95,10 +111,17 @@ export async function startApplication(
   const health = new HealthState();
   const backend = (dependencies.createBackend ?? defaultBackend)(config);
   const agent = new ConversationCoordinator(backend);
-  const slack = (
+  let slack: SlackLifecycle;
+  const schedulePath = scheduleStorePath(config.socketPath);
+  const schedules = new ScheduleService(schedulePath, (message, creatorId) => {
+    if (!slack.sendDirectMessage) throw new Error("Direct messages are unavailable");
+    return slack.sendDirectMessage(message, creatorId);
+  });
+  slack = (
     dependencies.createSlackAgent ??
-    (({ config, agent, health }) =>
+    (({ config, agent, health, schedules }) =>
       new SlackAgent({
+        schedules,
         botToken: config.slackBotToken,
         appToken: config.slackAppToken,
         allowedUserIds: config.allowedUserIds,
@@ -109,11 +132,12 @@ export async function startApplication(
         denialStatePath: join(dirname(config.socketPath), "slack-denials.json"),
         catchUp: { statePath: join(dirname(config.socketPath), "slack-catch-up.json") },
       }))
-  )({ config, agent, health });
+  )({ config, agent, health, schedules });
   const local = (dependencies.createLocalControl ?? ((options) => new LocalControlServer(options)))(
     {
       socketPath: config.socketPath,
       coordinator: agent,
+      schedules,
       ...(slack.inspectConversation
         ? { inspector: { inspectConversation: slack.inspectConversation.bind(slack) } }
         : {}),
@@ -135,6 +159,7 @@ export async function startApplication(
       cleanupError = error;
       failedStage = "local_control";
     }
+    await schedules.stop();
     onStage?.("slack");
     try {
       await slack.stop();
@@ -173,6 +198,7 @@ export async function startApplication(
   try {
     await local.start();
     await slack.start();
+    schedules.start();
   } catch (error) {
     healthServer.stop(true);
     await disposeRuntime().catch(() => {});

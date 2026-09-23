@@ -36,7 +36,10 @@ export interface DirectMessageReceipt {
   ts: string;
 }
 
+import type { ScheduleActions } from "./schedule-tool.ts";
+
 export interface AgentConversationContext {
+  schedules?: ScheduleActions;
   readThreadHistory?(
     options: ThreadHistoryOptions,
     signal?: AbortSignal,

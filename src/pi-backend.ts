@@ -30,6 +30,7 @@ import {
   slackDirectMessageTool,
 } from "./direct-message-tool.ts";
 import { writeStructuredLog } from "./log.ts";
+import { SCHEDULE_TOOL, slackScheduleTool, type ScheduleActions } from "./schedule-tool.ts";
 import { type DiscoveredMcpTool, McpContextProvider, mcpContextTools } from "./mcp-context.ts";
 import { applyServicePiModel } from "./service-pi-settings.ts";
 import {
@@ -159,6 +160,7 @@ interface PiResourceOptions {
   mcpCatalog?: readonly DiscoveredMcpTool[];
   threadHistoryReader?: ThreadHistoryReader;
   directMessageSender?: DirectMessageSender;
+  scheduleActions?: () => ScheduleActions;
   agentDir?: string;
 }
 
@@ -169,6 +171,7 @@ export function createPiResources(workspace: string, options: PiResourceOptions 
     ...(options.mcpCatalog?.map((tool) => tool.localName) ?? []),
     ...(options.threadHistoryReader ? [THREAD_HISTORY_TOOL] : []),
     ...(options.directMessageSender ? [DIRECT_MESSAGE_TOOL] : []),
+    ...(options.scheduleActions ? [SCHEDULE_TOOL] : []),
   ];
   const allowedTools = toolsForMode(options.mode ?? "read-only", commandMode, contextToolNames);
   const settingsManager = SettingsManager.create(workspace, agentDir, { projectTrusted: false });
@@ -188,6 +191,7 @@ export function createPiResources(workspace: string, options: PiResourceOptions 
         : []),
       ...(options.threadHistoryReader ? [slackThreadHistoryTool(options.threadHistoryReader)] : []),
       ...(options.directMessageSender ? [slackDirectMessageTool(options.directMessageSender)] : []),
+      ...(options.scheduleActions ? [slackScheduleTool(options.scheduleActions)] : []),
     ],
     noExtensions: true,
     noSkills: true,
@@ -395,6 +399,11 @@ export class PiBackend implements AgentBackend {
         if (!send) throw new Error("Slack direct messages are unavailable for this request");
         return send(message, signal);
       },
+      scheduleActions: () => {
+        const actions = this.activeContexts.get(conversationId)?.schedules;
+        if (!actions) throw new Error("Schedules are unavailable for this request");
+        return actions;
+      },
     });
     await resourceLoader.reload();
     const { session } = await createAgentSession({
@@ -406,6 +415,7 @@ export class PiBackend implements AgentBackend {
         ...(mcpCatalog?.map((tool) => tool.localName) ?? []),
         THREAD_HISTORY_TOOL,
         DIRECT_MESSAGE_TOOL,
+        SCHEDULE_TOOL,
       ]),
     });
     return session;

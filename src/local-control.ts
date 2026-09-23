@@ -9,6 +9,7 @@ import type {
   DirectMessageReceipt,
 } from "./agent.ts";
 import type { ConversationCoordinator, ConversationEvent } from "./conversation-coordinator.ts";
+import type { ScheduleInput, ScheduleService } from "./schedules.ts";
 import {
   isLocalRequest,
   LOCAL_OPERATOR_ID,
@@ -28,6 +29,7 @@ interface LocalControlOptions {
   coordinator: ConversationCoordinator;
   inspector?: ConversationInspector;
   sendDirectMessage?: (message: DirectMessage) => Promise<DirectMessageReceipt>;
+  schedules?: ScheduleService;
   /**
    * Test seam for simulating a rejected peer. Neither Node nor Bun exposes
    * `SO_PEERCRED`/`getpeereid`, so the real boundary is the owner-only `0700`
@@ -207,6 +209,37 @@ export class LocalControlServer {
         throw new Error("userId and text are required");
       }
       return this.options.sendDirectMessage({ userId: request.userId, text: request.text });
+    }
+    if (request.type.startsWith("schedule-")) {
+      const schedules = this.options.schedules;
+      if (!schedules) throw new Error("Schedules are unavailable");
+      if (request.type === "schedule-list") return schedules.list(LOCAL_OPERATOR_ID, true);
+      if (request.type === "schedule-cancel") {
+        if (typeof request.id !== "string") throw new Error("id is required");
+        schedules.cancel(request.id, LOCAL_OPERATOR_ID, true);
+        return { cancelled: request.id };
+      }
+      if (typeof request.userId !== "string" || typeof request.text !== "string")
+        throw new Error("userId and text are required");
+      const input: ScheduleInput = { userId: request.userId, text: request.text };
+      if (request.at !== undefined) {
+        if (typeof request.at !== "string") throw new Error("at must be a string");
+        input.at = request.at;
+      }
+      if (request.recurrence !== undefined) {
+        if (
+          typeof request.recurrence !== "object" ||
+          request.recurrence === null ||
+          typeof request.recurrence.time !== "string" ||
+          typeof request.recurrence.timezone !== "string" ||
+          (request.recurrence.weekdays !== undefined && !Array.isArray(request.recurrence.weekdays))
+        )
+          throw new Error("Invalid recurrence");
+        input.recurrence = request.recurrence;
+      }
+      if (request.type === "schedule-create") return schedules.create(input, LOCAL_OPERATOR_ID);
+      if (typeof request.id !== "string") throw new Error("id is required");
+      return schedules.update(request.id, input, LOCAL_OPERATOR_ID, true);
     }
     if (!client.conversationId) throw new Error("Attach to a session first");
     if (request.type === "run") {
