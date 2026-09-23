@@ -85,6 +85,36 @@ describe("Git-to-Slack identities", () => {
     expect(attempts).toBe(2);
   });
 
+  test("refreshes Slack users after five minutes and retries failed refreshes", async () => {
+    const repository = temporaryDirectory();
+    let now = 0;
+    let loads = 0;
+    const resolver = new GitSlackIdentityResolver(
+      async () => {
+        loads++;
+        if (loads === 2) throw new Error("temporary Slack failure");
+        return [{ id: "UPERSON", email: loads === 1 ? "old@example.com" : "new@example.com" }];
+      },
+      join(temporaryDirectory(), "identities.yaml"),
+      () => now,
+    );
+
+    expect(await resolver.resolve(repository, "old@example.com")).toMatchObject({
+      slackUserId: "UPERSON",
+    });
+    now = 299_999;
+    expect(await resolver.resolve(repository, "old@example.com")).toBeDefined();
+    expect(loads).toBe(1);
+
+    now = 300_000;
+    expect(await resolver.resolve(repository, "new@example.com")).toBeUndefined();
+    expect(await resolver.resolve(repository, "new@example.com")).toMatchObject({
+      slackUserId: "UPERSON",
+    });
+    expect(await resolver.resolve(repository, "old@example.com")).toBeUndefined();
+    expect(loads).toBe(3);
+  });
+
   test("accepts Enterprise Grid user IDs in explicit mappings", () => {
     const path = join(temporaryDirectory(), "identities.yaml");
     linkIdentity(path, "WGRID", "person@example.com");

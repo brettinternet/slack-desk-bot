@@ -222,7 +222,7 @@ slack-desk identities link U012ABCDEF brett@users.noreply.github.com
 slack-desk identities link U012ABCDEF brett@company.com --global
 ```
 
-Project mappings go to `.slack-desk-bot/identities.yaml`; global mappings go to `~/.config/slack-desk-bot/identities.yaml`. Project mappings take precedence. `scan` requires `SLACK_BOT_TOKEN` and the `users:read.email` scope. The `contributors`, `identities`, and `bus_factor` actions include resolved Slack names and stable user IDs without exposing workspace email addresses.
+Project mappings go to `.slack-desk-bot/identities.yaml`; global mappings go to `~/.config/slack-desk-bot/identities.yaml`. Project mappings take precedence. `scan` only reports matches and unresolved authors; it does not save mappings or need to run on a schedule. The Pi backend matches identities automatically, reads explicit mappings on each lookup, and refreshes its Slack user directory after five minutes when a lookup occurs. `scan` requires `SLACK_BOT_TOKEN` and the `users:read.email` scope. The `contributors`, `identities`, and `bus_factor` actions include resolved Slack names and stable user IDs without exposing workspace email addresses.
 
 - `SLACK_AGENT_CWD` is the outer access boundary, either a single repo root or a parent of multiple repos.
 - In nested layouts, `git_inspect` resolves a workspace-relative repo root and uses paths relative to it.

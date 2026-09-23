@@ -7,6 +7,7 @@ import { WebClient } from "@slack/web-api";
 
 const execFileAsync = promisify(execFile);
 const MAX_IDENTITY_FILE_BYTES = 256 * 1024;
+const SLACK_DIRECTORY_CACHE_MS = 300_000;
 const SLACK_USER_ID = /^[UW][A-Z0-9]+$/;
 export const PROJECT_IDENTITY_PATH = ".slack-desk-bot/identities.yaml";
 
@@ -137,10 +138,12 @@ export async function loadSlackUsers(botToken: string): Promise<SlackDirectoryUs
 
 export class GitSlackIdentityResolver {
   private slackUsers?: Promise<readonly SlackDirectoryUser[]>;
+  private loadedAt?: number;
 
   constructor(
     private readonly loadUsers: SlackUserLoader,
     private readonly globalPath = defaultGlobalIdentityPath(),
+    private readonly now: () => number = Date.now,
   ) {}
 
   async resolve(repository: string, gitEmail: string): Promise<GitSlackIdentity | undefined> {
@@ -174,10 +177,22 @@ export class GitSlackIdentityResolver {
   }
 
   private users(): Promise<readonly SlackDirectoryUser[]> {
-    return (this.slackUsers ??= this.loadUsers().catch((error: unknown) => {
-      this.slackUsers = undefined;
-      throw error;
-    }));
+    if (
+      this.slackUsers &&
+      (this.loadedAt === undefined || this.now() - this.loadedAt < SLACK_DIRECTORY_CACHE_MS)
+    ) {
+      return this.slackUsers;
+    }
+    this.loadedAt = undefined;
+    return (this.slackUsers = this.loadUsers()
+      .then((users) => {
+        this.loadedAt = this.now();
+        return users;
+      })
+      .catch((error: unknown) => {
+        this.slackUsers = undefined;
+        throw error;
+      }));
   }
 }
 
