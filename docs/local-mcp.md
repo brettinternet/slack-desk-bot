@@ -13,9 +13,9 @@ Register this **stdio MCP server** in each agent's user-level MCP configuration 
 ```json
 {
     "mcpServers": {
-        "slack-desk": { "command": "/Users/brett/.local/bin/slack-desk-mcp" }
+        "slack-desk": { "command": "/path/to/home/.local/bin/slack-desk-mcp" }
     }
 }
 ```
 
-Replace `/Users/brett` with your home directory. Use the absolute launcher path: GUI-started agents may not inherit your shell's `PATH`. If the service uses a non-default socket, supply `SLACK_AGENT_SOCKET_PATH` in that agent's MCP server environment. No `bun link` or shell startup file is needed. See [README.md](../README.md#mcp-for-local-agents) for tool behavior and permissions.
+Replace `/path/to/home` with your absolute home directory. Use the absolute launcher path: GUI-started agents may not inherit your shell's `PATH`. If the service uses a non-default socket, supply `SLACK_AGENT_SOCKET_PATH` in that agent's MCP server environment. No `bun link` or shell startup file is needed. See [README.md](../README.md#mcp-for-local-agents) for tool behavior and permissions.
