@@ -62,7 +62,12 @@ class MockSlackApp {
   readonly handlers = new Map<string, SlackEventHandler>();
   readonly receiver: MockSocketModeReceiver;
   readonly client = {
-    auth: { test: mock(async (): Promise<{ user_id?: string }> => ({ user_id: "U_BOT" })) },
+    auth: {
+      test: mock(async (): Promise<{ user_id?: string; bot_id?: string }> => ({
+        user_id: "U_BOT",
+        bot_id: "B_BOT",
+      })),
+    },
     emoji: { list: mock(async () => ({ emoji: {} as Record<string, string> })) },
     chat: {
       postMessage: mock(async () => ({ ts: "operator-message" })),
@@ -667,6 +672,119 @@ describe("SlackAgent transport", () => {
       limit: 100,
       cursor: "page-2",
     });
+  });
+
+  test("audits bot-authored DMs across paged conversations and bounded history", async () => {
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+    });
+    await agent.start();
+    app.client.users.conversations.mockImplementationOnce(async () => ({
+      channels: [
+        { id: "D123", user: "U0BOB", is_im: true },
+        { id: "C123", is_im: false },
+      ],
+      response_metadata: { next_cursor: "next" },
+    }));
+    expect(await agent.listDmAuditConversations()).toEqual({
+      conversations: [{ channel: "D123", recipientId: "U0BOB" }],
+      nextCursor: "next",
+    });
+    expect(app.client.users.conversations).toHaveBeenCalledWith({
+      types: "im",
+      exclude_archived: false,
+      limit: 200,
+    });
+    app.client.conversations.history.mockImplementationOnce(async () => ({
+      messages: [
+        { ts: "1700000002.000100", user: "U_BOT", text: "*Message from <@U_ALLOWED>:*\nDone" },
+        { ts: "1700000001.000100", user: "U0BOB", text: "Thanks" },
+        { ts: "1700000000.000100", user: "U_BOT", text: "A".repeat(251_000) },
+      ],
+      has_more: true,
+    }));
+    expect(
+      await agent.auditDmMessages({
+        channel: "D123",
+        recipientId: "U0BOB",
+        oldest: "1600000000",
+        latest: "1800000000",
+      }),
+    ).toEqual({
+      messages: [
+        {
+          channel: "D123",
+          recipientId: "U0BOB",
+          ts: "1700000002.000100",
+          text: "*Message from <@U_ALLOWED>:*\nDone",
+          permalink: "https://app.slack.com/archives/D123/p1700000002000100",
+        },
+      ],
+      threads: [],
+      nextLatest: "1700000001.000100",
+    });
+    expect(app.client.conversations.history).toHaveBeenCalledWith({
+      channel: "D123",
+      oldest: "0",
+      latest: "1800000000",
+      inclusive: false,
+      limit: 100,
+    });
+    app.client.conversations.history.mockImplementationOnce(async () => ({
+      messages: [{ ts: "1700000000.000100", user: "U_BOT", text: "😀".repeat(40_000) }],
+    }));
+    const unicode = await agent.auditDmMessages({
+      channel: "D123",
+      recipientId: "U0BOB",
+      oldest: "1",
+    });
+    expect(unicode.messages[0]?.text).toBe("😀".repeat(40_000));
+    app.client.conversations.history.mockImplementationOnce(async () => ({
+      messages: [
+        { ts: "1700000000.000100", bot_id: "B_BOT", text: "bot-id only" },
+        { ts: "1700000000.000099", bot_id: "B_OTHER", text: "another app" },
+      ],
+    }));
+    expect(
+      (
+        await agent.auditDmMessages({ channel: "D123", recipientId: "U0BOB", oldest: "1" })
+      ).messages.map((item) => item.text),
+    ).toEqual(["bot-id only"]);
+    app.client.conversations.history.mockImplementationOnce(async () => ({
+      messages: [{ ts: "100.1", user: "U0BOB", reply_count: 1, text: "old parent" }],
+    }));
+    expect(
+      await agent.auditDmMessages({ channel: "D123", recipientId: "U0BOB", oldest: "200" }),
+    ).toEqual({
+      messages: [],
+      threads: ["100.1"],
+    });
+    app.client.conversations.replies.mockImplementationOnce(async () => ({
+      messages: [{ ts: "200.1", bot_id: "B_BOT", text: "new thread reply" }],
+    }));
+    expect(
+      (
+        await agent.auditDmMessages({
+          channel: "D123",
+          recipientId: "U0BOB",
+          oldest: "199",
+          threadTs: "100.1",
+          latest: "300",
+        })
+      ).messages[0]?.text,
+    ).toBe("new thread reply");
+    expect(app.client.conversations.replies).toHaveBeenCalledWith({
+      channel: "D123",
+      ts: "100.1",
+      oldest: "199",
+      latest: "300",
+      inclusive: false,
+      limit: 100,
+    });
+    await agent.stop();
   });
 
   test("keeps session listing metadata cheap", async () => {

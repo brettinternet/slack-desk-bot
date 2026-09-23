@@ -259,6 +259,61 @@ describe("local conversation control", () => {
     coordinator.dispose();
   });
 
+  test("audits DMs over the owner-only socket without a session", async () => {
+    const path = await socketPath();
+    const { coordinator } = fixture();
+    const queries: unknown[] = [];
+    const server = new LocalControlServer({
+      socketPath: path,
+      coordinator,
+      listDmAuditConversations: async (cursor) => ({
+        conversations: [{ channel: "D123", recipientId: "U0BOB" }],
+        ...(cursor ? {} : { nextCursor: "next" }),
+      }),
+      auditDmMessages: async (query) => {
+        queries.push(query);
+        return {
+          threads: [],
+          messages: [
+            {
+              channel: query.channel,
+              recipientId: query.recipientId,
+              ts: "1.1",
+              text: "hello",
+              permalink: "https://app.slack.com/archives/D123/p11",
+            },
+          ],
+        };
+      },
+    });
+    await server.start();
+    const client = await ProtocolClient.connect(path);
+    client.send("dm-audit-conversations", "list", { cursor: "page-2" });
+    expect((await client.response("list")).result.conversations).toEqual([
+      { channel: "D123", recipientId: "U0BOB" },
+    ]);
+    client.send("dm-audit-messages", "history", {
+      channel: "D123",
+      userId: "U0BOB",
+      oldest: "1",
+      latest: "2",
+    });
+    expect((await client.response("history")).result.messages[0].text).toBe("hello");
+    expect(queries).toEqual([
+      {
+        channel: "D123",
+        recipientId: "U0BOB",
+        oldest: "1",
+        latest: "2",
+      },
+    ]);
+    client.send("dm-audit-messages", "bad", { channel: "C123", userId: "U0BOB", oldest: "1" });
+    expect((await client.response("bad")).error).toBe("Invalid DM audit query");
+    client.socket.destroy();
+    await server.stop();
+    coordinator.dispose();
+  });
+
   test("looks up people without attaching or sending", async () => {
     const path = await socketPath();
     const { coordinator } = fixture();

@@ -10,6 +10,7 @@ import type {
 } from "./agent.ts";
 import type { ConversationCoordinator, ConversationEvent } from "./conversation-coordinator.ts";
 import type { ScheduleInput, ScheduleService } from "./schedules.ts";
+import type { DmAuditConversationsPage, DmAuditMessagesPage, DmAuditQuery } from "./dm-audit.ts";
 import type { PersonMatch } from "./people-lookup.ts";
 import {
   isLocalRequest,
@@ -30,6 +31,8 @@ interface LocalControlOptions {
   coordinator: ConversationCoordinator;
   inspector?: ConversationInspector;
   sendDirectMessage?: (message: DirectMessage) => Promise<DirectMessageReceipt>;
+  listDmAuditConversations?: (cursor?: string) => Promise<DmAuditConversationsPage>;
+  auditDmMessages?: (query: DmAuditQuery) => Promise<DmAuditMessagesPage>;
   findPeople?: (query: string) => Promise<PersonMatch[]>;
   schedules?: ScheduleService;
   /**
@@ -216,6 +219,37 @@ export class LocalControlServer {
         throw new Error("userId and text are required");
       }
       return this.options.sendDirectMessage({ userId: request.userId, text: request.text });
+    }
+    if (request.type === "dm-audit-conversations") {
+      if (!this.options.listDmAuditConversations) throw new Error("DM audit is unavailable");
+      if (request.cursor !== undefined && typeof request.cursor !== "string")
+        throw new Error("Invalid cursor");
+      return this.options.listDmAuditConversations(request.cursor);
+    }
+    if (request.type === "dm-audit-messages") {
+      if (!this.options.auditDmMessages) throw new Error("DM audit is unavailable");
+      if (
+        typeof request.channel !== "string" ||
+        !/^D[A-Z0-9]+$/.test(request.channel) ||
+        typeof request.userId !== "string" ||
+        !/^[UW][A-Z0-9]+$/.test(request.userId) ||
+        typeof request.oldest !== "string" ||
+        !Number.isFinite(Number(request.oldest)) ||
+        (request.latest !== undefined &&
+          (typeof request.latest !== "string" || !Number.isFinite(Number(request.latest)))) ||
+        (request.threadTs !== undefined &&
+          (typeof request.threadTs !== "string" || !/^\d+\.\d+$/.test(request.threadTs))) ||
+        (request.cursor !== undefined && (typeof request.cursor !== "string" || !request.threadTs))
+      )
+        throw new Error("Invalid DM audit query");
+      return this.options.auditDmMessages({
+        channel: request.channel,
+        recipientId: request.userId,
+        oldest: request.oldest,
+        ...(request.latest ? { latest: request.latest } : {}),
+        ...(request.threadTs ? { threadTs: request.threadTs } : {}),
+        ...(request.cursor ? { cursor: request.cursor } : {}),
+      });
     }
     if (request.type.startsWith("schedule-")) {
       const schedules = this.options.schedules;

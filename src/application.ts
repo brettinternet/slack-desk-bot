@@ -7,6 +7,7 @@ import {
   QueuedAgentBackend,
 } from "./agent.ts";
 import { BACKENDS } from "./backend-table.ts";
+import type { DmAuditConversationsPage, DmAuditMessagesPage, DmAuditQuery } from "./dm-audit.ts";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
@@ -25,6 +26,8 @@ interface SlackLifecycle extends Partial<ConversationInspector> {
   stop(): Promise<void>;
   publishOperatorExchange?(conversationId: string, prompt: string, response: string): Promise<void>;
   sendDirectMessage?(message: DirectMessage, requesterId?: string): Promise<DirectMessageReceipt>;
+  listDmAuditConversations?(cursor?: string): Promise<DmAuditConversationsPage>;
+  auditDmMessages?(query: DmAuditQuery): Promise<DmAuditMessagesPage>;
 }
 
 interface LocalControlLifecycle {
@@ -63,6 +66,8 @@ interface ApplicationDependencies {
     coordinator: ConversationCoordinator;
     inspector?: ConversationInspector;
     sendDirectMessage?: (message: DirectMessage) => Promise<DirectMessageReceipt>;
+    listDmAuditConversations?: (cursor?: string) => Promise<DmAuditConversationsPage>;
+    auditDmMessages?: (query: DmAuditQuery) => Promise<DmAuditMessagesPage>;
     findPeople?: (query: string) => Promise<PersonMatch[]>;
     schedules: ScheduleService;
   }) => LocalControlLifecycle;
@@ -162,6 +167,12 @@ export async function startApplication(
         : {}),
       ...(slack.sendDirectMessage
         ? { sendDirectMessage: (message: DirectMessage) => slack.sendDirectMessage!(message) }
+        : {}),
+      ...(slack.listDmAuditConversations && slack.auditDmMessages
+        ? {
+            listDmAuditConversations: slack.listDmAuditConversations.bind(slack),
+            auditDmMessages: slack.auditDmMessages.bind(slack),
+          }
         : {}),
     },
   );

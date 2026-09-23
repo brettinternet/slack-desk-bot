@@ -16,6 +16,8 @@ export type LocalRequestType =
   | "status"
   | "cancel"
   | "dm"
+  | "dm-audit-conversations"
+  | "dm-audit-messages"
   | "find-people"
   | "schedule-list"
   | "schedule-create"
@@ -30,6 +32,11 @@ export interface LocalRequest {
   prompt?: string;
   historyLimit?: number;
   userId?: string;
+  channel?: string;
+  oldest?: string;
+  latest?: string;
+  threadTs?: string;
+  cursor?: string;
   query?: string;
   text?: string;
   id?: string;
@@ -61,6 +68,8 @@ const REQUEST_TYPES: readonly string[] = [
   "status",
   "cancel",
   "dm",
+  "dm-audit-conversations",
+  "dm-audit-messages",
   "find-people",
   "schedule-list",
   "schedule-create",

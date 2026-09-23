@@ -3,12 +3,13 @@ import { createInterface } from "node:readline";
 import type { ConversationSummary, DirectMessageReceipt } from "./agent.ts";
 import { defaultSocketPath } from "./config.ts";
 import type { Schedule, ScheduleInput } from "./schedules.ts";
+import type { DmAuditConversationsPage, DmAuditMessage, DmAuditMessagesPage } from "./dm-audit.ts";
 import { IDENTITY_USAGE, runIdentityCommand } from "./identity-cli.ts";
 import { LocalClient } from "./local-client.ts";
 import type { ConversationEvent } from "./conversation-coordinator.ts";
 import type { LocalRequestType } from "./local-protocol.ts";
 
-const USAGE = `Usage: slack-desk [--socket <path>] sessions | slack-desk [--socket <path>] attach <session-id> [--history <0-100> | --no-history] | slack-desk [--socket <path>] dm <slack-user-id> <message...>\n       slack-desk [--socket <path>] schedule list | cancel <id> | add <user-id> (--at <ISO-offset> | --daily <HH:mm> --tz <IANA-zone> | --weekly <0-6,...> --time <HH:mm> --tz <IANA-zone>) <message...>\n       slack-desk [--socket <path>] schedule update <id> <user-id> (--at ... | --daily ... | --weekly ...) <message...>\n${IDENTITY_USAGE}`;
+const USAGE = `Usage: slack-desk [--socket <path>] sessions | slack-desk [--socket <path>] attach <session-id> [--history <0-100> | --no-history] | slack-desk [--socket <path>] dm <slack-user-id> <message...>\n       slack-desk [--socket <path>] dm audit --since <YYYY-MM-DD | ISO-offset> [--to <user-id>] [--json]\n       slack-desk [--socket <path>] schedule list | cancel <id> | add <user-id> (--at <ISO-offset> | --daily <HH:mm> --tz <IANA-zone> | --weekly <0-6,...> --time <HH:mm> --tz <IANA-zone>) <message...>\n       slack-desk [--socket <path>] schedule update <id> <user-id> (--at ... | --daily ... | --weekly ...) <message...>\n${IDENTITY_USAGE}`;
 
 function terminalText(text: string): string {
   return text
@@ -281,7 +282,139 @@ export function parseScheduleArguments(args: readonly string[]): {
   return { socketPath, type: verb === "add" ? "schedule-create" : "schedule-update", id, input };
 }
 
+export function parseDmAuditArguments(args: readonly string[]): {
+  socketPath?: string;
+  oldest: string;
+  userId?: string;
+  json: boolean;
+} {
+  const tokens = [...args];
+  let socketPath: string | undefined;
+  if (tokens[0] === "--socket") {
+    socketPath = tokens[1];
+    tokens.splice(0, 2);
+    if (!socketPath) throw new Error("--socket requires a path");
+  } else if (tokens[0]?.startsWith("--socket=")) {
+    socketPath = tokens.shift()!.slice(9);
+    if (!socketPath) throw new Error("--socket requires a path");
+  }
+  if (tokens.shift() !== "dm" || tokens.shift() !== "audit") throw new Error(USAGE);
+  let since: string | undefined;
+  let userId: string | undefined;
+  let json = false;
+  while (tokens.length > 0) {
+    const flag = tokens.shift();
+    if (flag === "--json" && !json) json = true;
+    else if (flag === "--since" && !since) since = tokens.shift();
+    else if (flag === "--to" && !userId) userId = tokens.shift();
+    else throw new Error(USAGE);
+  }
+  if (
+    !since ||
+    !(
+      /^\d{4}-\d{2}-\d{2}$/.test(since) ||
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(since)
+    ) ||
+    !Number.isFinite(Date.parse(since)) ||
+    (userId !== undefined && !/^[UW][A-Z0-9]+$/.test(userId))
+  )
+    throw new Error(USAGE);
+  if (
+    /^\d{4}-\d{2}-\d{2}$/.test(since) &&
+    new Date(Date.parse(since)).toISOString().slice(0, 10) !== since
+  )
+    throw new Error(USAGE);
+  const sinceMs = Date.parse(since);
+  if (sinceMs > Date.now()) throw new Error("--since must not be in the future");
+  return { socketPath, oldest: String(sinceMs / 1_000 - 0.000001), userId, json };
+}
+
+export async function auditDms(
+  client: LocalClient,
+  options: ReturnType<typeof parseDmAuditArguments>,
+  print: (line: string) => void = console.log,
+): Promise<void> {
+  let cursor: string | undefined;
+  let count = 0;
+  const until = String(Date.now() / 1_000);
+  do {
+    const page = (await client.request("dm-audit-conversations", {
+      cursor,
+    })) as DmAuditConversationsPage;
+    for (const conversation of page.conversations) {
+      if (options.userId && options.userId !== conversation.recipientId) continue;
+      let latest: string | undefined = until;
+      let heading = false;
+      const emitMessage = (message: DmAuditMessage): void => {
+        count++;
+        if (options.json) print(JSON.stringify(message));
+        else {
+          if (!heading) {
+            print(`── ${terminalLine(message.recipientId)} ──`);
+            heading = true;
+          }
+          print(
+            `[${new Date(Number(message.ts) * 1_000).toISOString()}] ${terminalText(message.text).replace(/\n/g, "\n    ")}`,
+          );
+          print(`  ${terminalLine(message.permalink)}`);
+        }
+      };
+      do {
+        const history = (await client.request("dm-audit-messages", {
+          channel: conversation.channel,
+          userId: conversation.recipientId,
+          oldest: options.oldest,
+          latest,
+        })) as DmAuditMessagesPage;
+        for (const message of history.messages) emitMessage(message);
+        for (const threadTs of history.threads) {
+          let threadOldest = options.oldest;
+          let threadCursor: string | undefined;
+          do {
+            const replies = (await client.request("dm-audit-messages", {
+              channel: conversation.channel,
+              userId: conversation.recipientId,
+              oldest: threadOldest,
+              latest: until,
+              threadTs,
+              cursor: threadCursor,
+            })) as DmAuditMessagesPage;
+            for (const message of replies.messages) emitMessage(message);
+            if (replies.nextOldest) threadOldest = replies.nextOldest;
+            threadCursor = replies.nextCursor;
+            if (!threadCursor && !replies.nextOldest) break;
+          } while (true);
+        }
+        latest = history.nextLatest;
+      } while (latest);
+    }
+    cursor = page.nextCursor;
+  } while (cursor);
+  if (!count && !options.json) print("No bot-authored DMs found in the requested range.");
+}
+
 export async function main(args: string[] = process.argv.slice(2)): Promise<void> {
+  if (
+    (args[0] === "dm" && args[1] === "audit") ||
+    (args[0] === "--socket" && args[2] === "dm" && args[3] === "audit") ||
+    (args[0]?.startsWith("--socket=") && args[1] === "dm" && args[2] === "audit")
+  ) {
+    const options = parseDmAuditArguments(args);
+    const socketPath =
+      options.socketPath ?? (process.env.SLACK_AGENT_SOCKET_PATH?.trim() || defaultSocketPath());
+    let client: LocalClient;
+    try {
+      client = await LocalClient.connect(socketPath);
+    } catch {
+      throw new Error(`Cannot connect to SlackDeskBot at ${socketPath}`);
+    }
+    try {
+      await auditDms(client, options);
+    } finally {
+      client.close();
+    }
+    return;
+  }
   if (
     args[0] === "schedule" ||
     (args[0] === "--socket" && args[2] === "schedule") ||

@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
   ConversationEventFormatter,
+  auditDms,
   formatHistory,
   formatSessions,
   parseArguments,
+  parseDmAuditArguments,
   parseScheduleArguments,
 } from "../src/local-cli.ts";
 import { isLocalServerMessage, LOCAL_PROTOCOL_VERSION } from "../src/local-protocol.ts";
+import type { LocalClient } from "../src/local-client.ts";
 
 describe("slack-desk argument parsing", () => {
   test("accepts both --socket forms and rejects unusable invocations", () => {
@@ -41,6 +44,125 @@ describe("slack-desk argument parsing", () => {
     });
     expect(() => parseArguments(["dm", "U0BOB"])).toThrow("Usage");
     expect(() => parseArguments(["dm"])).toThrow("Usage");
+  });
+});
+
+describe("DM audit CLI", () => {
+  test("requires a valid date and parses recipient and JSON filters", () => {
+    expect(
+      parseDmAuditArguments([
+        "--socket",
+        "/tmp/test.sock",
+        "dm",
+        "audit",
+        "--since",
+        "2026-03-01",
+        "--to",
+        "U0BOB",
+        "--json",
+      ]),
+    ).toEqual({
+      socketPath: "/tmp/test.sock",
+      oldest: String(Date.parse("2026-03-01") / 1000 - 0.000001),
+      userId: "U0BOB",
+      json: true,
+    });
+    expect(() => parseDmAuditArguments(["dm", "audit"])).toThrow("Usage");
+    expect(() => parseDmAuditArguments(["dm", "audit", "--since", "2026-02-30"])).toThrow("Usage");
+    expect(() =>
+      parseDmAuditArguments(["dm", "audit", "--since", "2026-03-01", "--to", "oops"]),
+    ).toThrow("Usage");
+  });
+
+  test("streams every page of bot messages without printing other recipients", async () => {
+    const requests: Array<{ type: string; fields: Record<string, unknown> }> = [];
+    const client = {
+      request: async (type: string, fields: Record<string, unknown>) => {
+        requests.push({ type, fields });
+        if (type === "dm-audit-conversations")
+          return fields.cursor
+            ? { conversations: [{ channel: "D2", recipientId: "U0BOB" }] }
+            : { conversations: [{ channel: "D1", recipientId: "U0OTHER" }], nextCursor: "page-2" };
+        if (fields.threadTs)
+          return {
+            messages: [
+              {
+                channel: "D2",
+                recipientId: "U0BOB",
+                ts: "100.3",
+                text: "thread reply",
+                permalink: "link3",
+              },
+            ],
+            threads: [],
+          };
+        return fields.latest === "100.2"
+          ? {
+              messages: [
+                {
+                  channel: "D2",
+                  recipientId: "U0BOB",
+                  ts: "100.1",
+                  text: "second",
+                  permalink: "link2",
+                },
+              ],
+              threads: [],
+            }
+          : {
+              messages: [
+                {
+                  channel: "D2",
+                  recipientId: "U0BOB",
+                  ts: "100.2",
+                  text: "first",
+                  permalink: "link1",
+                },
+              ],
+              threads: ["99.1"],
+              nextLatest: "100.2",
+            };
+      },
+    } as unknown as LocalClient;
+    const lines: string[] = [];
+    await auditDms(client, { oldest: "90", userId: "U0BOB", json: true }, (line) =>
+      lines.push(line),
+    );
+    expect(lines.map((line) => JSON.parse(line).text)).toEqual(["first", "thread reply", "second"]);
+    expect(requests.find(({ fields }) => fields.threadTs)?.fields).toMatchObject({
+      threadTs: "99.1",
+      oldest: "90",
+    });
+    expect(requests.map(({ type }) => type)).toEqual([
+      "dm-audit-conversations",
+      "dm-audit-conversations",
+      "dm-audit-messages",
+      "dm-audit-messages",
+      "dm-audit-messages",
+    ]);
+  });
+
+  test("indents multiline message content in human-readable output", async () => {
+    const client = {
+      request: async (type: string) =>
+        type === "dm-audit-conversations"
+          ? { conversations: [{ channel: "D1", recipientId: "U0BOB" }] }
+          : {
+              messages: [
+                {
+                  channel: "D1",
+                  recipientId: "U0BOB",
+                  ts: "100.1",
+                  text: "hi\n── fake recipient ──\n[2026] fake",
+                  permalink: "link",
+                },
+              ],
+              threads: [],
+            },
+    } as unknown as LocalClient;
+    const lines: string[] = [];
+    await auditDms(client, { oldest: "1", json: false }, (line) => lines.push(line));
+    expect(lines[1]).toContain("hi\n    ── fake recipient ──\n    [2026] fake");
   });
 });
 

@@ -21,6 +21,7 @@ import {
   type ThreadHistoryPage,
 } from "./agent.ts";
 import { MAX_DIRECT_MESSAGE_CHARACTERS } from "./direct-message-tool.ts";
+import type { DmAuditConversationsPage, DmAuditMessagesPage, DmAuditQuery } from "./dm-audit.ts";
 import type { ScheduleService } from "./schedules.ts";
 import { EventDeduplicator } from "./event-deduplicator.ts";
 import { ingestSlackFiles } from "./slack-files.ts";
@@ -218,6 +219,7 @@ export class SlackAgent {
   private workspaceEmojiNames: string[] = [];
   private readonly userCache = new Map<string, ConversationParticipant>();
   private botUserId = "";
+  private botId?: string;
   private activeResponses = 0;
   private responseCapacityWarningLogged = false;
   private catchUpStore: SlackCatchUpStore | undefined;
@@ -335,6 +337,7 @@ export class SlackAgent {
     }
     if (!authentication.user_id) throw new SlackAuthenticationError();
     this.botUserId = authentication.user_id;
+    this.botId = authentication.bot_id;
     await this.loadWorkspaceEmoji();
     await this.app.start();
     this.scheduleCatchUp();
@@ -660,6 +663,96 @@ export class SlackAgent {
       messages: chunks.length,
     });
     return receipt!;
+  }
+
+  async listDmAuditConversations(cursor?: string): Promise<DmAuditConversationsPage> {
+    const response = await this.slackOperation(
+      this.app.client.users.conversations({
+        types: "im",
+        exclude_archived: false,
+        limit: 200,
+        ...(cursor ? { cursor } : {}),
+      }),
+    );
+    const conversations = (response.channels ?? []) as Array<SlackConversation & { user?: string }>;
+    const nextCursor = response.response_metadata?.next_cursor || undefined;
+    return {
+      conversations: conversations.flatMap((item) =>
+        item.is_im && item.id?.startsWith("D") && item.user
+          ? [{ channel: item.id, recipientId: item.user }]
+          : [],
+      ),
+      ...(nextCursor ? { nextCursor } : {}),
+    };
+  }
+
+  async auditDmMessages(query: DmAuditQuery): Promise<DmAuditMessagesPage> {
+    if (!this.botId) throw new Error("Slack did not identify the bot; DM audit cannot be complete");
+    const response = query.threadTs
+      ? await this.slackOperation(
+          this.app.client.conversations.replies({
+            channel: query.channel,
+            ts: query.threadTs,
+            oldest: query.oldest,
+            ...(query.latest ? { latest: query.latest } : {}),
+            ...(query.cursor ? { cursor: query.cursor } : {}),
+            inclusive: false,
+            limit: 100,
+          }),
+        )
+      : await this.slackOperation(
+          this.app.client.conversations.history({
+            channel: query.channel,
+            // Scan older parents too: a thread started before --since can have new replies.
+            oldest: "0",
+            ...(query.latest ? { latest: query.latest } : {}),
+            inclusive: false,
+            limit: 100,
+          }),
+        );
+    const raw = (response.messages ?? []) as SlackHistoryMessage[];
+    const messages: DmAuditMessagesPage["messages"] = [];
+    const threads: string[] = [];
+    let lastTs: string | undefined;
+    let cutShort = false;
+    // The client caps responses at 256 KiB; leave room for the response envelope.
+    let bytes = 0;
+    for (const message of raw) {
+      if (
+        message.ts &&
+        message.ts !== query.threadTs &&
+        Number(message.ts) > Number(query.oldest) &&
+        (message.user === this.botUserId || message.bot_id === this.botId)
+      ) {
+        const entry = {
+          channel: query.channel,
+          recipientId: query.recipientId,
+          ts: message.ts,
+          text: message.text ?? "",
+          permalink: `https://app.slack.com/archives/${query.channel}/p${message.ts.replace(".", "")}`,
+        };
+        const size = Buffer.byteLength(JSON.stringify(entry));
+        if (bytes + size > 250_000) {
+          if (!lastTs) throw new Error("Slack message exceeds the audit response size limit");
+          cutShort = true;
+          break;
+        }
+        bytes += size;
+        messages.push(entry);
+      }
+      if (!query.threadTs && message.reply_count && message.reply_count > 0 && message.ts) {
+        threads.push(message.ts);
+      }
+      if (message.ts) lastTs = message.ts;
+    }
+    if (cutShort || response.has_more || response.response_metadata?.next_cursor) {
+      if (!lastTs) throw new Error("Slack history cannot be paginated for DM audit");
+      if (!query.threadTs) return { messages, threads, nextLatest: lastTs };
+      if (!cutShort && response.response_metadata?.next_cursor)
+        return { messages, threads, nextCursor: response.response_metadata.next_cursor };
+      return { messages, threads, nextOldest: lastTs };
+    }
+    return { messages, threads };
   }
 
   async inspectConversation(
