@@ -12,6 +12,7 @@ import {
   slackUserMentions,
   splitSlackMessage,
   stripBotMention,
+  threadReplyRecipient,
   TRUNCATION_MARKER,
 } from "../src/messages.ts";
 
@@ -65,6 +66,11 @@ describe("Slack message helpers", () => {
 
   test("ignores acknowledgements, observations, and messages addressed to people", () => {
     expect(channelThreadIntent("Thanks!", "U_BOT", false).respond).toBe(false);
+    expect(channelThreadIntent("thanks brett", "U_BOT", true).respond).toBe(false);
+    expect(channelThreadIntent("ok main", "U_BOT", true).respond).toBe(true);
+    expect(channelThreadIntent("sounds good, proceed", "U_BOT", true).respond).toBe(true);
+    expect(channelThreadIntent("thanks <@U_BRETT>", "U_BOT", true).respond).toBe(false);
+    expect(channelThreadIntent("What time works for you?", "U_BOT", false).respond).toBe(false);
     expect(channelThreadIntent("FYI, production is healthy.", "U_BOT", false).respond).toBe(false);
     expect(
       channelThreadIntent("No reply needed; production is healthy.", "U_BOT", true).respond,
@@ -77,6 +83,12 @@ describe("Slack message helpers", () => {
     expect(channelThreadIntent("the second one", "U_BOT", true).respond).toBe(true);
     expect(awaitsThreadReply("I found two options. Which one should I use?")).toBe(true);
     expect(awaitsThreadReply("Production is healthy.")).toBe(false);
+    expect(threadReplyRecipient("I sent <@U_CFB> a reminder. What time works?", "U_BRETT")).toBe(
+      "U_BRETT",
+    );
+    expect(threadReplyRecipient("<@U_CFB>, what time works?", "U_BRETT")).toBe("U_CFB");
+    expect(threadReplyRecipient("Should I ping <@U_CFB>?", "U_BRETT")).toBe("U_BRETT");
+    expect(threadReplyRecipient("Done. <@U_CFB>, what time works?", "U_BRETT")).toBe("U_CFB");
   });
 
   test("preserves only user mentions explicitly included in the request", () => {

@@ -108,7 +108,7 @@ Mention the bot in a channel to start a conversation, or message it directly in 
 laptop: check the failing test
 ```
 
-Follow-ups in an active thread need no mention, even across restarts. While the service remains running, answers to the bot's questions are inferred automatically. General observations, acknowledgements, explicit no-reply notes, and messages addressed to another user are ignored. Prefix short or ambiguous messages with `laptop:` to address the bot without an @mention.
+In an active bot-owned thread, clear requests from the person who last invited the bot need no mention for 24 hours. A short answer to the bot's question needs no mention from the person the bot asked (the requester by default, or someone directly @addressed in the question). These turns survive restarts and expire after 24 hours. General observations, acknowledgements, human-to-human questions, explicit no-reply notes, and messages addressed to another user are ignored. Other people and older threads can @mention the bot or prefix a message with `laptop:` to rejoin.
 
 With the Pi backend, the bot can read paginated history for its current thread on demand when asked to catch up or summarize. It can also DM someone for you, such as "tell <@U0123456789> the deploy is done"; the DM names you as the requester. Only `SLACK_ALLOWED_USER_IDS` can invoke the bot. The first unauthorized mention explains the denial; repeated attempts from the same user and conversation within ten minutes receive a `:no_entry:` reaction, persisting across restarts. After a successful response, the bot has a 20% chance of adding a random custom workspace emoji reaction.
 

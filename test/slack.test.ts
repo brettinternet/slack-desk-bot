@@ -1897,6 +1897,215 @@ describe("SlackAgent transport", () => {
     );
   });
 
+  test("ignores a bystander's thanks without losing the requester's pending answer across restart", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "slack-thread-turn-"));
+    try {
+      const statePath = join(directory, "pending.json");
+      const run = mock(
+        async () => "I sent <@U_CFB> the first reminder. What time and timezone should I use?",
+      );
+      const first = new SlackAgent({
+        botToken: "xoxb-test",
+        appToken: "xapp-test",
+        allowedUserIds: new Set(["U_ALLOWED", "U_CFB"]),
+        agent: backend(run),
+        threadReplyStatePath: statePath,
+      });
+      await first.start();
+      const slack = client();
+      await app.handlers.get("app_mention")!({
+        body: { event_id: "E_QUESTION" },
+        event: { user: "U_ALLOWED", text: "<@U_BOT> schedule a reminder", channel: "C1", ts: "30" },
+        client: slack,
+      });
+      expect(run).toHaveBeenCalledTimes(1);
+
+      const resumed = mock(async () => "Scheduled for 6am ET.");
+      const second = new SlackAgent({
+        botToken: "xoxb-test",
+        appToken: "xapp-test",
+        allowedUserIds: new Set(["U_ALLOWED", "U_CFB"]),
+        agent: backend(resumed, async () => true),
+        threadReplyStatePath: statePath,
+      });
+      await second.start();
+      const reply = app.handlers.get("message")!;
+      for (const [eventId, user, text, ts] of [
+        ["E_THANKS", "U_CFB", "thanks brett", "31"],
+        ["E_OTHER_QUESTION", "U_CFB", "What time works for you?", "32"],
+        ["E_OTHER_REQUEST", "U_CFB", "Could you check staging?", "32.1"],
+      ]) {
+        await reply({
+          body: { event_id: eventId! },
+          event: { channel_type: "channel", channel: "C1", thread_ts: "30", ts, user, text },
+          client: slack,
+        });
+      }
+      await reply({
+        body: { event_id: "E_FILE_ASIDE" },
+        event: {
+          channel_type: "channel",
+          channel: "C1",
+          thread_ts: "30",
+          ts: "32.5",
+          user: "U_CFB",
+          subtype: "file_share",
+          files: [{ id: "F_UNRELATED" }],
+        },
+        client: slack,
+      });
+      expect(resumed).toHaveBeenCalledTimes(0);
+      await reply({
+        body: { event_id: "E_TIME" },
+        event: {
+          channel_type: "channel",
+          channel: "C1",
+          thread_ts: "30",
+          ts: "33",
+          user: "U_ALLOWED",
+          text: "6am ET",
+        },
+        client: slack,
+      });
+      expect(resumed).toHaveBeenCalledTimes(1);
+      expect(resumed).toHaveBeenCalledWith(
+        expect.objectContaining({ conversationId: "C1:30", prompt: "6am ET" }),
+        expect.any(Object),
+      );
+      await reply({
+        body: { event_id: "E_LATE_ANSWER" },
+        event: {
+          channel_type: "channel",
+          channel: "C1",
+          thread_ts: "30",
+          ts: "34",
+          user: "U_ALLOWED",
+          text: "later actually",
+        },
+        client: slack,
+      });
+      expect(resumed).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps a pending answer available after admission rejects an attempted answer", async () => {
+    let admissions = 0;
+    const run = mock(async () => (admissions === 1 ? "Which branch?" : "Inspecting main."));
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: {
+        ...backend(run),
+        admit: () => {
+          if (++admissions === 2) throw new RateLimitError();
+          return { release: () => {} };
+        },
+      },
+    });
+    const slack = client();
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_ASK_BRANCH" },
+      event: { user: "U_ALLOWED", text: "choose a branch", channel: "C1", ts: "50" },
+      client: slack,
+    });
+    for (const [eventId, ts] of [
+      ["E_REJECTED_BRANCH", "51"],
+      ["E_RETRIED_BRANCH", "52"],
+    ]) {
+      await app.handlers.get("message")!({
+        body: { event_id: eventId! },
+        event: {
+          channel_type: "channel",
+          channel: "C1",
+          thread_ts: "50",
+          ts,
+          user: "U_ALLOWED",
+          text: "main",
+        },
+        client: slack,
+      });
+    }
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenLastCalledWith(
+      expect.objectContaining({ prompt: "main" }),
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
+  test("accepts an explicit question's addressee without responding to the requester aside", async () => {
+    const run = mock(async () => "<@U0CFB>, what time should I use?");
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED", "U0CFB"]),
+      agent: backend(run),
+    });
+    const slack = client();
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_ASK_CFB" },
+      event: { user: "U_ALLOWED", text: "ask <@U0CFB>", channel: "C1", ts: "40" },
+      client: slack,
+    });
+    const reply = app.handlers.get("message")!;
+    await reply({
+      body: { event_id: "E_BRETT_ASIDE" },
+      event: {
+        channel_type: "channel",
+        channel: "C1",
+        thread_ts: "40",
+        ts: "41",
+        user: "U_ALLOWED",
+        text: "he is in EST",
+      },
+      client: slack,
+    });
+    await reply({
+      body: { event_id: "E_CFB_ANSWER" },
+      event: {
+        channel_type: "channel",
+        channel: "C1",
+        thread_ts: "40",
+        ts: "42",
+        user: "U0CFB",
+        text: "6am ET",
+      },
+      client: slack,
+    });
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenLastCalledWith(
+      expect.objectContaining({ requesterId: "U0CFB", prompt: "6am ET" }),
+      expect.any(Object),
+    );
+  });
+
+  test("does not await an answer to a question truncated from the Slack reply", async () => {
+    const run = mock(async () => "long response ".repeat(1_000) + "Which option?");
+    createAgent(run);
+    const slack = client();
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_TRUNCATED_QUESTION" },
+      event: { user: "U_ALLOWED", text: "summarize", channel: "C1", ts: "60" },
+      client: slack,
+    });
+    await app.handlers.get("message")!({
+      body: { event_id: "E_ANSWER_TO_UNSEEN_QUESTION" },
+      event: {
+        channel_type: "channel",
+        channel: "C1",
+        thread_ts: "60",
+        ts: "61",
+        user: "U_ALLOWED",
+        text: "main",
+      },
+      client: slack,
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   test("filters unsafe events and silently ignores unauthorized messages", async () => {
     const run = mock(async () => "response");
     createAgent(run);
@@ -1975,7 +2184,15 @@ describe("SlackAgent transport", () => {
       persisted.add(conversationId);
       return "first response";
     });
-    createAgent(firstRun);
+    const directory = mkdtempSync(join(tmpdir(), "slack-thread-owner-"));
+    const statePath = join(directory, "pending.json");
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(firstRun),
+      threadReplyStatePath: statePath,
+    });
     const slack = client();
     await app.handlers.get("app_mention")!({
       body: { event_id: "E_BEFORE_RESTART" },
@@ -1985,7 +2202,13 @@ describe("SlackAgent transport", () => {
 
     const restartedRun = mock(async () => "restarted response");
     const hasConversation = mock(async (id: string) => persisted.has(id));
-    createAgent(restartedRun, hasConversation);
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(restartedRun, hasConversation),
+      threadReplyStatePath: statePath,
+    });
     const restartedMessage = app.handlers.get("message")!;
     const reply = {
       channel_type: "channel",
@@ -2017,6 +2240,7 @@ describe("SlackAgent transport", () => {
       expect.any(Object),
     );
     expect(hasConversation.mock.calls).toEqual([["C1:20"], ["C1:29"]]);
+    rmSync(directory, { recursive: true, force: true });
   });
 
   test("deduplicates app mentions delivered through channel message subscriptions", async () => {

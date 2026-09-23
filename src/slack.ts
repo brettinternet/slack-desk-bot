@@ -28,6 +28,7 @@ import { ingestSlackFiles } from "./slack-files.ts";
 import { type LogWriter, type RequestLogWriter, writeStructuredLog } from "./log.ts";
 import { type HealthState } from "./health.ts";
 import { SlackCatchUpStore } from "./slack-catch-up-store.ts";
+import { ThreadReplyStore } from "./thread-reply-store.ts";
 import {
   awaitsThreadReply,
   channelThreadIntent,
@@ -40,6 +41,8 @@ import {
   slackUserMentions,
   splitSlackMessage,
   stripBotMention,
+  threadReplyRecipient,
+  TRUNCATION_MARKER,
 } from "./messages.ts";
 
 interface SlackAgentOptions {
@@ -56,6 +59,7 @@ interface SlackAgentOptions {
   health?: HealthState;
   random?: () => number;
   denialStatePath?: string;
+  threadReplyStatePath?: string;
   catchUp?: {
     statePath: string;
     lookbackMs?: number;
@@ -85,6 +89,7 @@ interface DeliveryResult {
   outcome: "success" | "partial" | "failure";
   publishedMessages: number;
   errorType?: string;
+  postedText?: string;
 }
 
 interface SlackFileReference {
@@ -117,6 +122,7 @@ interface CatchUpTarget {
 }
 
 interface CatchUpCandidate extends InboundSlackMessage {
+  explicitRejoin?: boolean;
   timestamp: number;
   key: string;
 }
@@ -130,6 +136,7 @@ interface InboundSlackMessage {
   prompt: string;
   files: readonly SlackFileReference[];
   clientMessageId?: string;
+  pendingAnswer?: boolean;
 }
 
 interface RequestStatus {
@@ -214,7 +221,7 @@ export class SlackAgent {
   private readonly capacityReplies = new EventDeduplicator();
   private readonly missingConversations = new Map<string, number>();
   private readonly ownedChannelThreads = new Set<string>();
-  private readonly awaitingThreadReplies = new Set<string>();
+  private readonly threadReplies: ThreadReplyStore;
   private readonly receiver: SocketModeReceiver;
   private workspaceEmojiNames: string[] = [];
   private readonly userCache = new Map<string, ConversationParticipant>();
@@ -228,6 +235,7 @@ export class SlackAgent {
 
   constructor(private readonly options: SlackAgentOptions) {
     this.denials = new EventDeduplicator({ statePath: options.denialStatePath });
+    this.threadReplies = new ThreadReplyStore(options.threadReplyStatePath);
     this.receiver = new SocketModeReceiver({ appToken: options.appToken });
     this.receiver.client.on("connecting", () => options.health?.setSlackConnection("connecting"));
     this.receiver.client.on("connected", () => options.health?.setSlackConnection("connected"));
@@ -269,7 +277,8 @@ export class SlackAgent {
         return;
       const id = conversationId(event.channel, threadTs);
       this.ownedChannelThreads.add(id);
-      this.awaitingThreadReplies.delete(id);
+      this.threadReplies.setOwner(id, event.user);
+      this.threadReplies.clear(id);
       await this.respondWithinLimit(client, {
         requestId: body.event_id,
         channel: event.channel,
@@ -301,18 +310,30 @@ export class SlackAgent {
       if (!this.options.allowedUserIds.has(event.user)) return;
       const rawText = "text" in event ? (event.text ?? "") : "";
       const id = conversationId(event.channel, threadTs);
+      const pendingAnswer = !directMessage && this.threadReplies.expects(id, event.user);
       const intent = directMessage
         ? { prompt: rawText, respond: true }
-        : channelThreadIntent(rawText, this.botUserId, this.awaitingThreadReplies.has(id));
+        : channelThreadIntent(
+            rawText,
+            this.botUserId,
+            pendingAnswer,
+            this.threadReplies.isOwner(id, event.user),
+          );
       const files = eventFiles(event);
       const clientMessageId = "client_msg_id" in event ? event.client_msg_id : undefined;
       if (
         (!intent.prompt && files.length === 0) ||
-        (!intent.respond && intent.prompt.length > 0) ||
+        !intent.respond ||
         !this.acceptEvent(body.event_id, event.channel, event.ts, clientMessageId)
       )
         return;
-      this.awaitingThreadReplies.delete(id);
+      if (
+        !directMessage &&
+        (rawText.includes(`<@${this.botUserId}>`) || /^\s*laptop\s*[:,]/i.test(rawText))
+      ) {
+        this.threadReplies.setOwner(id, event.user);
+      }
+      this.threadReplies.clear(id);
       await this.respondWithinLimit(client, {
         requestId: body.event_id,
         channel: event.channel,
@@ -321,6 +342,7 @@ export class SlackAgent {
         requesterId: event.user,
         prompt: intent.prompt,
         files,
+        ...(pendingAnswer ? { pendingAnswer } : {}),
         ...(clientMessageId ? { clientMessageId } : {}),
       });
     });
@@ -522,6 +544,15 @@ export class SlackAgent {
       ) {
         continue;
       }
+      if (candidate.threadTs && candidate.explicitRejoin) {
+        this.threadReplies.setOwner(
+          conversationId(candidate.channel, candidate.threadTs),
+          candidate.requesterId,
+        );
+      }
+      if (candidate.pendingAnswer && candidate.threadTs) {
+        this.threadReplies.clear(conversationId(candidate.channel, candidate.threadTs));
+      }
       await this.respondWithinLimit(this.app.client, candidate);
     }
     if (complete && !this.stopping) {
@@ -550,13 +581,19 @@ export class SlackAgent {
     const files = message.files ?? [];
     let prompt = rawText;
     let threadTs = target.threadTs;
+    let pendingAnswer = false;
     if (!target.directMessage && target.threadTs) {
+      pendingAnswer = this.threadReplies.expects(
+        conversationId(target.channel, target.threadTs),
+        message.user,
+      );
       const intent = channelThreadIntent(
         rawText,
         this.botUserId,
-        this.awaitingThreadReplies.has(conversationId(target.channel, target.threadTs)),
+        pendingAnswer,
+        this.threadReplies.isOwner(conversationId(target.channel, target.threadTs), message.user),
       );
-      if (!intent.respond && files.length === 0) return undefined;
+      if (!intent.respond) return undefined;
       prompt = intent.prompt;
     } else if (!target.directMessage) {
       const mention = `<@${this.botUserId}>`;
@@ -573,6 +610,11 @@ export class SlackAgent {
       requesterId: message.user,
       prompt,
       files,
+      ...(pendingAnswer ? { pendingAnswer } : {}),
+      ...(!target.directMessage &&
+      (rawText.includes(`<@${this.botUserId}>`) || /^\s*laptop\s*[:,]/i.test(rawText))
+        ? { explicitRejoin: true }
+        : {}),
       timestamp: Number(message.ts) * 1_000,
       key: `${target.channel}:${message.ts}`,
       ...(message.client_msg_id ? { clientMessageId: message.client_msg_id } : {}),
@@ -1121,6 +1163,7 @@ export class SlackAgent {
         });
         this.responseCapacityWarningLogged = true;
       }
+      this.restorePendingAnswer(message);
       await this.reportCapacityDrop(client, message);
       return;
     }
@@ -1188,6 +1231,7 @@ export class SlackAgent {
       try {
         admission = this.options.agent.admit?.(message.requesterId);
       } catch (error) {
+        this.restorePendingAnswer(message);
         await this.postAdmissionError(client, message, error);
         return;
       }
@@ -1237,13 +1281,29 @@ export class SlackAgent {
     const id = conversationId(message.channel, message.threadTs);
     if (
       execution.outcome === "success" &&
-      delivery.outcome !== "failure" &&
-      execution.finalOutput &&
-      awaitsThreadReply(execution.finalOutput)
+      delivery.outcome === "success" &&
+      delivery.postedText &&
+      !delivery.postedText.endsWith(TRUNCATION_MARKER) &&
+      awaitsThreadReply(delivery.postedText)
     ) {
-      this.awaitingThreadReplies.add(id);
+      const recipient = threadReplyRecipient(delivery.postedText, message.requesterId);
+      this.threadReplies.set(
+        id,
+        this.options.allowedUserIds.has(recipient) ? recipient : message.requesterId,
+      );
+    } else if (message.pendingAnswer && execution.outcome !== "success") {
+      this.restorePendingAnswer(message);
     } else {
-      this.awaitingThreadReplies.delete(id);
+      this.threadReplies.clear(id);
+    }
+  }
+
+  private restorePendingAnswer(message: InboundSlackMessage): void {
+    if (message.pendingAnswer && message.threadTs) {
+      this.threadReplies.set(
+        conversationId(message.channel, message.threadTs),
+        message.requesterId,
+      );
     }
   }
 
@@ -1587,6 +1647,6 @@ export class SlackAgent {
         return { outcome: "partial", publishedMessages, errorType: errorType(error) };
       }
     }
-    return { outcome: "success", publishedMessages };
+    return { outcome: "success", publishedMessages, postedText: rest.at(-1) ?? first };
   }
 }

@@ -12,7 +12,7 @@ export const HELP_MESSAGE = `SlackDeskBot commands:
 • !reset — start a fresh session
 • !cancel (or cancel) — stop the active request
 
-Send a prompt or attach a supported text/image file in a DM. In a channel, mention the bot to start or rejoin a thread. Follow-up questions and requests do not need another mention; use \`laptop:\` when a short or ambiguous message is for the bot.`;
+Send a prompt or attach a supported text/image file in a DM. In a channel, mention the bot to start or rejoin a thread. Clear requests in an active bot thread and answers to a question directed at you need no mention. For other follow-ups, use an @mention or \`laptop:\`.`;
 
 export type SlackCommand =
   { kind: "agent"; command: AgentCommand } | { kind: "help" } | { kind: "unknown" };
@@ -41,7 +41,7 @@ export function stripBotMention(text: string, botUserId: string): string {
 }
 
 const ACKNOWLEDGEMENT =
-  /^(?:thanks|thank you|thx|got it|okay|ok|sounds good|great|cool|perfect|done)[.!\s]*$/i;
+  /^(?:(?:thanks|thank you|thx)(?:[,.!\s]+(?:<@[A-Z0-9_]+>|[a-z][\w'-]*))?|got it|okay|ok|sounds good|great|cool|perfect|done)[.!\s]*$/i;
 const NO_REPLY = /\b(?:no (?:reply|response) (?:needed|required)|no need to (?:reply|respond))\b/i;
 const HUMAN_ADDRESSEE = /^<@[A-Z0-9_]+>[,:]?\s*/;
 const REQUEST =
@@ -58,6 +58,7 @@ export function channelThreadIntent(
   text: string,
   botUserId: string,
   awaitingReply: boolean,
+  allowRequest = true,
 ): ChannelThreadIntent {
   const trimmed = text.trim();
   const explicitlyMentioned = trimmed.includes(`<@${botUserId}>`);
@@ -73,7 +74,7 @@ export function channelThreadIntent(
   }
   return {
     prompt,
-    respond: awaitingReply || prompt.includes("?") || REQUEST.test(prompt),
+    respond: awaitingReply || (allowRequest && REQUEST.test(prompt)),
   };
 }
 
@@ -85,6 +86,20 @@ export function awaitsThreadReply(text: string): boolean {
       .split(/\n\s*\n/)
       .at(-1) ?? "";
   return /\?|\b(?:let me know|which (?:one|option)|would you like|should I)\b/i.test(ending);
+}
+
+/** A direct @address on the question overrides the requester as the expected respondent. */
+export function threadReplyRecipient(text: string, requesterId: string): string {
+  const ending =
+    text
+      .trim()
+      .split(/\n\s*\n/)
+      .at(-1) ?? "";
+  const addressedQuestion = /(?:^|[.!?]\s+)<@([A-Z0-9_]+)>[,:]?\s*[^.!?]*\?/g;
+  let match: RegExpExecArray | null;
+  let recipient = requesterId;
+  while ((match = addressedQuestion.exec(ending))) recipient = match[1]!;
+  return recipient;
 }
 
 export function splitSlackMessage(
