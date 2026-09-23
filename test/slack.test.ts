@@ -19,6 +19,7 @@ import {
 import type { RequestLog, StructuredLog } from "../src/log.ts";
 import { SLACK_MESSAGE_LIMIT } from "../src/messages.ts";
 import { ScheduleService } from "../src/schedules.ts";
+import { AutomationService } from "../src/automations.ts";
 
 interface SlackEventHandler {
   (input: {
@@ -1668,6 +1669,69 @@ describe("SlackAgent transport", () => {
     });
     expect(results[5]).toBe("cancelled");
     expect(schedules.list("local-operator", true)).toEqual([]);
+  });
+
+  test("scopes automation actions to the requester and Slack operators", async () => {
+    const automations = new AutomationService(
+      join(mkdtempSync(join(tmpdir(), "slack-bot-automations-")), "automations.json"),
+      {
+        "linear-issue": {
+          fields: ["statusType"],
+          validId: () => true,
+          read: async () => ({ fields: { statusType: "started" }, url: "" }),
+        },
+      },
+      async () => {},
+    );
+    const results: unknown[] = [];
+    const run = mock(async (request: Parameters<AgentBackend["run"]>[0]) => {
+      const actions = request.context!.automations!;
+      if (request.requesterId === "U0ALICE")
+        results.push(
+          await actions.create({
+            source: { kind: "linear-issue", id: "ENG-123" },
+            condition: { field: "statusType", equals: "completed" },
+          }),
+        );
+      else {
+        results.push(actions.list());
+        try {
+          actions.cancel((results[0] as { automation: { id: string } }).automation.id);
+          results.push("cancelled");
+        } catch (error) {
+          results.push((error as Error).message);
+        }
+      }
+      return "done";
+    });
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U0ALICE", "U0OTHER", "U0ADMIN"]),
+      operatorUserIds: new Set(["U0ADMIN"]),
+      agent: backend(run),
+      automations,
+    });
+    for (const [index, user] of ["U0ALICE", "U0OTHER", "U0ADMIN"].entries()) {
+      await app.handlers.get("message")!({
+        body: { event_id: `E_AUTOMATION_${index}` },
+        event: {
+          user,
+          text: "manage automations",
+          channel: `D${index}`,
+          channel_type: "im",
+          ts: `${index + 1}`,
+        },
+        client: client(),
+      });
+    }
+    expect(results[0]).toMatchObject({
+      automation: { creatorId: "U0ALICE", recipientId: "U0ALICE" },
+    });
+    expect(results[1]).toEqual([]);
+    expect(results[2]).toBe("Automation not found");
+    expect(results[3]).toHaveLength(1);
+    expect(results[4]).toBe("cancelled");
   });
 
   test("rejects direct messages to bots, missing users, and malformed IDs", async () => {

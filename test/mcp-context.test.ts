@@ -204,6 +204,38 @@ describe("MCP context provider", () => {
     await expect(provider.call("linear", "create_issue", {})).rejects.toThrow("not allowed");
   });
 
+  test("returns bounded full JSON to trusted service code without exposing it to the agent", async () => {
+    const body = JSON.stringify({ id: "ENG-123", description: "x".repeat(60_000) });
+    const provider = new McpContextProvider(
+      {
+        version: 1,
+        servers: {
+          linear: {
+            url: "https://mcp.linear.app/mcp/readonly",
+            allowedTools: { get_issue: { localName: "linear_get_issue" } },
+          },
+        },
+      },
+      {
+        connect: async () => ({
+          listTools: async () => ({ tools: [] }),
+          callTool: async () => ({ content: [{ type: "text", text: body }] }),
+          close: async () => {},
+        }),
+      },
+    );
+    expect(
+      (
+        (await provider.callJson("linear", "get_issue", { id: "ENG-123" })) as {
+          description: string;
+        }
+      ).description.length,
+    ).toBe(60_000);
+    expect(await provider.call("linear", "get_issue", { id: "ENG-123" })).toContain(
+      "Output truncated",
+    );
+  });
+
   test("fails closed for destructive or changed allowed tools", async () => {
     const schema = { type: "object" as const };
     const makeProvider = (destructiveHint: boolean, schemaSha256?: string) =>

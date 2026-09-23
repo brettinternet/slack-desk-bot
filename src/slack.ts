@@ -23,6 +23,7 @@ import {
 import { MAX_DIRECT_MESSAGE_CHARACTERS } from "./direct-message-tool.ts";
 import type { DmAuditConversationsPage, DmAuditMessagesPage, DmAuditQuery } from "./dm-audit.ts";
 import type { ScheduleService } from "./schedules.ts";
+import type { AutomationService } from "./automations.ts";
 import { EventDeduplicator } from "./event-deduplicator.ts";
 import { ingestSlackFiles } from "./slack-files.ts";
 import { type LogWriter, type RequestLogWriter, writeStructuredLog } from "./log.ts";
@@ -52,6 +53,7 @@ interface SlackAgentOptions {
   operatorUserIds?: ReadonlySet<string>;
   agent: CancellableAgentBackend;
   schedules?: ScheduleService;
+  automations?: AutomationService;
   fetch?: typeof fetch;
   log?: RequestLogWriter;
   operatorLog?: LogWriter;
@@ -1415,6 +1417,7 @@ export class SlackAgent {
     }
     let directMessages = 0;
     let scheduleChanges = 0;
+    let automationChanges = 0;
     const countScheduleChange = () => {
       if (++scheduleChanges > 5) throw new Error("At most 5 schedule changes per request");
     };
@@ -1458,6 +1461,49 @@ export class SlackAgent {
                   countScheduleChange();
                   return this.options.schedules!.cancel(
                     scheduleId,
+                    message.requesterId,
+                    this.options.operatorUserIds?.has(message.requesterId),
+                  );
+                },
+              },
+            }
+          : {}),
+        ...(this.options.automations
+          ? {
+              automations: {
+                list: () =>
+                  this.options.automations!.list(
+                    message.requesterId,
+                    this.options.operatorUserIds?.has(message.requesterId),
+                  ),
+                create: (input: import("./automations.ts").AutomationInput) => {
+                  if (++automationChanges > 5)
+                    throw new Error("At most 5 automation changes per request");
+                  return this.options.automations!.create(input, message.requesterId);
+                },
+                pause: (automationId: string) => {
+                  if (++automationChanges > 5)
+                    throw new Error("At most 5 automation changes per request");
+                  return this.options.automations!.pause(
+                    automationId,
+                    message.requesterId,
+                    this.options.operatorUserIds?.has(message.requesterId),
+                  );
+                },
+                resume: (automationId: string) => {
+                  if (++automationChanges > 5)
+                    throw new Error("At most 5 automation changes per request");
+                  return this.options.automations!.resume(
+                    automationId,
+                    message.requesterId,
+                    this.options.operatorUserIds?.has(message.requesterId),
+                  );
+                },
+                cancel: (automationId: string) => {
+                  if (++automationChanges > 5)
+                    throw new Error("At most 5 automation changes per request");
+                  return this.options.automations!.cancel(
+                    automationId,
                     message.requesterId,
                     this.options.operatorUserIds?.has(message.requesterId),
                   );

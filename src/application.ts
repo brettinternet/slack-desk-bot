@@ -20,6 +20,9 @@ import { findPeople, type PersonMatch } from "./people-lookup.ts";
 import { type LogWriter, writeStructuredLog } from "./log.ts";
 import { SlackAgent } from "./slack.ts";
 import { ScheduleService } from "./schedules.ts";
+import { AutomationService } from "./automations.ts";
+import { linearIssueSource } from "./linear-automation-source.ts";
+import { McpContextProvider } from "./mcp-context.ts";
 
 interface SlackLifecycle extends Partial<ConversationInspector> {
   start(): Promise<void>;
@@ -56,6 +59,7 @@ interface ApplicationDependencies {
     agent: RuntimeBackend;
     health: HealthState;
     schedules: ScheduleService;
+    automations?: AutomationService;
   }) => SlackLifecycle;
   startHealthServer?: (
     port: number,
@@ -126,11 +130,26 @@ export async function startApplication(
     if (!slack.sendDirectMessage) throw new Error("Direct messages are unavailable");
     return slack.sendDirectMessage(message, creatorId);
   });
+  const automations = config.mcp?.config.servers.linear?.allowedTools.get_issue
+    ? new AutomationService(
+        schedulePath.replace(/schedules\.json$/, "automations.json"),
+        { "linear-issue": linearIssueSource(new McpContextProvider(config.mcp.config)) },
+        (recipientId, text, creatorId) => {
+          if (!config.allowedUserIds.has(creatorId))
+            throw new Error("Automation creator is no longer allowed");
+          if (!slack.sendDirectMessage) throw new Error("Direct messages are unavailable");
+          return slack.sendDirectMessage({ userId: recipientId, text }, creatorId);
+        },
+        Date.now,
+        (creatorId) => config.allowedUserIds.has(creatorId),
+      )
+    : undefined;
   slack = (
     dependencies.createSlackAgent ??
-    (({ config, agent, health, schedules }) =>
+    (({ config, agent, health, schedules, automations }) =>
       new SlackAgent({
         schedules,
+        automations,
         botToken: config.slackBotToken,
         appToken: config.slackAppToken,
         allowedUserIds: config.allowedUserIds,
@@ -142,7 +161,7 @@ export async function startApplication(
         threadReplyStatePath: join(dirname(config.socketPath), "slack-thread-replies.json"),
         catchUp: { statePath: join(dirname(config.socketPath), "slack-catch-up.json") },
       }))
-  )({ config, agent, health, schedules });
+  )({ config, agent, health, schedules, automations });
   let directory:
     { loadedAt: number; users: Awaited<ReturnType<typeof loadSlackUsers>> } | undefined;
   let pendingDirectory: ReturnType<typeof loadSlackUsers> | undefined;
@@ -191,6 +210,7 @@ export async function startApplication(
       failedStage = "local_control";
     }
     await schedules.stop();
+    await automations?.stop();
     onStage?.("slack");
     try {
       await slack.stop();
@@ -230,6 +250,7 @@ export async function startApplication(
     await local.start();
     await slack.start();
     schedules.start();
+    automations?.start();
   } catch (error) {
     healthServer.stop(true);
     await disposeRuntime().catch(() => {});

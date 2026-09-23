@@ -182,6 +182,28 @@ describe("Pi configuration", () => {
     ).toBe(true);
   });
 
+  test("loads the requester-scoped automation tool only when configured", async () => {
+    const { resourceLoader } = createPiResources(process.cwd(), {
+      automationActions: () => ({
+        list: () => [],
+        create: async () => ({ alreadyMet: true }),
+        pause: () => {
+          throw new Error("test");
+        },
+        resume: () => {
+          throw new Error("test");
+        },
+        cancel: () => {},
+      }),
+    });
+    await resourceLoader.reload();
+    expect(
+      resourceLoader
+        .getExtensions()
+        .extensions.some((extension) => extension.path === "<inline:slack-automation-tool>"),
+    ).toBe(true);
+  });
+
   test("appends Slack-specific instructions to the system prompt", async () => {
     const { resourceLoader } = createPiResources(process.cwd(), {
       instructions: "Keep Slack replies brief.",

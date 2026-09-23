@@ -40,6 +40,7 @@ export const BACKENDS: Record<AgentBackendKind, BackendDefinition> = {
           ),
         },
         mcpProvider: config.mcp ? new McpContextProvider(config.mcp.config) : undefined,
+        automationEnabled: Boolean(config.mcp?.config.servers.linear?.allowedTools.get_issue),
       }),
     checkReady: async (config, checks) => {
       const model = await checks.pi(config.workspace);

@@ -37,9 +37,11 @@ export interface DirectMessageReceipt {
 }
 
 import type { ScheduleActions } from "./schedule-tool.ts";
+import type { AutomationActions } from "./automation-tool.ts";
 
 export interface AgentConversationContext {
   schedules?: ScheduleActions;
+  automations?: AutomationActions;
   readThreadHistory?(
     options: ThreadHistoryOptions,
     signal?: AbortSignal,

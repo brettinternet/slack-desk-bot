@@ -309,18 +309,55 @@ export class McpContextProvider {
     arguments_: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<string> {
+    const result = await this.invoke(serverName, remoteName, arguments_, signal);
+    const normalized = normalizedResult(result);
+    if (normalized.isError) throw new Error(normalized.text);
+    return normalized.text;
+  }
+
+  /** Trusted service code may parse a bounded full response; agent-visible tool output stays truncated. */
+  async callJson(
+    serverName: string,
+    remoteName: string,
+    arguments_: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    const result = record(
+      await this.invoke(serverName, remoteName, arguments_, signal),
+      "MCP tool result",
+    );
+    if (result.isError === true) throw new Error(normalizedResult(result).text);
+    const content = Array.isArray(result.content) ? result.content : [];
+    const first = content[0];
+    const raw =
+      first && typeof first === "object" && (first as Record<string, unknown>).type === "text"
+        ? (first as Record<string, unknown>).text
+        : result.structuredContent;
+    if (typeof raw === "string") {
+      if (Buffer.byteLength(raw) > 2_000_000) throw new Error("MCP JSON result too large");
+      return JSON.parse(raw);
+    }
+    if (raw === undefined) throw new Error("MCP JSON result unavailable");
+    if (Buffer.byteLength(JSON.stringify(raw)) > 2_000_000)
+      throw new Error("MCP JSON result too large");
+    return raw;
+  }
+
+  private async invoke(
+    serverName: string,
+    remoteName: string,
+    arguments_: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     const server = this.config.servers[serverName];
     if (!server?.allowedTools[remoteName]) throw new Error("MCP tool is not allowed");
     const connection = await this.connect(server, mergeSignals(signal));
     try {
-      const result = await connection.callTool(
-        { name: remoteName, arguments: arguments_ },
-        undefined,
-        { signal: mergeSignals(signal), timeout: MCP_TIMEOUT_MS, maxTotalTimeout: MCP_TIMEOUT_MS },
-      );
-      const normalized = normalizedResult(result);
-      if (normalized.isError) throw new Error(normalized.text);
-      return normalized.text;
+      return await connection.callTool({ name: remoteName, arguments: arguments_ }, undefined, {
+        signal: mergeSignals(signal),
+        timeout: MCP_TIMEOUT_MS,
+        maxTotalTimeout: MCP_TIMEOUT_MS,
+      });
     } finally {
       await connection.close().catch(() => {});
     }
