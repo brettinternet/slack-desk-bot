@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
 import {
   ConversationEventFormatter,
   auditDms,
@@ -44,6 +46,45 @@ describe("slack-desk argument parsing", () => {
     });
     expect(() => parseArguments(["dm", "U0BOB"])).toThrow("Usage");
     expect(() => parseArguments(["dm"])).toThrow("Usage");
+  });
+});
+
+describe("slack-desk help", () => {
+  const run = (...args: string[]) =>
+    spawnSync(process.execPath, [join(import.meta.dir, "../src/local-cli.ts"), ...args], {
+      encoding: "utf8",
+    });
+
+  test("prints readable help to stdout without connecting to the service", () => {
+    for (const args of [
+      [],
+      ["--help"],
+      ["-h"],
+      ["--socket", "/missing.sock", "schedule", "--help"],
+      ["identities", "--help"],
+    ]) {
+      const result = run(...args);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("Usage: slack-desk");
+      expect(result.stdout).toContain("Schedules\n");
+      expect(result.stdout).toContain("--weekly");
+      expect(result.stdout).toContain("Identities\n");
+    }
+  });
+
+  test("keeps invalid commands on stderr with a help hint", () => {
+    const result = run("bogus");
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("Invalid arguments. Usage: slack-desk --help");
+  });
+
+  test("does not interpret DM message text as a help flag", () => {
+    const result = run("--socket", "/missing-slack-desk-help-test.sock", "dm", "U0BOB", "--help");
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("Cannot connect to SlackDeskBot");
   });
 });
 

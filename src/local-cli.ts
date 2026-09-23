@@ -9,7 +9,54 @@ import { LocalClient } from "./local-client.ts";
 import type { ConversationEvent } from "./conversation-coordinator.ts";
 import type { LocalRequestType } from "./local-protocol.ts";
 
-const USAGE = `Usage: slack-desk [--socket <path>] sessions | slack-desk [--socket <path>] attach <session-id> [--history <0-100> | --no-history] | slack-desk [--socket <path>] dm <slack-user-id> <message...>\n       slack-desk [--socket <path>] dm audit [--since <YYYY-MM-DD | ISO-offset>] [--to <user-id>] [--json]\n       slack-desk [--socket <path>] schedule list | cancel <id> | add <user-id> (--at <ISO-offset> | --daily <HH:mm> --tz <IANA-zone> | --weekly <0-6,...> --time <HH:mm> --tz <IANA-zone>) <message...>\n       slack-desk [--socket <path>] schedule update <id> <user-id> (--at ... | --daily ... | --weekly ...) <message...>\n${IDENTITY_USAGE}`;
+const USAGE = "Usage: slack-desk --help";
+const HELP = `Usage: slack-desk [--socket <path>] <command> [options]
+
+Sessions
+  sessions                         List active conversations
+  attach <session-id>              Join a session and send prompts
+    --history <0-100>              Show recent messages (default: 20)
+    --no-history                   Skip recent messages
+
+Messages
+  dm <slack-user-id> <message...>  Send a DM as the bot
+  dm audit                         Show the 100 most recent bot-authored DMs
+    --since <date-or-ISO-offset>   Show all DMs since a UTC date or timestamp
+    --to <slack-user-id>           Filter by recipient
+    --json                         Output JSON Lines
+
+Schedules
+  schedule list                    List schedules
+  schedule cancel <id>             Cancel a schedule
+  schedule add <user-id> <when> <message...>
+  schedule update <id> <user-id> <when> <message...>
+    <when> is one of:
+      --at <ISO-offset>            Send once at a date and time
+      --daily <HH:mm> --tz <zone>  Repeat daily in an IANA time zone
+      --weekly <0-6,...> --time <HH:mm> --tz <zone>
+                                    Repeat on weekdays (0 = Sunday)
+
+Identities
+  identities scan                  Match Git authors to Slack users
+  identities list                  List explicit identity mappings
+  identities link <slack-user-id> <git-email> [--global]
+                                    Save an identity mapping
+
+Options
+  --socket <path>                  Use a different local service socket
+  -h, --help                       Show this help (no service needed)`;
+
+function isHelpRequest(args: readonly string[]): boolean {
+  const commandArgs =
+    args[0] === "--socket"
+      ? args.slice(2)
+      : args[0]?.startsWith("--socket=")
+        ? args.slice(1)
+        : args;
+  if (commandArgs.length === 0) return args.length === 0;
+  if (commandArgs[0] === "dm" && commandArgs[1] !== "audit" && commandArgs.length > 2) return false; // Flag-like words after a DM recipient are message text.
+  return commandArgs.some((arg) => arg === "--help" || arg === "-h");
+}
 
 function terminalText(text: string): string {
   return text
@@ -429,6 +476,10 @@ export async function auditDms(
 }
 
 export async function main(args: string[] = process.argv.slice(2)): Promise<void> {
+  if (isHelpRequest(args)) {
+    console.log(HELP);
+    return;
+  }
   if (
     (args[0] === "dm" && args[1] === "audit") ||
     (args[0] === "--socket" && args[2] === "dm" && args[3] === "audit") ||
@@ -517,7 +568,10 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
 
 if (import.meta.main) {
   main().catch((error) => {
-    console.error(error instanceof Error ? error.message : "slack-desk failed");
+    const message = error instanceof Error ? error.message : "slack-desk failed";
+    console.error(
+      message === USAGE || message === IDENTITY_USAGE ? `Invalid arguments. ${USAGE}` : message,
+    );
     process.exitCode = 1;
   });
 }

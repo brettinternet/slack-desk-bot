@@ -129,6 +129,7 @@ SlackDeskBot owns all mutable agent sessions. A local client joins over an owner
 
 ```sh
 bun link                 # once, from this checkout
+slack-desk --help         # command reference on stdout; no service required
 slack-desk sessions      # labels and participants when Slack metadata is available
 slack-desk attach f82ab719
 slack-desk attach f82ab719 --history 50  # default: 20; --no-history to disable
