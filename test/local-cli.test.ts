@@ -193,6 +193,32 @@ describe("DM audit CLI", () => {
     ]);
   });
 
+  test("explains when the running service has the older audit protocol", async () => {
+    const client = {
+      request: async (type: string) =>
+        type === "dm-audit-conversations"
+          ? { conversations: [{ channel: "D1", recipientId: "U0BOB" }] }
+          : {
+              messages: [
+                {
+                  channel: "D1",
+                  recipientId: "U0BOB",
+                  ts: "1.1",
+                  text: "private",
+                  permalink: "link",
+                },
+              ],
+            },
+    } as unknown as LocalClient;
+    const lines: string[] = [];
+    await expect(
+      auditDms(client, parseDmAuditArguments(["dm", "audit", "--since", "2026-09-21"]), (line) =>
+        lines.push(line),
+      ),
+    ).rejects.toThrow("restart the service");
+    expect(lines).toEqual([]);
+  });
+
   test("indents multiline message content in human-readable output", async () => {
     const client = {
       request: async (type: string) =>

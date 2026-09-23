@@ -435,6 +435,8 @@ export async function auditDms(
           oldest: options.oldest,
           latest,
         })) as DmAuditMessagesPage;
+        if (!Array.isArray(history.threads))
+          throw new Error("DM audit requires a newer running SlackDeskBot; restart the service");
         for (const message of history.messages) emitMessage(message);
         for (const threadTs of history.threads) {
           let threadOldest = options.oldest;
