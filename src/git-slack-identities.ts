@@ -22,10 +22,13 @@ interface IdentityFile {
   users: Record<string, { git_emails: string[] }>;
 }
 
-interface SlackDirectoryUser {
+export interface SlackDirectoryUser {
   id: string;
   email?: string;
   name?: string;
+  handle?: string;
+  realName?: string;
+  displayName?: string;
 }
 
 export type SlackUserLoader = () => Promise<readonly SlackDirectoryUser[]>;
@@ -122,6 +125,9 @@ export async function loadSlackUsers(botToken: string): Promise<SlackDirectoryUs
         id: member.id,
         email: member.profile?.email,
         name: member.profile?.display_name || member.real_name || member.name,
+        handle: member.name,
+        realName: member.real_name,
+        displayName: member.profile?.display_name,
       });
     }
     cursor = response.response_metadata?.next_cursor?.trim() || undefined;

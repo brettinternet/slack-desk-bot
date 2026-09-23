@@ -118,6 +118,32 @@ describe("application startup", () => {
     expect(agent.dispose).toHaveBeenCalledTimes(1);
   });
 
+  test("wires the local people lookup and shares a concurrent directory load", async () => {
+    const loadUsers = mock(async () => [
+      { id: "U0BOB", name: "Bob", handle: "bob", email: "bob@work.test" },
+    ]);
+    let lookup: ((query: string) => Promise<unknown>) | undefined;
+    const application = await startApplication(config(), {
+      piReady: async () => "Pi ready",
+      createBackend: () => backend(),
+      createSlackAgent: () => ({ start: async () => {}, stop: async () => {} }),
+      createLocalControl: ({ findPeople }) => {
+        lookup = findPeople;
+        return { start: async () => {}, stop: async () => {} };
+      },
+      loadUsers,
+    });
+    try {
+      expect(lookup).toBeDefined();
+      const [email, name] = await Promise.all([lookup!("bob@work.test"), lookup!("Bob")]);
+      expect(email).toEqual([{ userId: "U0BOB", name: "Bob", handle: "bob", match: "email" }]);
+      expect(name).toEqual([{ userId: "U0BOB", name: "Bob", handle: "bob", match: "handle" }]);
+      expect(loadUsers).toHaveBeenCalledTimes(1);
+    } finally {
+      await application.stop();
+    }
+  });
+
   test("reports the failing cleanup stage after finishing the remaining stages", async () => {
     const agent = backend();
     const slackStop = mock(async () => {});

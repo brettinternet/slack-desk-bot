@@ -16,6 +16,7 @@ export type LocalRequestType =
   | "status"
   | "cancel"
   | "dm"
+  | "find-people"
   | "schedule-list"
   | "schedule-create"
   | "schedule-update"
@@ -29,6 +30,7 @@ export interface LocalRequest {
   prompt?: string;
   historyLimit?: number;
   userId?: string;
+  query?: string;
   text?: string;
   id?: string;
   at?: string;
@@ -59,6 +61,7 @@ const REQUEST_TYPES: readonly string[] = [
   "status",
   "cancel",
   "dm",
+  "find-people",
   "schedule-list",
   "schedule-create",
   "schedule-update",

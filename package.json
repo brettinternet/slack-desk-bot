@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "bin": {
-    "slack-desk": "src/local-cli.ts"
+    "slack-desk": "src/local-cli.ts",
+    "slack-desk-mcp": "src/mcp-server.ts"
   },
   "scripts": {
     "check": "tsc --noEmit",
@@ -20,7 +21,8 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@slack/bolt": "^5.1.0",
     "@slack/web-api": "^8.1.1",
-    "undici-real": "npm:undici@^7.29.0"
+    "undici-real": "npm:undici@^7.29.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/bun": "1.4.2",

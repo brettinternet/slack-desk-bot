@@ -10,6 +10,7 @@ import type {
 } from "./agent.ts";
 import type { ConversationCoordinator, ConversationEvent } from "./conversation-coordinator.ts";
 import type { ScheduleInput, ScheduleService } from "./schedules.ts";
+import type { PersonMatch } from "./people-lookup.ts";
 import {
   isLocalRequest,
   LOCAL_OPERATOR_ID,
@@ -29,6 +30,7 @@ interface LocalControlOptions {
   coordinator: ConversationCoordinator;
   inspector?: ConversationInspector;
   sendDirectMessage?: (message: DirectMessage) => Promise<DirectMessageReceipt>;
+  findPeople?: (query: string) => Promise<PersonMatch[]>;
   schedules?: ScheduleService;
   /**
    * Test seam for simulating a rejected peer. Neither Node nor Bun exposes
@@ -202,6 +204,11 @@ export class LocalControlServer {
         ? Math.max(0, Math.min(100, request.historyLimit!))
         : 20;
       return this.withDetails(matches[0]!, historyLimit);
+    }
+    if (request.type === "find-people") {
+      if (!this.options.findPeople) throw new Error("People lookup is unavailable");
+      if (typeof request.query !== "string") throw new Error("query is required");
+      return this.options.findPeople(request.query);
     }
     if (request.type === "dm") {
       if (!this.options.sendDirectMessage) throw new Error("Direct messages are unavailable");

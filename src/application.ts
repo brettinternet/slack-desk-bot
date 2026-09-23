@@ -14,6 +14,8 @@ import { ConversationCoordinator } from "./conversation-coordinator.ts";
 import { checkClaudeReadiness, checkCodexReadiness, checkPiReadiness } from "./doctor.ts";
 import { HealthState, startHealthServer } from "./health.ts";
 import { LocalControlServer } from "./local-control.ts";
+import { loadSlackUsers, type SlackDirectoryUser } from "./git-slack-identities.ts";
+import { findPeople, type PersonMatch } from "./people-lookup.ts";
 import { type LogWriter, writeStructuredLog } from "./log.ts";
 import { SlackAgent } from "./slack.ts";
 import { ScheduleService } from "./schedules.ts";
@@ -41,6 +43,7 @@ interface RuntimeBackend extends CancellableAgentBackend {
 
 interface ApplicationDependencies {
   log?: LogWriter;
+  loadUsers?: () => Promise<SlackDirectoryUser[]>;
   piReady?: (workspace: string) => Promise<string>;
   codexReady?: (config: Config) => Promise<string>;
   claudeReady?: (config: Config) => Promise<string>;
@@ -60,6 +63,7 @@ interface ApplicationDependencies {
     coordinator: ConversationCoordinator;
     inspector?: ConversationInspector;
     sendDirectMessage?: (message: DirectMessage) => Promise<DirectMessageReceipt>;
+    findPeople?: (query: string) => Promise<PersonMatch[]>;
     schedules: ScheduleService;
   }) => LocalControlLifecycle;
 }
@@ -133,11 +137,26 @@ export async function startApplication(
         catchUp: { statePath: join(dirname(config.socketPath), "slack-catch-up.json") },
       }))
   )({ config, agent, health, schedules });
+  let directory:
+    { loadedAt: number; users: Awaited<ReturnType<typeof loadSlackUsers>> } | undefined;
+  let pendingDirectory: ReturnType<typeof loadSlackUsers> | undefined;
+  const lookup = async (query: string): Promise<PersonMatch[]> => {
+    if (!directory || Date.now() - directory.loadedAt > 300_000) {
+      const users = await (pendingDirectory ??= (
+        dependencies.loadUsers ?? (() => loadSlackUsers(config.slackBotToken))
+      )().finally(() => {
+        pendingDirectory = undefined;
+      }));
+      directory = { loadedAt: Date.now(), users };
+    }
+    return findPeople(query, directory.users, config.workspace);
+  };
   const local = (dependencies.createLocalControl ?? ((options) => new LocalControlServer(options)))(
     {
       socketPath: config.socketPath,
       coordinator: agent,
       schedules,
+      findPeople: lookup,
       ...(slack.inspectConversation
         ? { inspector: { inspectConversation: slack.inspectConversation.bind(slack) } }
         : {}),

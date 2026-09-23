@@ -259,6 +259,32 @@ describe("local conversation control", () => {
     coordinator.dispose();
   });
 
+  test("looks up people without attaching or sending", async () => {
+    const path = await socketPath();
+    const { coordinator } = fixture();
+    const queries: string[] = [];
+    const server = new LocalControlServer({
+      socketPath: path,
+      coordinator,
+      findPeople: async (query) => {
+        queries.push(query);
+        return [{ userId: "U0BOB", name: "Bob", match: "name" }];
+      },
+    });
+    await server.start();
+    const client = await ProtocolClient.connect(path);
+    client.send("find-people", "lookup", { query: "Bob" });
+    expect((await client.response("lookup")).result).toEqual([
+      { userId: "U0BOB", name: "Bob", match: "name" },
+    ]);
+    client.send("find-people", "missing");
+    expect((await client.response("missing")).error).toBe("query is required");
+    expect(queries).toEqual(["Bob"]);
+    client.socket.destroy();
+    await server.stop();
+    coordinator.dispose();
+  });
+
   test("manages persisted schedules from the local socket without attaching", async () => {
     const path = await socketPath();
     const schedules = new ScheduleService(join(dirname(path), "schedules.json"), async () => {});
