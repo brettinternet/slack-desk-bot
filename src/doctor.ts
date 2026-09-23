@@ -19,6 +19,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { WebClient } from "@slack/web-api";
 import { BACKENDS } from "./backend-table.ts";
+import { checkGithubReadiness } from "./github-automation-source.ts";
 import {
   codexProcessEnvironment,
   codexSandboxProfile,
@@ -57,6 +58,7 @@ interface DoctorDependencies {
   piReady?: (workspace: string) => Promise<string>;
   codexReady?: (config: Config) => Promise<string>;
   claudeReady?: (config: Config) => Promise<string>;
+  githubReady?: () => Promise<string>;
   homeDirectory?: string;
   agentDirectory?: string;
 }
@@ -616,6 +618,7 @@ export async function runDoctor(
       pi: dependencies.piReady ?? checkPiReadiness,
       codex: dependencies.codexReady ?? checkCodexReadiness,
       claude: dependencies.claudeReady ?? checkClaudeReadiness,
+      github: dependencies.githubReady ?? checkGithubReadiness,
     });
     diagnostic(diagnostics, "pass", readinessCheck, message);
   } catch (error) {

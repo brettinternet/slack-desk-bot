@@ -11,6 +11,7 @@ export interface AutomationSource {
   read(id: string): Promise<Observation>;
   fields: readonly string[];
   validId(id: string): boolean;
+  validCondition?(field: string, equals: string): boolean;
 }
 export interface Automation {
   id: string;
@@ -124,12 +125,14 @@ export class AutomationService {
     if (this.list(actor).filter((a) => a.status !== "completed").length >= 100)
       throw new Error("Maximum 100 active automations per creator");
     const source = this.sources[input.source.kind];
-    if (!source || input.source.id.length > 100 || !source.validId(input.source.id))
+    if (!source || input.source.id.length > 160 || !source.validId(input.source.id))
       throw new Error("Unknown source or invalid source identifier");
     if (
       !source.fields.includes(input.condition.field) ||
       !input.condition.equals.trim() ||
-      input.condition.equals.length > 100
+      input.condition.equals.length > 100 ||
+      (source.validCondition &&
+        !source.validCondition(input.condition.field, input.condition.equals))
     )
       throw new Error("Unsupported condition");
     const observation = await source.read(input.source.id);
@@ -223,7 +226,7 @@ export class AutomationService {
     if (this.stopped || this.running) return;
     const due = Math.min(
       ...[...this.items.values()]
-        .filter((a) => a.status === "active")
+        .filter((a) => a.status === "active" && this.sources[a.source.kind])
         .map((a) => Date.parse(a.nextAt)),
     );
     if (Number.isFinite(due))
@@ -249,7 +252,12 @@ export class AutomationService {
   }
   private async dispatch(): Promise<void> {
     for (const item of this.items.values()) {
-      if (this.stopped || item.status !== "active" || Date.parse(item.nextAt) > this.now())
+      if (
+        this.stopped ||
+        item.status !== "active" ||
+        !this.sources[item.source.kind] ||
+        Date.parse(item.nextAt) > this.now()
+      )
         continue;
       if (!this.canRun(item.creatorId)) {
         item.status = "paused";

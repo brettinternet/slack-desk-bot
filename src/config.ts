@@ -1,6 +1,6 @@
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { QueueLimits } from "./agent.ts";
 import { loadMcpConfig, type McpConfig } from "./mcp-context.ts";
 
@@ -23,6 +23,7 @@ export interface Config {
   claudeExecutable?: string;
   claudeHome?: string;
   mcp?: { path: string; config: McpConfig };
+  github?: { repos: string[] };
   queueLimits: QueueLimits;
   configuredMaxConcurrentConversations: number;
   sessionDir?: string;
@@ -178,10 +179,41 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
     throw new Error("SLACK_AGENT_SOCKET_PATH must be an absolute path");
   }
 
+  if (optional(environment, "SLACK_GITHUB_TOKEN_FILE"))
+    throw new Error(
+      "SLACK_GITHUB_TOKEN_FILE is no longer used; configure the service owner's gh login",
+    );
+  const githubRepos = optional(environment, "SLACK_GITHUB_REPOS");
+  let github: Config["github"];
+  if (githubRepos) {
+    const repos = githubRepos.split(",").map((repo) => repo.trim());
+    if (
+      repos.some(
+        (repo) =>
+          !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(repo) ||
+          repo.endsWith("/.") ||
+          repo.endsWith("/.."),
+      )
+    )
+      throw new Error("SLACK_GITHUB_REPOS must list explicit org/repo names");
+    github = { repos };
+    const ghConfigDir = optional(environment, "GH_CONFIG_DIR");
+    if (ghConfigDir && statSync(ghConfigDir, { throwIfNoEntry: false })?.isDirectory()) {
+      const nested = relative(realpathSync(workspace), realpathSync(ghConfigDir));
+      if (
+        nested === "" ||
+        (nested !== ".." && !nested.startsWith(`..${sep}`) && !isAbsolute(nested))
+      )
+        throw new Error("GH_CONFIG_DIR must be outside SLACK_AGENT_CWD");
+    }
+  }
+
   const mcp = loadMcpConfig(workspace, optional(environment, "SLACK_AGENT_MCP_CONFIG_FILE"));
   if (mcp && agentBackend !== "pi") {
     throw new Error("MCP context tools currently require SLACK_AGENT_BACKEND=pi");
   }
+  if (github && agentBackend !== "pi")
+    throw new Error("GitHub watches currently require SLACK_AGENT_BACKEND=pi");
 
   const configuredMaxConcurrentConversations = positiveInteger(
     environment,
@@ -204,6 +236,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
     claudeExecutable,
     claudeHome: claudeHome ? resolve(claudeHome) : undefined,
     mcp,
+    github,
     queueLimits: {
       timeoutMs: positiveInteger(environment, "SLACK_AGENT_TIMEOUT_MS", DEFAULTS.timeoutMs),
       queueWaitMs: positiveInteger(environment, "SLACK_AGENT_QUEUE_WAIT_MS", DEFAULTS.queueWaitMs),

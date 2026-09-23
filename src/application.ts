@@ -22,6 +22,11 @@ import { SlackAgent } from "./slack.ts";
 import { ScheduleService } from "./schedules.ts";
 import { AutomationService } from "./automations.ts";
 import { linearIssueSource } from "./linear-automation-source.ts";
+import {
+  checkGithubReadiness,
+  githubCliLookup,
+  githubSources,
+} from "./github-automation-source.ts";
 import { McpContextProvider } from "./mcp-context.ts";
 
 interface SlackLifecycle extends Partial<ConversationInspector> {
@@ -53,6 +58,7 @@ interface ApplicationDependencies {
   piReady?: (workspace: string) => Promise<string>;
   codexReady?: (config: Config) => Promise<string>;
   claudeReady?: (config: Config) => Promise<string>;
+  githubReady?: () => Promise<string>;
   createBackend?: (config: Config) => RuntimeBackend;
   createSlackAgent?: (options: {
     config: Config;
@@ -119,6 +125,7 @@ export async function startApplication(
     pi: dependencies.piReady ?? checkPiReadiness,
     codex: dependencies.codexReady ?? checkCodexReadiness,
     claude: dependencies.claudeReady ?? checkClaudeReadiness,
+    github: dependencies.githubReady ?? checkGithubReadiness,
   });
 
   const health = new HealthState();
@@ -130,20 +137,27 @@ export async function startApplication(
     if (!slack.sendDirectMessage) throw new Error("Direct messages are unavailable");
     return slack.sendDirectMessage(message, creatorId);
   });
-  const automations = config.mcp?.config.servers.linear?.allowedTools.get_issue
-    ? new AutomationService(
-        schedulePath.replace(/schedules\.json$/, "automations.json"),
-        { "linear-issue": linearIssueSource(new McpContextProvider(config.mcp.config)) },
-        (recipientId, text, creatorId) => {
-          if (!config.allowedUserIds.has(creatorId))
-            throw new Error("Automation creator is no longer allowed");
-          if (!slack.sendDirectMessage) throw new Error("Direct messages are unavailable");
-          return slack.sendDirectMessage({ userId: recipientId, text }, creatorId);
-        },
-        Date.now,
-        (creatorId) => config.allowedUserIds.has(creatorId),
-      )
-    : undefined;
+  const linearConfigured = Boolean(config.mcp?.config.servers.linear?.allowedTools.get_issue);
+  const automations =
+    linearConfigured || config.github
+      ? new AutomationService(
+          schedulePath.replace(/schedules\.json$/, "automations.json"),
+          {
+            ...(linearConfigured
+              ? { "linear-issue": linearIssueSource(new McpContextProvider(config.mcp!.config)) }
+              : {}),
+            ...(config.github ? githubSources(githubCliLookup(), config.github.repos) : {}),
+          },
+          (recipientId, text, creatorId) => {
+            if (!config.allowedUserIds.has(creatorId))
+              throw new Error("Automation creator is no longer allowed");
+            if (!slack.sendDirectMessage) throw new Error("Direct messages are unavailable");
+            return slack.sendDirectMessage({ userId: recipientId, text }, creatorId);
+          },
+          Date.now,
+          (creatorId) => config.allowedUserIds.has(creatorId),
+        )
+      : undefined;
   slack = (
     dependencies.createSlackAgent ??
     (({ config, agent, health, schedules, automations }) =>

@@ -18,7 +18,7 @@ LABEL org.opencontainers.image.title="SlackDeskBot" \
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update \
-    && apt-get install --no-install-recommends --yes ca-certificates git \
+    && apt-get install --no-install-recommends --yes ca-certificates git gh \
     && apt-get clean \
     && mkdir -p /config/pi-agent /var/lib/slack-desk/sessions /workspace \
     && chown -R bun:bun /config/pi-agent /var/lib/slack-desk /workspace

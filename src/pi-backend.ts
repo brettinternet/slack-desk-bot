@@ -31,7 +31,12 @@ import {
 } from "./direct-message-tool.ts";
 import { writeStructuredLog } from "./log.ts";
 import { SCHEDULE_TOOL, slackScheduleTool, type ScheduleActions } from "./schedule-tool.ts";
-import { AUTOMATION_TOOL, slackAutomationTool, type AutomationActions } from "./automation-tool.ts";
+import {
+  AUTOMATION_TOOL,
+  slackAutomationTool,
+  type AutomationActions,
+  type AutomationKind,
+} from "./automation-tool.ts";
 import { type DiscoveredMcpTool, McpContextProvider, mcpContextTools } from "./mcp-context.ts";
 import { applyServicePiModel } from "./service-pi-settings.ts";
 import {
@@ -89,7 +94,7 @@ export interface PiBackendOptions {
   commandMode?: AgentCommandMode;
   brokeredToolsOptions?: BrokeredToolsOptions;
   mcpProvider?: McpContextProvider;
-  automationEnabled?: boolean;
+  automationKinds?: readonly AutomationKind[];
 }
 
 export function preparePiPrompt(prompt: string, attachments: readonly AgentAttachment[] = []) {
@@ -164,6 +169,7 @@ interface PiResourceOptions {
   directMessageSender?: DirectMessageSender;
   scheduleActions?: () => ScheduleActions;
   automationActions?: () => AutomationActions;
+  automationKinds?: readonly AutomationKind[];
   agentDir?: string;
 }
 
@@ -196,7 +202,9 @@ export function createPiResources(workspace: string, options: PiResourceOptions 
       ...(options.threadHistoryReader ? [slackThreadHistoryTool(options.threadHistoryReader)] : []),
       ...(options.directMessageSender ? [slackDirectMessageTool(options.directMessageSender)] : []),
       ...(options.scheduleActions ? [slackScheduleTool(options.scheduleActions)] : []),
-      ...(options.automationActions ? [slackAutomationTool(options.automationActions)] : []),
+      ...(options.automationActions
+        ? [slackAutomationTool(options.automationActions, options.automationKinds)]
+        : []),
     ],
     noExtensions: true,
     noSkills: true,
@@ -409,7 +417,8 @@ export class PiBackend implements AgentBackend {
         if (!actions) throw new Error("Schedules are unavailable for this request");
         return actions;
       },
-      automationActions: this.options.automationEnabled
+      automationKinds: this.options.automationKinds,
+      automationActions: this.options.automationKinds?.length
         ? () => {
             const actions = this.activeContexts.get(conversationId)?.automations;
             if (!actions) throw new Error("Automations are unavailable for this request");
@@ -428,7 +437,7 @@ export class PiBackend implements AgentBackend {
         THREAD_HISTORY_TOOL,
         DIRECT_MESSAGE_TOOL,
         SCHEDULE_TOOL,
-        ...(this.options.automationEnabled ? [AUTOMATION_TOOL] : []),
+        ...(this.options.automationKinds?.length ? [AUTOMATION_TOOL] : []),
       ]),
     });
     return session;

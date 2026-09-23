@@ -10,6 +10,7 @@ export interface BackendReadinessChecks {
   pi(workspace: string): Promise<string>;
   codex(config: Config): Promise<string>;
   claude(config: Config): Promise<string>;
+  github(): Promise<string>;
 }
 
 interface BackendDefinition {
@@ -40,13 +41,19 @@ export const BACKENDS: Record<AgentBackendKind, BackendDefinition> = {
           ),
         },
         mcpProvider: config.mcp ? new McpContextProvider(config.mcp.config) : undefined,
-        automationEnabled: Boolean(config.mcp?.config.servers.linear?.allowedTools.get_issue),
+        automationKinds: [
+          ...(config.mcp?.config.servers.linear?.allowedTools.get_issue
+            ? ["linear-issue" as const]
+            : []),
+          ...(config.github ? ["github-pr" as const, "github-issue" as const] : []),
+        ],
       }),
     checkReady: async (config, checks) => {
       const model = await checks.pi(config.workspace);
-      if (!config.mcp) return model;
+      const github = config.github ? `; ${await checks.github()}` : "";
+      if (!config.mcp) return model + github;
       const catalog = await new McpContextProvider(config.mcp.config).catalog();
-      return `${model}; ${catalog.length} allowed MCP context tool${catalog.length === 1 ? "" : "s"} available`;
+      return `${model}${github}; ${catalog.length} allowed MCP context tool${catalog.length === 1 ? "" : "s"} available`;
     },
     sessionHome: (config) => config.sessionDir ?? defaultSessionDirectory(config.workspace),
   },

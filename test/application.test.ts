@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { createServer } from "node:net";
+import type { AutomationService } from "../src/automations.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { QueueSnapshot } from "../src/agent.ts";
@@ -60,6 +61,45 @@ function backend() {
 }
 
 describe("application startup", () => {
+  test("offers GitHub watches without Linear only when runtime lookup is configured", async () => {
+    let seen: AutomationService | undefined;
+    const setup = async (github?: Config["github"], githubReady = async () => "gh ready") =>
+      startApplication(
+        { ...config(), github },
+        {
+          piReady: async () => "Pi ready",
+          githubReady,
+          createBackend: () => backend(),
+          createSlackAgent: ({ automations }) => {
+            seen = automations;
+            return { start: async () => {}, stop: async () => {} };
+          },
+          createLocalControl: () => ({ start: async () => {}, stop: async () => {} }),
+        },
+      );
+    const off = await setup();
+    expect(seen).toBeUndefined();
+    await off.stop();
+    const on = await setup({
+      repos: ["work-org/project"],
+    });
+    expect(seen).toBeDefined();
+    await expect(
+      seen!.create(
+        {
+          source: { kind: "github-pr", id: "other/repo#42" },
+          condition: { field: "merged", equals: "true" },
+        },
+        "U_TEST",
+      ),
+    ).rejects.toThrow("invalid source identifier");
+    await on.stop();
+    await expect(
+      setup({ repos: ["work-org/project"] }, async () => {
+        throw new Error("gh login is unavailable to the service");
+      }),
+    ).rejects.toThrow("gh login is unavailable to the service");
+  });
   test("keeps Linux runtime sockets separate from persistent schedules", () => {
     const runtimeDir = "/run/user/1234";
     expect(

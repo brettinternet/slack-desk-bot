@@ -38,6 +38,7 @@ describe("configuration documents", () => {
     const dockerfile = await readFile("Dockerfile", "utf8");
     expect(dockerfile).toContain("FROM oven/bun:1.4.2-slim");
     expect(dockerfile).toContain("bun install --frozen-lockfile --production");
+    expect(dockerfile).toContain("ca-certificates git gh");
     expect(dockerfile).toContain("USER bun");
     expect(dockerfile).toContain('CMD ["bun", "src/healthcheck.ts"]');
   });

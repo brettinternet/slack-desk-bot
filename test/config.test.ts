@@ -12,6 +12,23 @@ const valid = {
 };
 
 describe("loadConfig", () => {
+  test("requires an explicit organization repository allowlist for GitHub watches", () => {
+    const env = { ...valid, SLACK_GITHUB_REPOS: "work-org/repo,work-org/other" };
+    expect(loadConfig(env).github).toEqual({ repos: ["work-org/repo", "work-org/other"] });
+    expect(loadConfig(valid).github).toBeUndefined();
+    expect(() => loadConfig({ ...env, SLACK_GITHUB_TOKEN_FILE: "/old/token" })).toThrow(
+      "no longer used",
+    );
+    expect(() => loadConfig({ ...env, SLACK_GITHUB_REPOS: "work-org/repo,../private" })).toThrow(
+      "explicit org/repo",
+    );
+    expect(() => loadConfig({ ...env, SLACK_AGENT_BACKEND: "claude" })).toThrow(
+      "require SLACK_AGENT_BACKEND=pi",
+    );
+    expect(() => loadConfig({ ...env, GH_CONFIG_DIR: workspace })).toThrow(
+      "GH_CONFIG_DIR must be outside SLACK_AGENT_CWD",
+    );
+  });
   test("loads required settings and defaults", () => {
     expect(loadConfig(valid)).toEqual({
       slackBotToken: "xoxb-test",
@@ -28,6 +45,7 @@ describe("loadConfig", () => {
       claudeExecutable: undefined,
       claudeHome: undefined,
       mcp: undefined,
+      github: undefined,
       queueLimits: {
         timeoutMs: 300_000,
         queueWaitMs: 600_000,
