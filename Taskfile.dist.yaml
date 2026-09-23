@@ -27,6 +27,10 @@ tasks:
     desc: Install and start the supported macOS LaunchAgent
     cmd: bun scripts/install-launch-agent.ts
 
+  mcp:install:
+    desc: Install the stable local MCP launcher for coding agents
+    cmd: bun scripts/install-mcp-launcher.ts
+
   check:
     desc: Run type, formatting, and configuration checks
     cmds:
