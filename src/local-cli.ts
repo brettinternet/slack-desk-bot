@@ -9,7 +9,7 @@ import { LocalClient } from "./local-client.ts";
 import type { ConversationEvent } from "./conversation-coordinator.ts";
 import type { LocalRequestType } from "./local-protocol.ts";
 
-const USAGE = `Usage: slack-desk [--socket <path>] sessions | slack-desk [--socket <path>] attach <session-id> [--history <0-100> | --no-history] | slack-desk [--socket <path>] dm <slack-user-id> <message...>\n       slack-desk [--socket <path>] dm audit --since <YYYY-MM-DD | ISO-offset> [--to <user-id>] [--json]\n       slack-desk [--socket <path>] schedule list | cancel <id> | add <user-id> (--at <ISO-offset> | --daily <HH:mm> --tz <IANA-zone> | --weekly <0-6,...> --time <HH:mm> --tz <IANA-zone>) <message...>\n       slack-desk [--socket <path>] schedule update <id> <user-id> (--at ... | --daily ... | --weekly ...) <message...>\n${IDENTITY_USAGE}`;
+const USAGE = `Usage: slack-desk [--socket <path>] sessions | slack-desk [--socket <path>] attach <session-id> [--history <0-100> | --no-history] | slack-desk [--socket <path>] dm <slack-user-id> <message...>\n       slack-desk [--socket <path>] dm audit [--since <YYYY-MM-DD | ISO-offset>] [--to <user-id>] [--json]\n       slack-desk [--socket <path>] schedule list | cancel <id> | add <user-id> (--at <ISO-offset> | --daily <HH:mm> --tz <IANA-zone> | --weekly <0-6,...> --time <HH:mm> --tz <IANA-zone>) <message...>\n       slack-desk [--socket <path>] schedule update <id> <user-id> (--at ... | --daily ... | --weekly ...) <message...>\n${IDENTITY_USAGE}`;
 
 function terminalText(text: string): string {
   return text
@@ -285,6 +285,7 @@ export function parseScheduleArguments(args: readonly string[]): {
 export function parseDmAuditArguments(args: readonly string[]): {
   socketPath?: string;
   oldest: string;
+  recentOnly: boolean;
   userId?: string;
   json: boolean;
 } {
@@ -305,28 +306,40 @@ export function parseDmAuditArguments(args: readonly string[]): {
   while (tokens.length > 0) {
     const flag = tokens.shift();
     if (flag === "--json" && !json) json = true;
-    else if (flag === "--since" && !since) since = tokens.shift();
-    else if (flag === "--to" && !userId) userId = tokens.shift();
-    else throw new Error(USAGE);
+    else if (flag === "--since" && !since) {
+      since = tokens.shift();
+      if (!since) throw new Error(USAGE);
+    } else if (flag === "--to" && !userId) {
+      userId = tokens.shift();
+      if (!userId) throw new Error(USAGE);
+    } else throw new Error(USAGE);
   }
   if (
-    !since ||
-    !(
-      /^\d{4}-\d{2}-\d{2}$/.test(since) ||
-      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(since)
-    ) ||
-    !Number.isFinite(Date.parse(since)) ||
+    (since !== undefined &&
+      (!(
+        /^\d{4}-\d{2}-\d{2}$/.test(since) ||
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(since)
+      ) ||
+        !Number.isFinite(Date.parse(since)))) ||
     (userId !== undefined && !/^[UW][A-Z0-9]+$/.test(userId))
   )
     throw new Error(USAGE);
   if (
+    since &&
     /^\d{4}-\d{2}-\d{2}$/.test(since) &&
     new Date(Date.parse(since)).toISOString().slice(0, 10) !== since
   )
     throw new Error(USAGE);
-  const sinceMs = Date.parse(since);
-  if (sinceMs > Date.now()) throw new Error("--since must not be in the future");
-  return { socketPath, oldest: String(sinceMs / 1_000 - 0.000001), userId, json };
+  const sinceMs = since ? Date.parse(since) : undefined;
+  if (sinceMs !== undefined && sinceMs > Date.now())
+    throw new Error("--since must not be in the future");
+  return {
+    socketPath,
+    oldest: sinceMs === undefined ? "0" : String(sinceMs / 1_000 - 0.000001),
+    recentOnly: sinceMs === undefined,
+    userId,
+    json,
+  };
 }
 
 export async function auditDms(
@@ -336,6 +349,7 @@ export async function auditDms(
 ): Promise<void> {
   let cursor: string | undefined;
   let count = 0;
+  const recent: DmAuditMessage[] = [];
   const until = String(Date.now() / 1_000);
   do {
     const page = (await client.request("dm-audit-conversations", {
@@ -346,6 +360,14 @@ export async function auditDms(
       let latest: string | undefined = until;
       let heading = false;
       const emitMessage = (message: DmAuditMessage): void => {
+        if (options.recentOnly) {
+          recent.push(message);
+          if (recent.length > 100) {
+            recent.sort((a, b) => Number(b.ts) - Number(a.ts));
+            recent.pop();
+          }
+          return;
+        }
         count++;
         if (options.json) print(JSON.stringify(message));
         else {
@@ -390,7 +412,20 @@ export async function auditDms(
     }
     cursor = page.nextCursor;
   } while (cursor);
-  if (!count && !options.json) print("No bot-authored DMs found in the requested range.");
+  if (options.recentOnly) {
+    recent.sort((a, b) => Number(b.ts) - Number(a.ts));
+    for (const message of recent) {
+      if (options.json) print(JSON.stringify(message));
+      else {
+        print(
+          `[${new Date(Number(message.ts) * 1_000).toISOString()}] ${terminalLine(message.recipientId)}: ${terminalText(message.text).replace(/\n/g, "\n    ")}`,
+        );
+        print(`  ${terminalLine(message.permalink)}`);
+      }
+    }
+    count = recent.length;
+  }
+  if (!count && !options.json) print("No bot-authored DMs found.");
 }
 
 export async function main(args: string[] = process.argv.slice(2)): Promise<void> {

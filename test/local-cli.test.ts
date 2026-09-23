@@ -48,7 +48,7 @@ describe("slack-desk argument parsing", () => {
 });
 
 describe("DM audit CLI", () => {
-  test("requires a valid date and parses recipient and JSON filters", () => {
+  test("defaults to the 100 most recent messages and validates optional filters", () => {
     expect(
       parseDmAuditArguments([
         "--socket",
@@ -64,10 +64,18 @@ describe("DM audit CLI", () => {
     ).toEqual({
       socketPath: "/tmp/test.sock",
       oldest: String(Date.parse("2026-03-01") / 1000 - 0.000001),
+      recentOnly: false,
       userId: "U0BOB",
       json: true,
     });
-    expect(() => parseDmAuditArguments(["dm", "audit"])).toThrow("Usage");
+    expect(parseDmAuditArguments(["dm", "audit"])).toEqual({
+      socketPath: undefined,
+      oldest: "0",
+      recentOnly: true,
+      userId: undefined,
+      json: false,
+    });
+    expect(() => parseDmAuditArguments(["dm", "audit", "--since"])).toThrow("Usage");
     expect(() => parseDmAuditArguments(["dm", "audit", "--since", "2026-02-30"])).toThrow("Usage");
     expect(() =>
       parseDmAuditArguments(["dm", "audit", "--since", "2026-03-01", "--to", "oops"]),
@@ -125,8 +133,10 @@ describe("DM audit CLI", () => {
       },
     } as unknown as LocalClient;
     const lines: string[] = [];
-    await auditDms(client, { oldest: "90", userId: "U0BOB", json: true }, (line) =>
-      lines.push(line),
+    await auditDms(
+      client,
+      { oldest: "90", recentOnly: false, userId: "U0BOB", json: true },
+      (line) => lines.push(line),
     );
     expect(lines.map((line) => JSON.parse(line).text)).toEqual(["first", "thread reply", "second"]);
     expect(requests.find(({ fields }) => fields.threadTs)?.fields).toMatchObject({
@@ -161,8 +171,64 @@ describe("DM audit CLI", () => {
             },
     } as unknown as LocalClient;
     const lines: string[] = [];
-    await auditDms(client, { oldest: "1", json: false }, (line) => lines.push(line));
+    await auditDms(client, { oldest: "1", recentOnly: false, json: false }, (line) =>
+      lines.push(line),
+    );
     expect(lines[1]).toContain("hi\n    ── fake recipient ──\n    [2026] fake");
+  });
+
+  test("returns the latest 100 bot messages globally, including thread replies", async () => {
+    const client = {
+      request: async (type: string, fields: Record<string, unknown>) => {
+        if (type === "dm-audit-conversations")
+          return {
+            conversations: [
+              { channel: "D1", recipientId: "U0ALICE" },
+              { channel: "D2", recipientId: "U0BOB" },
+            ],
+          };
+        if (fields.threadTs)
+          return {
+            messages: [
+              {
+                channel: "D1",
+                recipientId: "U0ALICE",
+                ts: "200.000001",
+                text: "thread",
+                permalink: "thread-link",
+              },
+            ],
+            threads: [],
+          };
+        const start = fields.channel === "D1" ? 1 : 61;
+        return {
+          messages: Array.from({ length: 60 }, (_, index) => ({
+            channel: fields.channel,
+            recipientId: fields.userId,
+            ts: `${start + index}.000001`,
+            text: `message ${start + index}`,
+            permalink: "link",
+          })),
+          threads: fields.channel === "D1" ? ["1.000001"] : [],
+        };
+      },
+    } as unknown as LocalClient;
+    const lines: string[] = [];
+    await auditDms(client, parseDmAuditArguments(["dm", "audit", "--json"]), (line) =>
+      lines.push(line),
+    );
+    const messages = lines.map((line) => JSON.parse(line));
+    expect(messages).toHaveLength(100);
+    expect(messages[0]).toMatchObject({ ts: "200.000001", recipientId: "U0ALICE" });
+    expect(messages.at(-1)).toMatchObject({ ts: "22.000001", recipientId: "U0ALICE" });
+    const filtered: string[] = [];
+    await auditDms(
+      client,
+      parseDmAuditArguments(["dm", "audit", "--to", "U0BOB", "--json"]),
+      (line) => filtered.push(line),
+    );
+    expect(filtered).toHaveLength(60);
+    expect(filtered.every((line) => JSON.parse(line).recipientId === "U0BOB")).toBe(true);
   });
 });
 

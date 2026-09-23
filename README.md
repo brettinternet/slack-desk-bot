@@ -133,8 +133,9 @@ slack-desk sessions      # labels and participants when Slack metadata is availa
 slack-desk attach f82ab719
 slack-desk attach f82ab719 --history 50  # default: 20; --no-history to disable
 slack-desk dm U0123456789 Deploy finished  # DM a member ID as the bot
-slack-desk dm audit --since 2026-03-01  # audit bot-authored DMs since UTC midnight
-slack-desk dm audit --since 2026-03-01 --to U0123456789 --json  # JSON Lines
+slack-desk dm audit  # most recent 100 bot-authored DMs
+slack-desk dm audit --to U0123456789  # most recent 100 to one recipient
+slack-desk dm audit --since 2026-03-01 --json  # all since UTC midnight, JSON Lines
 slack-desk schedule add U0123456789 --at 2026-12-01T09:00:00-05:00 Deploy finished
 slack-desk schedule add U0123456789 --daily 09:00 --tz America/New_York Morning update
 slack-desk schedule add U0123456789 --weekly 1,3,5 --time 09:00 --tz America/New_York Standup
@@ -149,7 +150,7 @@ Schedules persist in an owner-only `schedules.json` beside the socket (or under 
 
 `slack-desk dm` sends the message as the bot without requester attribution and does not need an attached session. It works only for people, not bots or deactivated accounts. To prevent recipients from replying, set `messages_tab_read_only_enabled: true` in the Slack app manifest. This also stops users from starting DM conversations with the bot.
 
-`slack-desk dm audit` reads Slack history through the running bot's owner-only local socket. It prints bot-authored DMs grouped by recipient, including thread replies, exact text, timestamp, and Slack link. Use `--to` to filter by member ID, `--json` for one JSON object per message, and `--since` with a UTC date or ISO timestamp with offset. It pages through accessible DM conversations and history, including messages sent through the agent, CLI, and schedules. This is not a durable archive: deleted messages, expired history, and DMs Slack no longer lets the bot access cannot be recovered. To find recent replies in older threads, it scans accessible DM history back to the beginning; long audits may take time or be subject to Slack API rate limits. The command fails rather than silently skipping an inaccessible conversation.
+`slack-desk dm audit` reads Slack history through the running bot's owner-only local socket. With no `--since`, it shows the 100 most recent bot-authored DMs across recipients, newest first. Use `--since` with a UTC date or ISO timestamp with offset to show all messages since then, grouped by recipient. Both modes include thread replies, text, timestamp, and Slack link; use `--to` to filter by member ID or `--json` for one JSON object per message. It pages through accessible DM conversations and history, including messages sent through the agent, CLI, and schedules. This is not a durable archive: deleted messages, expired history, and DMs Slack no longer lets the bot access cannot be recovered. To find recent replies in older threads, it scans accessible DM history back to the beginning; long audits may take time or be subject to Slack API rate limits. The command fails rather than silently skipping an inaccessible conversation.
 
 Attaching prints thread/DM identity, participants, permalink, and recent history, then streams live events. Inside an attachment, use prompts normally or `/status`, `/cancel`, `/quit`. Slack and local prompts share one per-conversation queue. Local operator prompts and replies post back to the originating Slack thread with attribution; disconnecting does not stop the session or an active request.
 
