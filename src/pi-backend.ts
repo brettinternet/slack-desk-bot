@@ -26,6 +26,7 @@ import type { AgentCommandMode, AgentMode } from "./config.ts";
 import { ConversationStore } from "./conversation-store.ts";
 import { writeStructuredLog } from "./log.ts";
 import { type DiscoveredMcpTool, McpContextProvider, mcpContextTools } from "./mcp-context.ts";
+import { applyServicePiModel } from "./service-pi-settings.ts";
 import {
   slackThreadHistoryTool,
   THREAD_HISTORY_TOOL,
@@ -164,6 +165,7 @@ export function createPiResources(workspace: string, options: PiResourceOptions 
   ];
   const allowedTools = toolsForMode(options.mode ?? "read-only", commandMode, contextToolNames);
   const settingsManager = SettingsManager.create(workspace, agentDir, { projectTrusted: false });
+  applyServicePiModel(settingsManager);
   const resourceLoader = new DefaultResourceLoader({
     cwd: workspace,
     agentDir,

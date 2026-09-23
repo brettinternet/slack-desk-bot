@@ -52,8 +52,8 @@ hum down
 
 **Pi (default):** `SLACK_AGENT_BACKEND=pi`
 
-- Reads model settings, `models.json`, and `auth.json` from the Pi agent directory reported by `task doctor`.
-- Does not load that directory's extensions, skills, or prompt templates.
+- Uses this service's `.pi/settings.json` for its default provider and model, without changing the global Pi default. If the file is absent, it uses the Pi agent directory's default model. `models.json` and `auth.json` still come from the Pi agent directory reported by `task doctor`.
+- Does not load that directory's extensions, skills, or prompt templates. It also ignores all other fields in the service's `.pi/settings.json`.
 - Can read the current Slack thread on demand when asked to catch up, summarize, or use earlier thread context. History is not loaded unless the model calls the conversation-scoped tool.
 - Tools restricted to the `SLACK_AGENT_MODE` and `SLACK_AGENT_COMMAND_MODE` allowlist, enforced again at call time.
 - Authenticate with desktop Pi as usual. No credential copy needed.

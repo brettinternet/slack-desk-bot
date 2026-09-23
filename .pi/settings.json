@@ -1,0 +1,5 @@
+{
+  "defaultProvider": "openrouter",
+  "defaultModel": "anthropic/claude-opus-5",
+  "defaultThinkingLevel": "medium"
+}

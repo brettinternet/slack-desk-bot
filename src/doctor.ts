@@ -34,6 +34,7 @@ import {
 import { loadConfig, type Config } from "./config.ts";
 import { isConversationStoreCorrupt } from "./conversation-store.ts";
 import { defaultSessionDirectory, PI_RESOURCE_POLICY_DESCRIPTION } from "./pi-backend.ts";
+import { applyServicePiModel } from "./service-pi-settings.ts";
 
 export type DoctorStatus = "pass" | "fail" | "warning";
 
@@ -370,7 +371,8 @@ export async function checkClaudeReadiness(
 export async function checkPiReadiness(workspace: string): Promise<string> {
   const agentDir = getAgentDir();
   const authPath = join(agentDir, "auth.json");
-  const settings = SettingsManager.create(workspace, agentDir);
+  const settings = SettingsManager.create(workspace, agentDir, { projectTrusted: false });
+  applyServicePiModel(settings);
   const settingsErrors = settings.drainErrors();
   if (settingsErrors.length > 0)
     throw new Error("Pi settings could not be read; run `pi` to repair them");
