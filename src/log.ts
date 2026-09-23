@@ -52,8 +52,21 @@ export interface ShutdownLog {
   error_message?: string;
 }
 
+export interface DirectMessageLog {
+  event: "direct_message_sent";
+  recipient: string;
+  requester: string;
+  messages: number;
+}
+
 export type StructuredLog =
-  RequestLog | StartupLog | UnauthorizedLog | CapacityDropLog | OperatorErrorLog | ShutdownLog;
+  | RequestLog
+  | StartupLog
+  | UnauthorizedLog
+  | CapacityDropLog
+  | OperatorErrorLog
+  | ShutdownLog
+  | DirectMessageLog;
 
 export type RequestLogWriter = (fields: RequestLog) => void;
 export type LogWriter = (fields: StructuredLog) => void;

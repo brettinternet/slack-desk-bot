@@ -232,6 +232,32 @@ describe("local conversation control", () => {
     coordinator.dispose();
   });
 
+  test("sends operator direct messages without attaching to a session", async () => {
+    const path = await socketPath();
+    const { coordinator } = fixture();
+    const sent: unknown[] = [];
+    const server = new LocalControlServer({
+      socketPath: path,
+      coordinator,
+      sendDirectMessage: async (message) => {
+        sent.push(message);
+        return { recipientId: "U0BOB", recipientName: "Bob", channel: "D1", ts: "1.1" };
+      },
+    });
+    await server.start();
+    const client = await ProtocolClient.connect(path);
+
+    client.send("dm", "dm", { userId: "U0BOB", text: "hello" });
+    expect((await client.response("dm")).result).toMatchObject({ recipientName: "Bob" });
+    client.send("dm", "bad", { userId: "U0BOB" });
+    expect((await client.response("bad")).error).toBe("userId and text are required");
+    expect(sent).toEqual([{ userId: "U0BOB", text: "hello" }]);
+
+    client.socket.destroy();
+    await server.stop();
+    coordinator.dispose();
+  });
+
   test("rejects malformed, oversized, unauthorized, and colliding clients", async () => {
     const path = await socketPath();
     const { coordinator } = fixture();

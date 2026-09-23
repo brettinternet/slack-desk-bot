@@ -24,6 +24,11 @@ import { prepareTextPrompt } from "./agent-prompt.ts";
 import { brokeredTools, type BrokeredToolsOptions } from "./brokered-commands.ts";
 import type { AgentCommandMode, AgentMode } from "./config.ts";
 import { ConversationStore } from "./conversation-store.ts";
+import {
+  DIRECT_MESSAGE_TOOL,
+  type DirectMessageSender,
+  slackDirectMessageTool,
+} from "./direct-message-tool.ts";
 import { writeStructuredLog } from "./log.ts";
 import { type DiscoveredMcpTool, McpContextProvider, mcpContextTools } from "./mcp-context.ts";
 import { applyServicePiModel } from "./service-pi-settings.ts";
@@ -153,6 +158,7 @@ interface PiResourceOptions {
   mcpProvider?: McpContextProvider;
   mcpCatalog?: readonly DiscoveredMcpTool[];
   threadHistoryReader?: ThreadHistoryReader;
+  directMessageSender?: DirectMessageSender;
   agentDir?: string;
 }
 
@@ -162,6 +168,7 @@ export function createPiResources(workspace: string, options: PiResourceOptions 
   const contextToolNames = [
     ...(options.mcpCatalog?.map((tool) => tool.localName) ?? []),
     ...(options.threadHistoryReader ? [THREAD_HISTORY_TOOL] : []),
+    ...(options.directMessageSender ? [DIRECT_MESSAGE_TOOL] : []),
   ];
   const allowedTools = toolsForMode(options.mode ?? "read-only", commandMode, contextToolNames);
   const settingsManager = SettingsManager.create(workspace, agentDir, { projectTrusted: false });
@@ -180,6 +187,7 @@ export function createPiResources(workspace: string, options: PiResourceOptions 
         ? [mcpContextTools(options.mcpProvider, options.mcpCatalog)]
         : []),
       ...(options.threadHistoryReader ? [slackThreadHistoryTool(options.threadHistoryReader)] : []),
+      ...(options.directMessageSender ? [slackDirectMessageTool(options.directMessageSender)] : []),
     ],
     noExtensions: true,
     noSkills: true,
@@ -382,6 +390,11 @@ export class PiBackend implements AgentBackend {
         if (!reader) throw new Error("Slack thread history is unavailable for this request");
         return reader(options, signal);
       },
+      directMessageSender: (message, signal) => {
+        const send = this.activeContexts.get(conversationId)?.sendDirectMessage;
+        if (!send) throw new Error("Slack direct messages are unavailable for this request");
+        return send(message, signal);
+      },
     });
     await resourceLoader.reload();
     const { session } = await createAgentSession({
@@ -392,6 +405,7 @@ export class PiBackend implements AgentBackend {
       tools: toolsForMode(mode, commandMode, [
         ...(mcpCatalog?.map((tool) => tool.localName) ?? []),
         THREAD_HISTORY_TOOL,
+        DIRECT_MESSAGE_TOOL,
       ]),
     });
     return session;

@@ -281,12 +281,16 @@ describe("SlackAgent transport", () => {
           conversationId: "dm:D1",
           requesterId: "U_ALLOWED",
           prompt: "offline dm",
+          context: { sendDirectMessage: expect.any(Function) },
         },
         {
           conversationId: "C1:1709999991.000100",
           requesterId: "U_ALLOWED",
           prompt: "offline mention",
-          context: { readThreadHistory: expect.any(Function) },
+          context: {
+            readThreadHistory: expect.any(Function),
+            sendDirectMessage: expect.any(Function),
+          },
         },
       ]);
       expect(app.client.users.conversations).toHaveBeenCalledTimes(2);
@@ -471,7 +475,10 @@ describe("SlackAgent transport", () => {
         conversationId: "C2:1709999980.000100",
         requesterId: "U_ALLOWED",
         prompt: "actually missed",
-        context: { readThreadHistory: expect.any(Function) },
+        context: {
+          readThreadHistory: expect.any(Function),
+          sendDirectMessage: expect.any(Function),
+        },
       });
     } finally {
       await agent.stop();
@@ -1184,7 +1191,10 @@ describe("SlackAgent transport", () => {
         conversationId: "C1:1",
         requesterId: "U_ALLOWED",
         prompt: "request",
-        context: { readThreadHistory: expect.any(Function) },
+        context: {
+          readThreadHistory: expect.any(Function),
+          sendDirectMessage: expect.any(Function),
+        },
       },
       {
         onQueued: expect.any(Function),
@@ -1349,7 +1359,10 @@ describe("SlackAgent transport", () => {
         conversationId: "C1:1",
         requesterId: "U_ALLOWED",
         prompt: "thread request",
-        context: { readThreadHistory: expect.any(Function) },
+        context: {
+          readThreadHistory: expect.any(Function),
+          sendDirectMessage: expect.any(Function),
+        },
       },
       {
         onQueued: expect.any(Function),
@@ -1362,6 +1375,7 @@ describe("SlackAgent transport", () => {
         conversationId: "dm:D1",
         requesterId: "U_ALLOWED",
         prompt: "dm request",
+        context: { sendDirectMessage: expect.any(Function) },
       },
       {
         onQueued: expect.any(Function),
@@ -1419,6 +1433,101 @@ describe("SlackAgent transport", () => {
         { authorName: "Agent", kind: "agent", text: "Earlier answer" },
       ],
       nextCursor: "page-2",
+    });
+  });
+
+  test("lets the agent send attributed, sanitized, bounded direct messages", async () => {
+    const results: unknown[] = [];
+    const run = mock(async (request: Parameters<AgentBackend["run"]>[0]) => {
+      const send = request.context!.sendDirectMessage!;
+      results.push(
+        await send({ userId: "<@U0BOB>", text: "Ping <@U0BOB> and <@U0EVE> <!channel>" }),
+      );
+      for (let attempt = 0; attempt < 5; attempt++) {
+        results.push(await send({ userId: "U0BOB", text: "again" }).catch((error) => error));
+      }
+      return "done";
+    });
+    const operatorLog = mock(() => {});
+    createAgent(run, undefined, operatorLog);
+    app.client.chat.postMessage.mockImplementation(async () => ({ channel: "D_BOB", ts: "1.1" }));
+
+    await app.handlers.get("message")!({
+      body: { event_id: "E_DM_TOOL" },
+      event: { user: "U_ALLOWED", text: "tell bob hi", channel: "D1", channel_type: "im", ts: "1" },
+      client: client(),
+    });
+
+    expect(app.client.chat.postMessage).toHaveBeenNthCalledWith(1, {
+      channel: "U0BOB",
+      text: "*Message from <@U_ALLOWED>:*\nPing <@U0BOB> and &lt;@U0EVE&gt; &lt;!channel&gt;",
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+    expect(results[0]).toEqual({
+      recipientId: "U0BOB",
+      recipientName: "Jane",
+      channel: "D_BOB",
+      ts: "1.1",
+    });
+    expect(app.client.chat.postMessage).toHaveBeenCalledTimes(5);
+    expect((results[5] as Error).message).toContain("At most 5 direct messages");
+    expect(operatorLog).toHaveBeenCalledWith({
+      event: "direct_message_sent",
+      recipient: "U0BOB",
+      requester: "U_ALLOWED",
+      messages: 1,
+    });
+  });
+
+  test("rejects direct messages to bots, missing users, and malformed IDs", async () => {
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "unused")),
+    });
+    app.client.users.info.mockImplementationOnce(
+      async ({ user }) =>
+        ({
+          user: { id: user, is_bot: true },
+        }) as never,
+    );
+    await expect(agent.sendDirectMessage({ userId: "U0BOT", text: "hi" })).rejects.toThrow(
+      "only be sent to people",
+    );
+    app.client.users.info.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("An API error occurred"), {
+        data: { error: "user_not_found" },
+      });
+    });
+    await expect(agent.sendDirectMessage({ userId: "U0GONE", text: "hi" })).rejects.toThrow(
+      "Slack user not found",
+    );
+    await expect(agent.sendDirectMessage({ userId: "C123", text: "hi" })).rejects.toThrow(
+      "Slack member ID",
+    );
+    await expect(agent.sendDirectMessage({ userId: "U0BOB", text: "  " })).rejects.toThrow(
+      "text is required",
+    );
+    expect(app.client.chat.postMessage).not.toHaveBeenCalled();
+  });
+
+  test("sends local operator direct messages as the bot without attribution", async () => {
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "unused")),
+    });
+
+    await agent.sendDirectMessage({ userId: "U0BOB", text: "Standup moved, cc <@U0EVE>" });
+
+    expect(app.client.chat.postMessage).toHaveBeenCalledWith({
+      channel: "U0BOB",
+      text: "Standup moved, cc <@U0EVE>",
+      unfurl_links: false,
+      unfurl_media: false,
     });
   });
 
@@ -1489,7 +1598,10 @@ describe("SlackAgent transport", () => {
         conversationId: "C1:3",
         requesterId: "U_ALLOWED",
         prompt: "Please broadcast the follow up",
-        context: { readThreadHistory: expect.any(Function) },
+        context: {
+          readThreadHistory: expect.any(Function),
+          sendDirectMessage: expect.any(Function),
+        },
       },
       {
         onQueued: expect.any(Function),
@@ -2298,6 +2410,7 @@ describe("SlackAgent transport", () => {
             data: Buffer.from(png).toString("base64"),
           },
         ],
+        context: { sendDirectMessage: expect.any(Function) },
       },
       {
         onQueued: expect.any(Function),

@@ -1,6 +1,8 @@
 import {
   type CancellableAgentBackend,
   type ConversationInspector,
+  type DirectMessage,
+  type DirectMessageReceipt,
   type QueueSnapshot,
   QueuedAgentBackend,
 } from "./agent.ts";
@@ -18,6 +20,7 @@ interface SlackLifecycle extends Partial<ConversationInspector> {
   start(): Promise<void>;
   stop(): Promise<void>;
   publishOperatorExchange?(conversationId: string, prompt: string, response: string): Promise<void>;
+  sendDirectMessage?(message: DirectMessage): Promise<DirectMessageReceipt>;
 }
 
 interface LocalControlLifecycle {
@@ -53,6 +56,7 @@ interface ApplicationDependencies {
     socketPath: string;
     coordinator: ConversationCoordinator;
     inspector?: ConversationInspector;
+    sendDirectMessage?: (message: DirectMessage) => Promise<DirectMessageReceipt>;
   }) => LocalControlLifecycle;
 }
 
@@ -112,6 +116,9 @@ export async function startApplication(
       coordinator: agent,
       ...(slack.inspectConversation
         ? { inspector: { inspectConversation: slack.inspectConversation.bind(slack) } }
+        : {}),
+      ...(slack.sendDirectMessage
+        ? { sendDirectMessage: (message: DirectMessage) => slack.sendDirectMessage!(message) }
         : {}),
     },
   );

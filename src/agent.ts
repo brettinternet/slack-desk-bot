@@ -24,11 +24,24 @@ export interface ThreadHistoryPage {
   nextCursor?: string;
 }
 
+export interface DirectMessage {
+  userId: string;
+  text: string;
+}
+
+export interface DirectMessageReceipt {
+  recipientId: string;
+  recipientName: string;
+  channel: string;
+  ts: string;
+}
+
 export interface AgentConversationContext {
   readThreadHistory?(
     options: ThreadHistoryOptions,
     signal?: AbortSignal,
   ): Promise<ThreadHistoryPage>;
+  sendDirectMessage?(message: DirectMessage, signal?: AbortSignal): Promise<DirectMessageReceipt>;
 }
 
 export interface AgentRequest {

@@ -9,7 +9,7 @@ export const MAX_LOCAL_FRAME_BYTES = 64 * 1024;
  */
 export const LOCAL_OPERATOR_ID = "local-operator";
 
-export type LocalRequestType = "list" | "attach" | "run" | "status" | "cancel";
+export type LocalRequestType = "list" | "attach" | "run" | "status" | "cancel" | "dm";
 
 export interface LocalRequest {
   v: typeof LOCAL_PROTOCOL_VERSION;
@@ -18,6 +18,8 @@ export interface LocalRequest {
   sessionId?: string;
   prompt?: string;
   historyLimit?: number;
+  userId?: string;
+  text?: string;
 }
 
 export interface LocalResponse {
@@ -37,7 +39,7 @@ export interface LocalEventMessage {
 
 export type LocalServerMessage = LocalResponse | LocalEventMessage;
 
-const REQUEST_TYPES: readonly string[] = ["list", "attach", "run", "status", "cancel"];
+const REQUEST_TYPES: readonly string[] = ["list", "attach", "run", "status", "cancel", "dm"];
 
 export function isLocalRequest(value: unknown): value is LocalRequest {
   if (typeof value !== "object" || value === null) return false;

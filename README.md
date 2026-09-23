@@ -55,6 +55,7 @@ hum down
 - Uses this service's `.pi/settings.json` for its default provider and model, without changing the global Pi default. If the file is absent, it uses the Pi agent directory's default model. `models.json` and `auth.json` still come from the Pi agent directory reported by `task doctor`.
 - Does not load that directory's extensions, skills, or prompt templates. It also ignores all other fields in the service's `.pi/settings.json`.
 - Can read the current Slack thread on demand when asked to catch up, summarize, or use earlier thread context. History is not loaded unless the model calls the conversation-scoped tool.
+- Can send a private Slack DM when the requester asks it to tell or notify someone, or when information belongs in a private message. Each DM starts with `Message from @requester:`, may mention only the recipient and requester, and is limited to five per request.
 - Tools restricted to the `SLACK_AGENT_MODE` and `SLACK_AGENT_COMMAND_MODE` allowlist, enforced again at call time.
 - Authenticate with desktop Pi as usual. No credential copy needed.
 
@@ -109,7 +110,7 @@ laptop: check the failing test
 
 Follow-ups in an active thread need no mention, even across restarts. While the service remains running, answers to the bot's questions are inferred automatically. General observations, acknowledgements, explicit no-reply notes, and messages addressed to another user are ignored. Prefix short or ambiguous messages with `laptop:` to address the bot without an @mention.
 
-With the Pi backend, the bot can read paginated history for its current thread on demand when asked to catch up or summarize. Only `SLACK_ALLOWED_USER_IDS` can invoke the bot. The first unauthorized mention explains the denial; repeated attempts from the same user and conversation within ten minutes receive a `:no_entry:` reaction, persisting across restarts. After a successful response, the bot has a 20% chance of adding a random custom workspace emoji reaction.
+With the Pi backend, the bot can read paginated history for its current thread on demand when asked to catch up or summarize. It can also DM someone for you, such as "tell <@U0123456789> the deploy is done"; the DM names you as the requester. Only `SLACK_ALLOWED_USER_IDS` can invoke the bot. The first unauthorized mention explains the denial; repeated attempts from the same user and conversation within ten minutes receive a `:no_entry:` reaction, persisting across restarts. After a successful response, the bot has a 20% chance of adding a random custom workspace emoji reaction.
 
 When starting after downtime, background catch-up reconciles eligible DMs, mentions, and thread requests from the past 24 hours. It reads at most 25 conversations and processes up to 10 messages, prioritizing DMs and existing threads. Messages already covered by an agent session, thread starters with replies, and DMs or threads with later messages are skipped. A durable checkpoint file beside the local control socket prevents duplicate replies, rapid restarts within five minutes share a cooldown before another scan, and the initial launch sets the checkpoint without replying to older messages.
 
@@ -131,7 +132,10 @@ bun link                 # once, from this checkout
 slack-desk sessions      # labels and participants when Slack metadata is available
 slack-desk attach f82ab719
 slack-desk attach f82ab719 --history 50  # default: 20; --no-history to disable
+slack-desk dm U0123456789 Deploy finished  # DM a member ID as the bot
 ```
+
+`slack-desk dm` sends the message as the bot without requester attribution and does not need an attached session. It works only for people, not bots or deactivated accounts. To prevent recipients from replying, set `messages_tab_read_only_enabled: true` in the Slack app manifest. This also stops users from starting DM conversations with the bot.
 
 Attaching prints thread/DM identity, participants, permalink, and recent history, then streams live events. Inside an attachment, use prompts normally or `/status`, `/cancel`, `/quit`. Slack and local prompts share one per-conversation queue. Local operator prompts and replies post back to the originating Slack thread with attribution; disconnecting does not stop the session or an active request.
 

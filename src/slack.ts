@@ -15,9 +15,12 @@ import {
   type ConversationDetails,
   type ConversationHistoryEntry,
   type ConversationParticipant,
+  type DirectMessage,
+  type DirectMessageReceipt,
   type ThreadHistoryOptions,
   type ThreadHistoryPage,
 } from "./agent.ts";
+import { MAX_DIRECT_MESSAGE_CHARACTERS } from "./direct-message-tool.ts";
 import { EventDeduplicator } from "./event-deduplicator.ts";
 import { ingestSlackFiles } from "./slack-files.ts";
 import { type LogWriter, type RequestLogWriter, writeStructuredLog } from "./log.ts";
@@ -74,6 +77,7 @@ const DEFAULT_CATCH_UP_LOOKBACK_MS = 24 * 60 * 60 * 1_000;
 const DEFAULT_CATCH_UP_COOLDOWN_MS = 5 * 60 * 1_000;
 const DEFAULT_CATCH_UP_MAX_MESSAGES = 10;
 const DEFAULT_CATCH_UP_MAX_HISTORY_REQUESTS = 25;
+const MAX_DIRECT_MESSAGES_PER_REQUEST = 5;
 interface DeliveryResult {
   outcome: "success" | "partial" | "failure";
   publishedMessages: number;
@@ -587,6 +591,73 @@ export class SlackAgent {
     const destination = slackDestination(conversation);
     await this.publishAttributed(destination, "*Local operator:*", prompt);
     await this.publishAttributed(destination, "*Agent (operator request):*", response);
+  }
+
+  /**
+   * Sends a DM from the bot. Agent-initiated messages name the requesting user so
+   * recipients can tell who asked; local operator messages speak as the bot.
+   */
+  async sendDirectMessage(
+    message: DirectMessage,
+    requesterId?: string,
+    signal?: AbortSignal,
+  ): Promise<DirectMessageReceipt> {
+    const recipientId = message.userId.trim().replace(/^<@([A-Z0-9]+)>$/, "$1");
+    if (!/^[UW][A-Z0-9]{2,}$/.test(recipientId)) {
+      throw new Error("Recipient must be a Slack member ID such as U0123456789");
+    }
+    const text = message.text.trim();
+    if (!text) throw new Error("Direct message text is required");
+    if (text.length > MAX_DIRECT_MESSAGE_CHARACTERS) {
+      throw new Error(`Direct message text exceeds ${MAX_DIRECT_MESSAGE_CHARACTERS} characters`);
+    }
+    if (signal?.aborted) throw signal.reason;
+
+    let user;
+    try {
+      user = (await this.slackOperation(this.app.client.users.info({ user: recipientId }))).user;
+    } catch (error) {
+      if (slackApiError(error) === "user_not_found") throw new Error("Slack user not found");
+      throw error;
+    }
+    if (!user || user.deleted) throw new Error("Slack user not found");
+    if (user.is_bot || recipientId === "USLACKBOT" || recipientId === this.botUserId) {
+      throw new Error("Direct messages can only be sent to people");
+    }
+    const recipient = await this.resolveUser(recipientId);
+
+    // Operator text is trusted to mention anyone; agent text may mention only
+    // the recipient and requester, so injected content cannot ping others.
+    const allowedMentions = requesterId
+      ? new Set([`<@${recipientId}>`, `<@${requesterId}>`])
+      : slackUserMentions(text);
+    const label = requesterId ? `*Message from <@${requesterId}>:*\n` : "";
+    const chunks = splitSlackMessage(formatSlackText(text, allowedMentions));
+    let receipt: DirectMessageReceipt | undefined;
+    for (const [index, chunk] of chunks.entries()) {
+      if (signal?.aborted) throw signal.reason;
+      const response = await this.chatOperation(() =>
+        this.app.client.chat.postMessage({
+          channel: recipientId,
+          text: index === 0 ? `${label}${chunk}` : chunk,
+          unfurl_links: false,
+          unfurl_media: false,
+        }),
+      );
+      receipt ??= {
+        recipientId,
+        recipientName: recipient.name,
+        channel: response.channel ?? recipientId,
+        ts: response.ts ?? "",
+      };
+    }
+    (this.options.operatorLog ?? writeStructuredLog)({
+      event: "direct_message_sent",
+      recipient: recipientId,
+      requester: requesterId ?? "local-operator",
+      messages: chunks.length,
+    });
+    return receipt!;
   }
 
   async inspectConversation(
@@ -1187,19 +1258,28 @@ export class SlackAgent {
         : await this.options.agent.handleCommand(id, message.requesterId, command, observer);
       return { outcome: "success", finalOutput: output };
     }
+    let directMessages = 0;
     const request = {
       conversationId: id,
       requesterId: message.requesterId,
       prompt: message.prompt,
       ...(attachments.length > 0 ? { attachments } : {}),
-      ...(message.threadTs
-        ? {
-            context: {
+      context: {
+        ...(message.threadTs
+          ? {
               readThreadHistory: (options: ThreadHistoryOptions, signal?: AbortSignal) =>
                 this.readThreadHistoryPage(message.channel, message.threadTs!, options, signal),
-            },
+            }
+          : {}),
+        sendDirectMessage: async (directMessage: DirectMessage, signal?: AbortSignal) => {
+          if (++directMessages > MAX_DIRECT_MESSAGES_PER_REQUEST) {
+            throw new Error(
+              `At most ${MAX_DIRECT_MESSAGES_PER_REQUEST} direct messages can be sent per request`,
+            );
           }
-        : {}),
+          return this.sendDirectMessage(directMessage, message.requesterId, signal);
+        },
+      },
     };
     const output = admission
       ? await this.options.agent.run(request, observer, admission)

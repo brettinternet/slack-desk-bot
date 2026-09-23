@@ -32,6 +32,14 @@ describe("slack-desk argument parsing", () => {
     expect(() => parseArguments(["sessions", "--history", "20"])).toThrow("Usage");
     expect(() => parseArguments(["attach", "abc", "--history", "101"])).toThrow("0-100");
     expect(() => parseArguments(["--socket"])).toThrow("--socket requires a path");
+    expect(parseArguments(["--socket", "/tmp/a.sock", "dm", "U0BOB", "Deploy", "--now"])).toEqual({
+      command: "dm",
+      userId: "U0BOB",
+      text: "Deploy --now",
+      socketPath: "/tmp/a.sock",
+    });
+    expect(() => parseArguments(["dm", "U0BOB"])).toThrow("Usage");
+    expect(() => parseArguments(["dm"])).toThrow("Usage");
   });
 });
 

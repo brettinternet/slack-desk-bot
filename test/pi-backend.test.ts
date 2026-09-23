@@ -143,6 +143,24 @@ describe("Pi configuration", () => {
     ).toBe(true);
   });
 
+  test("loads the requester-scoped direct message tool when configured", async () => {
+    const { resourceLoader } = createPiResources(process.cwd(), {
+      directMessageSender: async () => ({
+        recipientId: "U0BOB",
+        recipientName: "Bob",
+        channel: "D1",
+        ts: "1.1",
+      }),
+    });
+    await resourceLoader.reload();
+
+    expect(
+      resourceLoader
+        .getExtensions()
+        .extensions.some((extension) => extension.path === "<inline:slack-direct-message-tool>"),
+    ).toBe(true);
+  });
+
   test("appends Slack-specific instructions to the system prompt", async () => {
     const { resourceLoader } = createPiResources(process.cwd(), {
       instructions: "Keep Slack replies brief.",

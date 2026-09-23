@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
 import { createInterface } from "node:readline";
-import type { ConversationSummary } from "./agent.ts";
+import type { ConversationSummary, DirectMessageReceipt } from "./agent.ts";
 import { defaultSocketPath } from "./config.ts";
 import type { ConversationEvent } from "./conversation-coordinator.ts";
 import { IDENTITY_USAGE, runIdentityCommand } from "./identity-cli.ts";
@@ -84,7 +84,7 @@ class LocalClient {
   }
 }
 
-const USAGE = `Usage: slack-desk [--socket <path>] sessions | slack-desk [--socket <path>] attach <session-id> [--history <0-100> | --no-history]\n${IDENTITY_USAGE}`;
+const USAGE = `Usage: slack-desk [--socket <path>] sessions | slack-desk [--socket <path>] attach <session-id> [--history <0-100> | --no-history] | slack-desk [--socket <path>] dm <slack-user-id> <message...>\n${IDENTITY_USAGE}`;
 
 function terminalText(text: string): string {
   return text
@@ -240,12 +240,15 @@ async function attach(
 }
 
 export function parseArguments(args: readonly string[]): {
-  command: "sessions" | "attach";
+  command: "sessions" | "attach" | "dm";
   sessionId?: string;
+  userId?: string;
+  text?: string;
   socketPath?: string;
   historyLimit?: number;
 } {
   const positional: string[] = [];
+  let dmText: string[] | undefined;
   let socketPath: string | undefined;
   let historyLimit: number | undefined;
   for (let index = 0; index < args.length; index++) {
@@ -268,11 +271,20 @@ export function parseArguments(args: readonly string[]): {
       if (!/^\d+$/.test(requested)) throw new Error("--history requires 0-100");
       historyLimit = Number(requested);
       if (historyLimit > 100) throw new Error("--history requires 0-100");
+    } else if (positional[0] === "dm" && positional.length === 2) {
+      // Everything after the recipient is message text, including flag-like words.
+      dmText = args.slice(index);
+      break;
     } else {
       positional.push(value);
     }
   }
   const [command, sessionId] = positional;
+  if (command === "dm") {
+    const text = dmText?.join(" ").trim();
+    if (!sessionId || !text || historyLimit !== undefined) throw new Error(USAGE);
+    return { command, userId: sessionId, text, socketPath };
+  }
   if (command !== "sessions" && command !== "attach") {
     throw new Error(USAGE);
   }
@@ -286,7 +298,14 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
     await runIdentityCommand(args.slice(1), { botToken: process.env.SLACK_BOT_TOKEN });
     return;
   }
-  const { command, sessionId, socketPath: requested, historyLimit } = parseArguments(args);
+  const {
+    command,
+    sessionId,
+    userId,
+    text,
+    socketPath: requested,
+    historyLimit,
+  } = parseArguments(args);
   const socketPath =
     requested ?? (process.env.SLACK_AGENT_SOCKET_PATH?.trim() || defaultSocketPath());
   let client: LocalClient;
@@ -298,6 +317,9 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
   try {
     if (command === "sessions") {
       printSessions((await client.request("list")) as ConversationSummary[]);
+    } else if (command === "dm") {
+      const receipt = (await client.request("dm", { userId, text })) as DirectMessageReceipt;
+      console.log(`Sent to ${terminalLine(receipt.recipientName)} (${receipt.recipientId})`);
     } else {
       await attach(client, sessionId!, historyLimit);
     }

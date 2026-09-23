@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, stat, unlink } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { dirname } from "node:path";
-import type { ConversationInspector, ConversationSummary } from "./agent.ts";
+import type {
+  ConversationInspector,
+  ConversationSummary,
+  DirectMessage,
+  DirectMessageReceipt,
+} from "./agent.ts";
 import type { ConversationCoordinator, ConversationEvent } from "./conversation-coordinator.ts";
 import {
   isLocalRequest,
@@ -22,6 +27,7 @@ interface LocalControlOptions {
   socketPath: string;
   coordinator: ConversationCoordinator;
   inspector?: ConversationInspector;
+  sendDirectMessage?: (message: DirectMessage) => Promise<DirectMessageReceipt>;
   /**
    * Test seam for simulating a rejected peer. Neither Node nor Bun exposes
    * `SO_PEERCRED`/`getpeereid`, so the real boundary is the owner-only `0700`
@@ -194,6 +200,13 @@ export class LocalControlServer {
         ? Math.max(0, Math.min(100, request.historyLimit!))
         : 20;
       return this.withDetails(matches[0]!, historyLimit);
+    }
+    if (request.type === "dm") {
+      if (!this.options.sendDirectMessage) throw new Error("Direct messages are unavailable");
+      if (typeof request.userId !== "string" || typeof request.text !== "string") {
+        throw new Error("userId and text are required");
+      }
+      return this.options.sendDirectMessage({ userId: request.userId, text: request.text });
     }
     if (!client.conversationId) throw new Error("Attach to a session first");
     if (request.type === "run") {
