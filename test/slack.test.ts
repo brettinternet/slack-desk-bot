@@ -565,7 +565,7 @@ describe("SlackAgent transport", () => {
   });
 
   test("occasionally adds a random custom workspace emoji after a successful response", async () => {
-    const randomValues = [0.1, 0.1, 0.99];
+    const randomValues = [0.1, 0.99];
     const agent = new SlackAgent({
       botToken: "xoxb-test",
       appToken: "xapp-test",
@@ -784,11 +784,7 @@ describe("SlackAgent transport", () => {
     });
     app.receiver.client.emit("connected");
     const slack = client();
-    slack.chat.update.mockImplementation(async () => {
-      throw new Error("update unavailable");
-    });
-    slack.chat.postMessage.mockImplementation(async (message: { text: string }) => {
-      if (message.text === "Queued…") return { ts: "status-ts" };
+    slack.chat.postMessage.mockImplementation(async () => {
       throw new Error("post unavailable");
     });
 
@@ -1036,7 +1032,7 @@ describe("SlackAgent transport", () => {
     await Bun.sleep(0);
 
     expect(slack.files.info).toHaveBeenCalledTimes(1);
-    expect(slack.chat.postMessage).toHaveBeenCalledTimes(20);
+    expect(slack.chat.postMessage).toHaveBeenCalledTimes(19);
     expect(
       slack.chat.postMessage.mock.calls.filter(
         ([message]) =>
@@ -1045,6 +1041,7 @@ describe("SlackAgent transport", () => {
     ).toHaveLength(12);
     held.resolve("response");
     await Promise.all(handling);
+    expect(slack.chat.postMessage).toHaveBeenCalledTimes(20);
   });
 
   test("replies once per conversation and reacts when Slack response capacity is full", async () => {
@@ -1195,17 +1192,13 @@ describe("SlackAgent transport", () => {
         onToolUse: expect.any(Function),
       },
     );
+    expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
     expect(slack.chat.postMessage).toHaveBeenCalledWith({
       channel: "C1",
       thread_ts: "1",
-      text: "Queued…",
-    });
-    expect(slack.chat.update).toHaveBeenCalledWith({
-      channel: "C1",
-      ts: "status-ts",
       text: "response",
-      blocks: [],
     });
+    expect(slack.chat.update).not.toHaveBeenCalled();
     expect(slack.reactions.add).not.toHaveBeenCalled();
     expect(slack.reactions.remove).not.toHaveBeenCalled();
   });
@@ -1261,11 +1254,10 @@ describe("SlackAgent transport", () => {
       client: slack,
     });
 
-    expect(slack.chat.update).toHaveBeenCalledWith({
+    expect(slack.chat.postMessage).toHaveBeenCalledWith({
       channel: "C1",
-      ts: "status-ts",
+      thread_ts: "1",
       text: "&lt;!channel&gt; see *this* &lt;@U999&gt; &amp; &lt;https://evil.example|docs&gt;",
-      blocks: [],
     });
   });
 
@@ -1284,11 +1276,10 @@ describe("SlackAgent transport", () => {
       client: slack,
     });
 
-    expect(slack.chat.update).toHaveBeenCalledWith({
+    expect(slack.chat.postMessage).toHaveBeenCalledWith({
       channel: "C1",
-      ts: "status-ts",
+      thread_ts: "1",
       text: "<@U04ET2XUC3B> — nice work!",
-      blocks: [],
     });
   });
 
@@ -1317,11 +1308,10 @@ describe("SlackAgent transport", () => {
       client: slack,
     });
 
-    expect(slack.chat.update).toHaveBeenCalledWith({
+    expect(slack.chat.postMessage).toHaveBeenCalledWith({
       channel: "C1",
-      ts: "status-ts",
+      thread_ts: "1",
       text: "<@U04ET2XUC3B> — fair pushback.",
-      blocks: [],
     });
   });
 
@@ -1382,12 +1372,12 @@ describe("SlackAgent transport", () => {
     expect(slack.chat.postMessage.mock.calls[0]?.[0]).toEqual({
       channel: "C1",
       thread_ts: "1",
-      text: "Queued…",
+      text: "response",
     });
     expect(slack.chat.postMessage.mock.calls[1]?.[0]).toEqual({
       channel: "D1",
       thread_ts: undefined,
-      text: "Queued…",
+      text: "response",
     });
   });
 
@@ -1773,7 +1763,7 @@ describe("SlackAgent transport", () => {
     await mention({ body: { event_id: "E_REDELIVERED" }, event, client: slack });
 
     expect(run).toHaveBeenCalledTimes(1);
-    expect(slack.chat.update).toHaveBeenCalledTimes(1);
+    expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
   });
 
   test("reports unexpected failures without exposing backend details", async () => {
@@ -1799,13 +1789,12 @@ describe("SlackAgent transport", () => {
       client: slack,
     });
 
-    expect(slack.chat.update).toHaveBeenCalledWith({
+    expect(slack.chat.postMessage).toHaveBeenCalledWith({
       channel: "C1",
-      ts: "status-ts",
+      thread_ts: "2",
       text: "The request failed unexpectedly. Try again or contact the operator with request ID `E_FAILURE`.",
-      blocks: [],
     });
-    expect(JSON.stringify(slack.chat.update.mock.calls)).not.toContain("secret-token");
+    expect(JSON.stringify(slack.chat.postMessage.mock.calls)).not.toContain("secret-token");
     expect(operatorLogs).toEqual([
       {
         event: "operator_error",
@@ -1869,11 +1858,10 @@ describe("SlackAgent transport", () => {
       client: slack,
     });
 
-    expect(slack.chat.update).toHaveBeenCalledWith({
+    expect(slack.chat.postMessage).toHaveBeenCalledWith({
       channel: "C1",
-      ts: "status-ts",
+      thread_ts: "3",
       text: "*Still can’t execute privileged shell commands here.* Save your work, then run:\n\n```bash\nsudo shutdown -r now\n```",
-      blocks: [],
     });
   });
 
@@ -1889,17 +1877,14 @@ describe("SlackAgent transport", () => {
       client: slack,
     });
 
-    const chunks = [
-      slack.chat.update.mock.calls[0]?.[0].text,
-      ...slack.chat.postMessage.mock.calls.slice(1).map(([message]) => message.text),
-    ] as string[];
+    const chunks = slack.chat.postMessage.mock.calls.map(([message]) => message.text as string);
     expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.every((text) => text.length <= 3_500)).toBe(true);
     expect(chunks.join(" ")).toBe(output);
     expect(
-      slack.chat.postMessage.mock.calls
-        .slice(1)
-        .every(([message]) => message.channel === "C1" && message.thread_ts === "4"),
+      slack.chat.postMessage.mock.calls.every(
+        ([message]) => message.channel === "C1" && message.thread_ts === "4",
+      ),
     ).toBe(true);
   });
 
@@ -1914,16 +1899,13 @@ describe("SlackAgent transport", () => {
       client: slack,
     });
 
-    const published = [
-      slack.chat.update.mock.calls[0]?.[0].text,
-      ...slack.chat.postMessage.mock.calls.slice(1).map(([message]) => message.text),
-    ] as string[];
+    const published = slack.chat.postMessage.mock.calls.map(([message]) => message.text as string);
     expect(published).toHaveLength(3);
     expect(published.every((text) => text.length <= 3_500)).toBe(true);
     expect(published[2]).toContain("Output truncated");
   });
 
-  test("retries one ratelimited final status update", async () => {
+  test("retries one ratelimited final post", async () => {
     new SlackAgent({
       botToken: "xoxb-test",
       appToken: "xapp-test",
@@ -1931,7 +1913,7 @@ describe("SlackAgent transport", () => {
       agent: backend(mock(async () => "response")),
     });
     const slack = client();
-    slack.chat.update.mockImplementationOnce(async () => {
+    slack.chat.postMessage.mockImplementationOnce(async () => {
       throw {
         data: {
           error: "ratelimited",
@@ -1946,12 +1928,14 @@ describe("SlackAgent transport", () => {
       client: slack,
     });
 
-    expect(slack.chat.update).toHaveBeenCalledTimes(2);
-    expect(slack.chat.update.mock.calls[0]?.[0]).toEqual(slack.chat.update.mock.calls[1]?.[0]);
-    expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
+    expect(slack.chat.postMessage).toHaveBeenCalledTimes(2);
+    expect(slack.chat.postMessage.mock.calls[0]?.[0]).toEqual(
+      slack.chat.postMessage.mock.calls[1]?.[0],
+    );
+    expect(slack.chat.update).not.toHaveBeenCalled();
   });
 
-  test("falls back to a new message when the final status update fails", async () => {
+  test("publishes a final reply without an interim message", async () => {
     const records: RequestLog[] = [];
     new SlackAgent({
       botToken: "xoxb-test",
@@ -1961,12 +1945,9 @@ describe("SlackAgent transport", () => {
       log: (record) => records.push(record),
     });
     const slack = client();
-    slack.chat.update.mockImplementation(async () => {
-      throw new Error("update unavailable");
-    });
 
     await app.handlers.get("app_mention")!({
-      body: { event_id: "E_UPDATE_FALLBACK" },
+      body: { event_id: "E_FINAL_ONLY" },
       event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "5" },
       client: slack,
     });
@@ -1976,6 +1957,7 @@ describe("SlackAgent transport", () => {
       thread_ts: "5",
       text: "response",
     });
+    expect(slack.chat.update).not.toHaveBeenCalled();
     expect(records[0]).toMatchObject({
       delivery_outcome: "success",
       published_messages: 1,
@@ -1998,8 +1980,9 @@ describe("SlackAgent transport", () => {
       operatorError: (message, context) => operatorErrors.push({ message, context }),
     });
     const slack = client();
-    slack.chat.postMessage.mockImplementation(async (message: { text: string }) => {
-      if (message.text === "Queued…") return { ts: "status-ts" };
+    let posts = 0;
+    slack.chat.postMessage.mockImplementation(async () => {
+      if (++posts === 1) return { ts: "first-chunk" };
       throw new Error("post unavailable");
     });
 
@@ -2038,11 +2021,7 @@ describe("SlackAgent transport", () => {
       operatorError: (message, context) => operatorErrors.push({ message, context }),
     });
     const slack = client();
-    slack.chat.update.mockImplementation(async () => {
-      throw new Error("update unavailable");
-    });
-    slack.chat.postMessage.mockImplementation(async (message: { text: string }) => {
-      if (message.text === "Queued…") return { ts: "status-ts" };
+    slack.chat.postMessage.mockImplementation(async () => {
       throw new Error("post unavailable");
     });
 
@@ -2052,7 +2031,7 @@ describe("SlackAgent transport", () => {
       client: slack,
     });
 
-    expect(slack.chat.postMessage).toHaveBeenCalledTimes(2);
+    expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
     expect(operatorErrors).toEqual([
       {
         message: "Slack result delivery failure",
@@ -2066,7 +2045,7 @@ describe("SlackAgent transport", () => {
     });
   });
 
-  test("shows queued, working, and rate-limited aggregate progress", async () => {
+  test("waits for the final reply while another request is queued", async () => {
     const first = deferred<string>();
     const rawBackend: AgentBackend = {
       run: async ({ prompt }, observer) => {
@@ -2080,7 +2059,6 @@ describe("SlackAgent transport", () => {
       appToken: "xapp-test",
       allowedUserIds: new Set(["U_ALLOWED"]),
       agent: new QueuedAgentBackend(rawBackend, queueLimits()),
-      statusUpdateIntervalMs: 10,
       random: () => 0,
     });
     const slack = client();
@@ -2099,33 +2077,18 @@ describe("SlackAgent transport", () => {
     });
     await Bun.sleep(0);
 
-    const progress = slack.chat.update.mock.calls
-      .map(([message]) => message.text as string)
-      .filter((text) => text === "On it…" || text.startsWith("Still on it…"));
-    expect(progress[0]).toBe("On it…");
-    expect(progress.some((text) => /elapsed · 1 tool use$/.test(text))).toBe(true);
-    expect(progress.filter((text) => text === "On it…")).toHaveLength(1);
-    expect(slack.chat.postMessage).toHaveBeenCalledWith({
-      channel: "C2",
-      thread_ts: "9",
-      text: "Queued…",
-    });
+    expect(slack.chat.postMessage).not.toHaveBeenCalled();
+    expect(slack.chat.update).not.toHaveBeenCalled();
 
     first.resolve("first response");
     await Promise.all([firstHandling, secondHandling]);
-    expect(
-      slack.chat.update.mock.calls.some(
-        ([message]) => (message.text as string) === "second response",
-      ),
-    ).toBe(true);
-    expect(
-      slack.chat.update.mock.calls
-        .map(([message]) => message.text)
-        .filter((text) => text === "On it…"),
-    ).toHaveLength(2);
+    expect(slack.chat.postMessage.mock.calls.map(([message]) => message.text)).toEqual([
+      "first response",
+      "second response",
+    ]);
   });
 
-  test("publishes one terminal timeout status", async () => {
+  test("publishes one terminal timeout reply", async () => {
     const rawBackend: AgentBackend = {
       run: ({ signal }) =>
         new Promise((_resolve, reject) => {
@@ -2148,7 +2111,7 @@ describe("SlackAgent transport", () => {
     });
 
     expect(
-      slack.chat.update.mock.calls.filter(([message]) =>
+      slack.chat.postMessage.mock.calls.filter(([message]) =>
         (message.text as string).includes("focused request"),
       ),
     ).toHaveLength(1);
@@ -2174,8 +2137,6 @@ describe("SlackAgent transport", () => {
       random: () => 0,
     });
     const slack = client();
-    let statusCount = 0;
-    slack.chat.postMessage.mockImplementation(async () => ({ ts: `status-${++statusCount}` }));
     const mention = app.handlers.get("app_mention")!;
 
     const running = mention({
@@ -2197,22 +2158,17 @@ describe("SlackAgent transport", () => {
     });
     await Promise.all([running, cancelling]);
 
-    expect(
-      slack.chat.update.mock.calls.filter(
-        ([message]) => message.ts === "status-1" && message.text === "Request cancelled.",
-      ),
-    ).toHaveLength(1);
-    expect(
-      slack.chat.update.mock.calls.some(
-        ([message]) => message.ts === "status-1" && message.text === "On it…",
-      ),
-    ).toBe(true);
-    expect(slack.chat.update).toHaveBeenCalledWith({
+    expect(slack.chat.postMessage).toHaveBeenCalledWith({
       channel: "C1",
-      ts: "status-2",
-      text: "<@U_OPERATOR> cancelled the active request.",
-      blocks: [],
+      thread_ts: "11",
+      text: "Request cancelled.",
     });
+    expect(slack.chat.postMessage).toHaveBeenCalledWith({
+      channel: "C1",
+      thread_ts: "11",
+      text: "<@U_OPERATOR> cancelled the active request.",
+    });
+    expect(slack.chat.update).not.toHaveBeenCalled();
     expect(records).toContainEqual(
       expect.objectContaining({
         request_id: "E_CANCEL_COMMAND",
@@ -2222,7 +2178,7 @@ describe("SlackAgent transport", () => {
     );
   });
 
-  test("uses one natural status pair without procedural confirmation reactions", async () => {
+  test("keeps the DM layout and posts only after the reply is ready", async () => {
     const result = deferred<string>();
     const run = mock((_request: unknown, observer?: AgentRunObserver) => {
       observer?.onStarted?.();
@@ -2237,24 +2193,33 @@ describe("SlackAgent transport", () => {
     });
     const slack = client();
 
-    const handling = app.handlers.get("app_mention")!({
+    const handling = app.handlers.get("message")!({
       body: { event_id: "E_PENDING" },
-      event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "5" },
+      event: {
+        channel_type: "im",
+        user: "U_ALLOWED",
+        text: "request",
+        channel: "D1",
+        ts: "5",
+      },
       client: slack,
     });
     await Bun.sleep(0);
 
-    expect(slack.chat.update).toHaveBeenCalledWith({
-      channel: "C1",
-      ts: "status-ts",
-      text: "Diving in…",
-    });
+    expect(slack.chat.postMessage).not.toHaveBeenCalled();
+    expect(slack.chat.update).not.toHaveBeenCalled();
     expect(slack.reactions.add).not.toHaveBeenCalled();
     expect(slack.reactions.remove).not.toHaveBeenCalled();
 
     result.resolve("response");
     await handling;
 
+    expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
+    expect(slack.chat.postMessage).toHaveBeenCalledWith({
+      channel: "D1",
+      thread_ts: undefined,
+      text: "response",
+    });
     expect(slack.reactions.add).not.toHaveBeenCalled();
     expect(slack.reactions.remove).not.toHaveBeenCalled();
   });
@@ -2276,11 +2241,10 @@ describe("SlackAgent transport", () => {
     });
 
     expect(run).toHaveBeenCalledTimes(1);
-    expect(slack.chat.update).toHaveBeenCalledWith({
+    expect(slack.chat.postMessage).toHaveBeenCalledWith({
       channel: "C1",
-      ts: "status-ts",
+      thread_ts: "6",
       text: "The request failed unexpectedly. Try again or contact the operator with request ID `E_REACTION_FAILURE`.",
-      blocks: [],
     });
   });
 

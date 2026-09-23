@@ -47,7 +47,6 @@ interface SlackAgentOptions {
   log?: RequestLogWriter;
   operatorLog?: LogWriter;
   operatorError?: (message: string, context: { requestId: string; errorType: string }) => void;
-  statusUpdateIntervalMs?: number;
   health?: HealthState;
   random?: () => number;
   denialStatePath?: string;
@@ -75,21 +74,6 @@ const DEFAULT_CATCH_UP_LOOKBACK_MS = 24 * 60 * 60 * 1_000;
 const DEFAULT_CATCH_UP_COOLDOWN_MS = 5 * 60 * 1_000;
 const DEFAULT_CATCH_UP_MAX_MESSAGES = 10;
 const DEFAULT_CATCH_UP_MAX_HISTORY_REQUESTS = 25;
-const WORKING_STATUS_MESSAGES = [
-  { started: "On it…", ongoing: "Still on it…" },
-  { started: "Looking…", ongoing: "Still looking…" },
-  { started: "Digging in…", ongoing: "Still digging…" },
-  { started: "Taking a look…", ongoing: "Still at it…" },
-  { started: "Working on it…", ongoing: "Still working…" },
-  { started: "Checking…", ongoing: "Still checking…" },
-  { started: "Investigating…", ongoing: "Still investigating…" },
-  { started: "Reviewing…", ongoing: "Still reviewing…" },
-  { started: "Thinking… 🤔", ongoing: "Still thinking… 🤔" },
-  { started: "Looking now… 👀", ongoing: "Still looking… 👀" },
-  { started: "One moment…", ongoing: "Still at it…" },
-  { started: "Diving in…", ongoing: "Still diving…" },
-] as const;
-
 interface DeliveryResult {
   outcome: "success" | "partial" | "failure";
   publishedMessages: number;
@@ -142,10 +126,8 @@ interface InboundSlackMessage {
 }
 
 interface RequestStatus {
-  statusTs: string | undefined;
   observer: AgentRunObserver;
   toolCount(): number;
-  finish(): Promise<void>;
 }
 
 interface ExecutionResult {
@@ -1073,9 +1055,9 @@ export class SlackAgent {
     admission: AgentAdmission | undefined,
   ): Promise<void> {
     const startedAt = performance.now();
-    const status = await this.createRequestStatus(client, message);
+    const status = this.createRequestStatus();
     const execution = await this.executeRequest(client, message, command, admission, status);
-    const delivery = await this.deliverRequest(client, message, status, execution);
+    const delivery = await this.deliverRequest(client, message, execution);
     this.updateThreadAttention(message, execution, delivery);
     this.recordRequest(message, status, execution, delivery, startedAt);
   }
@@ -1099,56 +1081,15 @@ export class SlackAgent {
     }
   }
 
-  private async createRequestStatus(
-    client: App["client"],
-    message: InboundSlackMessage,
-  ): Promise<RequestStatus> {
-    const random = this.options.random ?? Math.random;
-    const statusMessage =
-      WORKING_STATUS_MESSAGES[Math.floor(random() * WORKING_STATUS_MESSAGES.length)] ??
-      WORKING_STATUS_MESSAGES[0];
-    const response = await this.bestEffortChatOperation(() =>
-      client.chat.postMessage({
-        channel: message.channel,
-        thread_ts: message.threadTs,
-        text: "Queued…",
-      }),
-    );
-    const statusTs = response?.ts;
-    let statusUpdates = Promise.resolve();
-    let feedbackTimer: ReturnType<typeof setInterval> | undefined;
-    let runStartedAt = performance.now();
+  private createRequestStatus(): RequestStatus {
     let toolCount = 0;
-    const update = (text: string): void => {
-      if (!statusTs) return;
-      statusUpdates = statusUpdates.then(async () => {
-        await this.bestEffortChatOperation(() =>
-          client.chat.update({ channel: message.channel, ts: statusTs, text }),
-        );
-      });
-    };
     return {
-      statusTs,
       observer: {
         onQueued: () => {},
-        onStarted: () => {
-          runStartedAt = performance.now();
-          update(statusMessage.started);
-          feedbackTimer = setInterval(() => {
-            const elapsed = Math.max(1, Math.floor((performance.now() - runStartedAt) / 1_000));
-            update(
-              `${statusMessage.ongoing} ${elapsed}s elapsed · ${toolCount} tool ${toolCount === 1 ? "use" : "uses"}`,
-            );
-          }, this.options.statusUpdateIntervalMs ?? 30_000);
-          feedbackTimer.unref();
-        },
+        onStarted: () => {},
         onToolUse: () => toolCount++,
       },
       toolCount: () => toolCount,
-      finish: async () => {
-        if (feedbackTimer) clearInterval(feedbackTimer);
-        await statusUpdates;
-      },
     };
   }
 
@@ -1175,8 +1116,6 @@ export class SlackAgent {
         outcome: cancelled ? "cancelled" : "error",
         finalOutput: userFacingAgentError(error, message.requestId),
       };
-    } finally {
-      await status.finish();
     }
   }
 
@@ -1203,11 +1142,6 @@ export class SlackAgent {
       );
     }
     if (!message.prompt && attachments.length === 0) {
-      if (status.statusTs) {
-        await this.bestEffortSlackOperation(
-          client.chat.delete({ channel: message.channel, ts: status.statusTs }),
-        );
-      }
       return {
         outcome: "success",
         delivery: { outcome: "success", publishedMessages: 0 },
@@ -1287,7 +1221,6 @@ export class SlackAgent {
   private async deliverRequest(
     client: App["client"],
     message: InboundSlackMessage,
-    status: RequestStatus,
     execution: ExecutionResult,
   ): Promise<DeliveryResult> {
     let delivery = execution.delivery ?? { outcome: "failure", publishedMessages: 0 };
@@ -1314,7 +1247,6 @@ export class SlackAgent {
         client,
         message.channel,
         message.threadTs,
-        status.statusTs,
         execution.finalOutput,
         allowedUserMentions,
       );
@@ -1418,31 +1350,18 @@ export class SlackAgent {
     client: App["client"],
     channel: string,
     threadTs: string | undefined,
-    statusTs: string | undefined,
     output: string,
     allowedUserMentions: ReadonlySet<string>,
   ): Promise<DeliveryResult> {
     const [first, ...rest] = splitSlackMessage(formatSlackText(output, allowedUserMentions));
     let publishedMessages = 0;
-    let updated = false;
-    if (statusTs) {
-      try {
-        await this.chatOperation(() =>
-          client.chat.update({ channel, ts: statusTs, text: first, blocks: [] }),
-        );
-        updated = true;
-        publishedMessages++;
-      } catch {}
-    }
-    if (!updated) {
-      try {
-        await this.chatOperation(() =>
-          client.chat.postMessage({ channel, thread_ts: threadTs, text: first }),
-        );
-        publishedMessages++;
-      } catch (error) {
-        return { outcome: "failure", publishedMessages, errorType: errorType(error) };
-      }
+    try {
+      await this.chatOperation(() =>
+        client.chat.postMessage({ channel, thread_ts: threadTs, text: first }),
+      );
+      publishedMessages++;
+    } catch (error) {
+      return { outcome: "failure", publishedMessages, errorType: errorType(error) };
     }
     for (const text of rest) {
       try {
