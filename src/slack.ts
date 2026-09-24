@@ -372,6 +372,10 @@ export class SlackAgent {
     });
   }
 
+  async leaveChannel(channel: string): Promise<void> {
+    await this.slackOperation(this.app.client.conversations.leave({ channel }));
+  }
+
   async stop(): Promise<void> {
     this.stopping = true;
     if (this.catchUpTimer) clearTimeout(this.catchUpTimer);

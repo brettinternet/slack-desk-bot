@@ -80,10 +80,12 @@ describe("configuration documents", () => {
       expect.arrayContaining([
         "app_mentions:read",
         "channels:history",
+        "channels:manage",
         "chat:write",
         "emoji:read",
         "files:read",
         "groups:history",
+        "groups:write",
         "im:history",
         "reactions:write",
       ]),

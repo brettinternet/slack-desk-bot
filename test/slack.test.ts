@@ -79,6 +79,7 @@ class MockSlackApp {
     reactions: { add: mock(async () => ({})) },
     files: { info: mock(async () => ({ ok: true })) },
     conversations: {
+      leave: mock(async () => ({ ok: true })),
       info: mock(async () => ({ channel: { name: "engineering" } })),
       replies: mock(async (): Promise<{ messages: Record<string, unknown>[] }> => ({
         messages: [],
@@ -199,6 +200,21 @@ function queueLimits(overrides: Partial<QueueLimits> = {}): QueueLimits {
 }
 
 describe("SlackAgent transport", () => {
+  test("leaves a channel through the bot's Slack client and propagates failures", async () => {
+    const agent = new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: backend(mock(async () => "response")),
+    });
+    await agent.leaveChannel("C123");
+    expect(app.client.conversations.leave).toHaveBeenCalledWith({ channel: "C123" });
+    app.client.conversations.leave.mockImplementationOnce(async () => {
+      throw new Error("cant_leave_general");
+    });
+    await expect(agent.leaveChannel("CGENERAL")).rejects.toThrow("cant_leave_general");
+  });
+
   test("sanitizes rejected and incomplete Slack authentication", async () => {
     const token = "xoxb-test-secret";
     const agent = new SlackAgent({

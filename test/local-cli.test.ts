@@ -46,6 +46,19 @@ describe("slack-desk argument parsing", () => {
     });
     expect(() => parseArguments(["dm", "U0BOB"])).toThrow("Usage");
     expect(() => parseArguments(["dm"])).toThrow("Usage");
+    expect(parseArguments(["--socket=/tmp/b.sock", "channel", "leave", "G0123"])).toEqual({
+      command: "leave",
+      channelId: "G0123",
+      socketPath: "/tmp/b.sock",
+    });
+    for (const args of [
+      ["channel", "leave"],
+      ["channel", "leave", "D0123"],
+      ["channel", "leave", "#general"],
+      ["channel", "leave", "C0123", "extra"],
+      ["channel", "leave", "C0123", "--history", "1"],
+    ])
+      expect(() => parseArguments(args)).toThrow("Usage");
   });
 });
 
@@ -67,6 +80,7 @@ describe("slack-desk help", () => {
       expect(result.status).toBe(0);
       expect(result.stderr).toBe("");
       expect(result.stdout).toContain("Usage: slack-desk");
+      expect(result.stdout).toContain("channel leave <channel-id>");
       expect(result.stdout).toContain("Schedules\n");
       expect(result.stdout).toContain("--weekly");
       expect(result.stdout).toContain("Identities\n");
@@ -78,6 +92,12 @@ describe("slack-desk help", () => {
     expect(result.status).toBe(1);
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("Invalid arguments. Usage: slack-desk --help");
+  });
+
+  test("rejects invalid channel IDs before connecting", () => {
+    const result = run("channel", "leave", "D123");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Invalid arguments");
   });
 
   test("does not interpret DM message text as a help flag", () => {

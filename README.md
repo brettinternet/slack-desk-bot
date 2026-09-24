@@ -133,6 +133,7 @@ slack-desk --help         # command reference on stdout; no service required
 slack-desk sessions      # labels and participants when Slack metadata is available
 slack-desk attach f82ab719
 slack-desk attach f82ab719 --history 50  # default: 20; --no-history to disable
+slack-desk channel leave C0123456789  # leave a public channel (G... for private)
 slack-desk dm U0123456789 Deploy finished  # DM a member ID as the bot
 slack-desk dm audit  # most recent 100 bot-authored DMs
 slack-desk dm audit --to U0123456789  # most recent 100 to one recipient
@@ -144,6 +145,8 @@ slack-desk schedule list
 slack-desk schedule update <id> U0123456789 --at 2026-12-02T09:00:00-05:00 Revised text
 slack-desk schedule cancel <id>
 ```
+
+`slack-desk channel leave <channel-id>` makes the bot leave a public (C...) or private (G...) channel via the running service. It does not need an attached session, does not leave DMs, and does not delete previous agent sessions or cancel in-flight replies. Slack may refuse to leave certain channels (such as #general). Reinstall the app to grant `channels:manage` and `groups:write` before using it.
 
 Schedules and `slack-desk dm` do not need an attached session. CLI-created scheduled messages speak as the bot without requester attribution. With Pi, ask the bot to schedule a DM or a reminder to yourself, list your schedules, replace one by ID, or cancel one. Messages scheduled or edited from Slack name the most recent editor when delivered; CLI edits send in the bot's voice. Only the creator can manage a schedule through Slack, except users in `SLACK_OPERATOR_USER_IDS`, who can manage all schedules; the local CLI can manage all. The bot needs an explicit time zone for daily/weekly reminders. Weekdays are `0` (Sunday) through `6` (Saturday).
 
@@ -161,7 +164,7 @@ Schedules persist in an owner-only `schedules.json` beside the socket (or under 
 
 Attaching prints thread/DM identity, participants, permalink, and recent history, then streams live events. Inside an attachment, use prompts normally or `/status`, `/cancel`, `/quit`. Slack and local prompts share one per-conversation queue. Local operator prompts and replies post back to the originating Slack thread with attribution; disconnecting does not stop the session or an active request.
 
-Scopes `channels:read`, `groups:read`, `im:read`, `users:read`, and `users:read.email` are required; reinstall an existing app after adding them. History and automatic Git identity matching fall back gracefully when Slack denies access.
+Scopes `channels:read`, `channels:manage`, `groups:read`, `groups:write`, `im:read`, `users:read`, and `users:read.email` are required; reinstall an existing app after adding them. History and automatic Git identity matching fall back gracefully when Slack denies access.
 
 On macOS, the socket defaults to `~/Library/Application Support/SlackDeskBot/control.sock`. Override with `SLACK_AGENT_SOCKET_PATH` (absolute); the client reads the same variable or accepts `--socket <path>`.
 

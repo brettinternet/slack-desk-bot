@@ -16,6 +16,7 @@ export type LocalRequestType =
   | "status"
   | "cancel"
   | "dm"
+  | "channel-leave"
   | "dm-audit-conversations"
   | "dm-audit-messages"
   | "find-people"
@@ -68,6 +69,7 @@ const REQUEST_TYPES: readonly string[] = [
   "status",
   "cancel",
   "dm",
+  "channel-leave",
   "dm-audit-conversations",
   "dm-audit-messages",
   "find-people",

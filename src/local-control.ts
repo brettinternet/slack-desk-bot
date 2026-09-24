@@ -31,6 +31,7 @@ interface LocalControlOptions {
   coordinator: ConversationCoordinator;
   inspector?: ConversationInspector;
   sendDirectMessage?: (message: DirectMessage) => Promise<DirectMessageReceipt>;
+  leaveChannel?: (channel: string) => Promise<void>;
   listDmAuditConversations?: (cursor?: string) => Promise<DmAuditConversationsPage>;
   auditDmMessages?: (query: DmAuditQuery) => Promise<DmAuditMessagesPage>;
   findPeople?: (query: string) => Promise<PersonMatch[]>;
@@ -219,6 +220,13 @@ export class LocalControlServer {
         throw new Error("userId and text are required");
       }
       return this.options.sendDirectMessage({ userId: request.userId, text: request.text });
+    }
+    if (request.type === "channel-leave") {
+      if (typeof request.channel !== "string" || !/^[CG][A-Z0-9]+$/.test(request.channel))
+        throw new Error("A public or private channel ID (C/G) is required");
+      if (!this.options.leaveChannel) throw new Error("Channel leave is unavailable");
+      await this.options.leaveChannel(request.channel);
+      return { channel: request.channel };
     }
     if (request.type === "dm-audit-conversations") {
       if (!this.options.listDmAuditConversations) throw new Error("DM audit is unavailable");

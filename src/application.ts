@@ -34,6 +34,7 @@ interface SlackLifecycle extends Partial<ConversationInspector> {
   stop(): Promise<void>;
   publishOperatorExchange?(conversationId: string, prompt: string, response: string): Promise<void>;
   sendDirectMessage?(message: DirectMessage, requesterId?: string): Promise<DirectMessageReceipt>;
+  leaveChannel?(channel: string): Promise<void>;
   listDmAuditConversations?(cursor?: string): Promise<DmAuditConversationsPage>;
   auditDmMessages?(query: DmAuditQuery): Promise<DmAuditMessagesPage>;
 }
@@ -76,6 +77,7 @@ interface ApplicationDependencies {
     coordinator: ConversationCoordinator;
     inspector?: ConversationInspector;
     sendDirectMessage?: (message: DirectMessage) => Promise<DirectMessageReceipt>;
+    leaveChannel?: (channel: string) => Promise<void>;
     listDmAuditConversations?: (cursor?: string) => Promise<DmAuditConversationsPage>;
     auditDmMessages?: (query: DmAuditQuery) => Promise<DmAuditMessagesPage>;
     findPeople?: (query: string) => Promise<PersonMatch[]>;
@@ -202,6 +204,7 @@ export async function startApplication(
       ...(slack.sendDirectMessage
         ? { sendDirectMessage: (message: DirectMessage) => slack.sendDirectMessage!(message) }
         : {}),
+      ...(slack.leaveChannel ? { leaveChannel: slack.leaveChannel.bind(slack) } : {}),
       ...(slack.listDmAuditConversations && slack.auditDmMessages
         ? {
             listDmAuditConversations: slack.listDmAuditConversations.bind(slack),

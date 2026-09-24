@@ -18,6 +18,9 @@ Sessions
     --history <0-100>              Show recent messages (default: 20)
     --no-history                   Skip recent messages
 
+Channels
+  channel leave <channel-id>       Leave a public or private channel (C/G ID)
+
 Messages
   dm <slack-user-id> <message...>  Send a DM as the bot
   dm audit                         Show the 100 most recent bot-authored DMs
@@ -212,8 +215,9 @@ async function attach(
 }
 
 export function parseArguments(args: readonly string[]): {
-  command: "sessions" | "attach" | "dm";
+  command: "sessions" | "attach" | "dm" | "leave";
   sessionId?: string;
+  channelId?: string;
   userId?: string;
   text?: string;
   socketPath?: string;
@@ -252,6 +256,16 @@ export function parseArguments(args: readonly string[]): {
     }
   }
   const [command, sessionId] = positional;
+  if (command === "channel") {
+    if (
+      sessionId !== "leave" ||
+      positional.length !== 3 ||
+      !/^[CG][A-Z0-9]+$/.test(positional[2]!) ||
+      historyLimit !== undefined
+    )
+      throw new Error(USAGE);
+    return { command: "leave", channelId: positional[2], socketPath };
+  }
   if (command === "dm") {
     const text = dmText?.join(" ").trim();
     if (!sessionId || !text || historyLimit !== undefined) throw new Error(USAGE);
@@ -541,6 +555,7 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
   const {
     command,
     sessionId,
+    channelId,
     userId,
     text,
     socketPath: requested,
@@ -557,6 +572,9 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
   try {
     if (command === "sessions") {
       printSessions((await client.request("list")) as ConversationSummary[]);
+    } else if (command === "leave") {
+      await client.request("channel-leave", { channel: channelId });
+      console.log(`Left channel ${channelId}`);
     } else if (command === "dm") {
       const receipt = (await client.request("dm", { userId, text })) as DirectMessageReceipt;
       console.log(`Sent to ${terminalLine(receipt.recipientName)} (${receipt.recipientId})`);

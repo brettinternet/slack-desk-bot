@@ -158,6 +158,26 @@ describe("application startup", () => {
     expect(agent.dispose).toHaveBeenCalledTimes(1);
   });
 
+  test("wires the channel leave command to the Slack transport", async () => {
+    const leaveChannel = mock(async (_channel: string) => {});
+    let localLeave: ((channel: string) => Promise<void>) | undefined;
+    const application = await startApplication(config(), {
+      piReady: async () => "Pi ready",
+      createBackend: () => backend(),
+      createSlackAgent: () => ({ start: async () => {}, stop: async () => {}, leaveChannel }),
+      createLocalControl: ({ leaveChannel }) => {
+        localLeave = leaveChannel;
+        return { start: async () => {}, stop: async () => {} };
+      },
+    });
+    try {
+      await localLeave!("C123");
+      expect(leaveChannel).toHaveBeenCalledWith("C123");
+    } finally {
+      await application.stop();
+    }
+  });
+
   test("wires the local people lookup and shares a concurrent directory load", async () => {
     const loadUsers = mock(async () => [
       { id: "U0BOB", name: "Bob", handle: "bob", email: "bob@work.test" },

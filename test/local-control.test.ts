@@ -233,6 +233,40 @@ describe("local conversation control", () => {
     coordinator.dispose();
   });
 
+  test("leaves only validated channels without attaching to a session", async () => {
+    const path = await socketPath();
+    const { coordinator } = fixture();
+    const left: string[] = [];
+    const server = new LocalControlServer({
+      socketPath: path,
+      coordinator,
+      leaveChannel: async (channel) => {
+        if (channel === "GFAIL") throw new Error("Slack denied leave");
+        left.push(channel);
+      },
+    });
+    await server.start();
+    const client = await ProtocolClient.connect(path);
+    for (const [id, channel] of [
+      ["bad", "D123"],
+      ["name", "#general"],
+      ["missing", undefined],
+    ] as const) {
+      client.send("channel-leave", id, { channel });
+      expect((await client.response(id)).ok).toBe(false);
+    }
+    client.send("channel-leave", "public", { channel: "C123" });
+    expect((await client.response("public")).result).toEqual({ channel: "C123" });
+    client.send("channel-leave", "private", { channel: "G123" });
+    expect((await client.response("private")).result).toEqual({ channel: "G123" });
+    client.send("channel-leave", "failed", { channel: "GFAIL" });
+    expect((await client.response("failed")).error).toBe("Slack denied leave");
+    expect(left).toEqual(["C123", "G123"]);
+    client.socket.destroy();
+    await server.stop();
+    coordinator.dispose();
+  });
+
   test("sends operator direct messages without attaching to a session", async () => {
     const path = await socketPath();
     const { coordinator } = fixture();
