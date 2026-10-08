@@ -50,8 +50,14 @@ export interface DoctorResult {
   ok: boolean;
 }
 
+interface SlackAuthentication {
+  user_id?: string;
+  /** Granted bot scopes, parsed by the Slack client from `x-oauth-scopes`. */
+  response_metadata?: { scopes?: string[] };
+}
+
 interface DoctorDependencies {
-  slackAuth?: (token: string) => Promise<{ user_id?: string }>;
+  slackAuth?: (token: string) => Promise<SlackAuthentication>;
   slackCatchUpAccess?: (token: string) => Promise<void>;
   portAvailable?: (port: number) => Promise<boolean>;
   socketAvailable?: (path: string) => Promise<boolean>;
@@ -563,10 +569,22 @@ export async function runDoctor(
     try {
       const authenticate =
         dependencies.slackAuth ??
-        ((token: string) => new WebClient(token).auth.test() as Promise<{ user_id?: string }>);
+        ((token: string) => new WebClient(token).auth.test() as Promise<SlackAuthentication>);
       const authentication = await authenticate(config.slackBotToken);
       if (!authentication.user_id) throw new Error("bot user ID missing");
       diagnostic(diagnostics, "pass", "Slack authentication", "Slack bot authentication succeeded");
+      const scopes = authentication.response_metadata?.scopes;
+      if (scopes) {
+        const uploads = scopes.includes("files:write");
+        diagnostic(
+          diagnostics,
+          uploads ? "pass" : "warning",
+          "Slack file uploads",
+          uploads
+            ? "Long channel replies can attach the full response"
+            : "files:write is missing, so long channel replies cannot attach the full response; update the app from slack-app-manifest.yaml and reinstall it",
+        );
+      }
     } catch {
       diagnostic(
         diagnostics,

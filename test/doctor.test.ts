@@ -75,6 +75,24 @@ describe("runDoctor", () => {
     });
   });
 
+  test("warns when the installed Slack app cannot attach full channel responses", async () => {
+    const checks = dependencies();
+    checks.slackAuth.mockImplementationOnce(async () => ({
+      user_id: "U_BOT",
+      response_metadata: { scopes: ["chat:write", "files:read"] },
+    }));
+
+    const result = await runDoctor(valid, checks);
+
+    expect(result.ok).toBe(true);
+    expect(result.diagnostics).toContainEqual({
+      status: "warning",
+      check: "Slack file uploads",
+      message:
+        "files:write is missing, so long channel replies cannot attach the full response; update the app from slack-app-manifest.yaml and reinstall it",
+    });
+  });
+
   test("fails when the workspace exposes a credential or service-state path", async () => {
     const root = mkdtempSync(join(tmpdir(), "slack-desk-doctor-overlap-"));
     const workspace = join(root, "workspace");

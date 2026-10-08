@@ -57,10 +57,17 @@ export interface AgentRequest {
   context?: AgentConversationContext;
   signal?: AbortSignal;
   /**
-   * Returns a follow-up prompt when a response must be revised before delivery. The queue runs
-   * bounded follow-ups in the same job, so they share its admission, deadline, and cancellation.
+   * Revises a response before delivery. The queue runs bounded follow-ups in the same job, so they
+   * share its admission, deadline, and cancellation.
    */
-  revise?(response: string): string | undefined;
+  revision?: ResponseRevision;
+}
+
+export interface ResponseRevision {
+  /** Returns a follow-up prompt when the response must be revised before delivery. */
+  next(response: string): string | undefined;
+  /** Reports a failed follow-up; the previous response is kept. */
+  failed(error: unknown): void;
 }
 
 const MAX_RESPONSE_REVISIONS = 2;
@@ -308,7 +315,7 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
   ): Promise<string> {
     let response = await this.backend.run({ ...request, signal }, observer);
     for (let revision = 0; revision < MAX_RESPONSE_REVISIONS; revision++) {
-      const prompt = request.revise?.(response);
+      const prompt = request.revision?.next(response);
       if (prompt === undefined) break;
       try {
         response = await this.backend.run(
@@ -322,6 +329,7 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
         );
       } catch (error) {
         if (signal.aborted) throw error;
+        request.revision?.failed(error);
         break;
       }
     }

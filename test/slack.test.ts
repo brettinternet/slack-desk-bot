@@ -77,7 +77,10 @@ class MockSlackApp {
       getPermalink: mock(async () => ({ permalink: "https://example.slack.com/thread" })),
     },
     reactions: { add: mock(async () => ({})) },
-    files: { info: mock(async () => ({ ok: true })) },
+    files: {
+      info: mock(async () => ({ ok: true })),
+      uploadV2: mock(async (_options: Record<string, unknown>) => ({ ok: true })),
+    },
     conversations: {
       leave: mock(async () => ({ ok: true })),
       info: mock(async () => ({ channel: { name: "engineering" } })),
@@ -317,7 +320,7 @@ describe("SlackAgent transport", () => {
           conversationId: "C1:1709999991.000100",
           requesterId: "U_ALLOWED",
           prompt: channelPrompt("offline mention"),
-          revise: expect.any(Function),
+          revision: expect.any(Object),
           context: {
             readThreadHistory: expect.any(Function),
             sendDirectMessage: expect.any(Function),
@@ -506,7 +509,7 @@ describe("SlackAgent transport", () => {
         conversationId: "C2:1709999980.000100",
         requesterId: "U_ALLOWED",
         prompt: channelPrompt("actually missed"),
-        revise: expect.any(Function),
+        revision: expect.any(Object),
         context: {
           readThreadHistory: expect.any(Function),
           sendDirectMessage: expect.any(Function),
@@ -858,29 +861,42 @@ describe("SlackAgent transport", () => {
     });
   });
 
-  test("escapes and splits untrusted operator exchanges so Slack cannot render mentions", async () => {
+  test("escapes operator exchanges and attaches long channel responses instead of splitting", async () => {
     const agent = new SlackAgent({
       botToken: "xoxb-test",
       appToken: "xapp-test",
       allowedUserIds: new Set(["U_ALLOWED"]),
       agent: backend(mock(async () => "response")),
     });
+    const response = `<@U999> & <https://evil.example|docs> ${"x".repeat(SLACK_MESSAGE_LIMIT)}`;
 
-    await agent.publishOperatorExchange(
-      "C123:100.1",
-      "<!channel> ping",
-      `<@U999> & <https://evil.example|docs> ${"x".repeat(SLACK_MESSAGE_LIMIT)}`,
-    );
+    await agent.publishOperatorExchange("C123:100.1", "<!channel> ping", response);
 
-    const texts = app.client.chat.postMessage.mock.calls.map((call: unknown[]) =>
-      String((call[0] as { text: string }).text),
-    );
-    expect(texts[0]).toBe("*Local operator:* &lt;!channel&gt; ping");
-    expect(texts.join("\n")).not.toContain("<!channel>");
-    expect(texts.join("\n")).not.toContain("<@U999>");
-    expect(texts[1]).toContain("&lt;@U999&gt; &amp; &lt;https://evil.example|docs&gt;");
-    expect(texts.length).toBeGreaterThan(2);
-    for (const text of texts) expect(text.length).toBeLessThanOrEqual(SLACK_MESSAGE_LIMIT + 40);
+    expect(app.client.chat.postMessage).toHaveBeenCalledTimes(1);
+    expect(app.client.chat.postMessage).toHaveBeenCalledWith({
+      channel: "C123",
+      thread_ts: "100.1",
+      text: "*Local operator:* &lt;!channel&gt; ping",
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+    expect(app.client.files.uploadV2).toHaveBeenCalledTimes(1);
+    expect(app.client.files.uploadV2.mock.calls[0]?.[0]).toMatchObject({
+      channel_id: "C123",
+      thread_ts: "100.1",
+      content: response,
+      initial_comment:
+        "*Agent (operator request):* The full response is long, so it is attached as a file.",
+    });
+
+    await agent.publishOperatorExchange("dm:D1", "status", response);
+    const dmTexts = app.client.chat.postMessage.mock.calls
+      .slice(1)
+      .map((call: unknown[]) => String((call[0] as { text: string }).text));
+    expect(dmTexts.length).toBeGreaterThan(2);
+    expect(dmTexts.join("\n")).not.toContain("<@U999>");
+    expect(dmTexts[1]).toContain("&lt;@U999&gt; &amp; &lt;https://evil.example|docs&gt;");
+    expect(app.client.files.uploadV2).toHaveBeenCalledTimes(1);
   });
 
   test("tracks Socket Mode connection lifecycle transitions", () => {
@@ -1336,7 +1352,7 @@ describe("SlackAgent transport", () => {
         conversationId: "C1:1",
         requesterId: "U_ALLOWED",
         prompt: channelPrompt("request"),
-        revise: expect.any(Function),
+        revision: expect.any(Object),
         context: {
           readThreadHistory: expect.any(Function),
           sendDirectMessage: expect.any(Function),
@@ -1505,7 +1521,7 @@ describe("SlackAgent transport", () => {
         conversationId: "C1:1",
         requesterId: "U_ALLOWED",
         prompt: channelPrompt("thread request"),
-        revise: expect.any(Function),
+        revision: expect.any(Object),
         context: {
           readThreadHistory: expect.any(Function),
           sendDirectMessage: expect.any(Function),
@@ -1879,7 +1895,7 @@ describe("SlackAgent transport", () => {
         conversationId: "C1:3",
         requesterId: "U_ALLOWED",
         prompt: channelPrompt("Please broadcast the follow up"),
-        revise: expect.any(Function),
+        revision: expect.any(Object),
         context: {
           readThreadHistory: expect.any(Function),
           sendDirectMessage: expect.any(Function),
@@ -2507,7 +2523,7 @@ describe("SlackAgent transport", () => {
       true,
     );
     expect(run.mock.calls[0]?.[0]).toMatchObject({ prompt: "request" });
-    expect(run.mock.calls[0]?.[0]).not.toHaveProperty("revise");
+    expect(run.mock.calls[0]?.[0]).not.toHaveProperty("revision");
 
     slack.chat.postMessage.mockClear();
     run.mockImplementation(async () => "word ".repeat(4_000));

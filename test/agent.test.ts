@@ -81,11 +81,12 @@ describe("QueuedAgentBackend", () => {
     };
     const queued = new QueuedAgentBackend(backend, limits());
     const prompts = ["revise-1", "revise-2", "revise-3"];
+    const failures: unknown[] = [];
 
     const firstRun = queued.run({
       ...request("thread", "first"),
       context: {},
-      revise: () => prompts.shift(),
+      revision: { next: () => prompts.shift(), failed: (error) => failures.push(error) },
     });
     const secondRun = queued.run(request("thread", "second"));
     await Bun.sleep(0);
@@ -99,6 +100,7 @@ describe("QueuedAgentBackend", () => {
       { prompt: "revise-2", context: false },
       { prompt: "second", context: false },
     ]);
+    expect(failures).toEqual([new Error("provider failed")]);
     queued.dispose();
   });
 

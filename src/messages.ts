@@ -145,11 +145,6 @@ export function splitSlackMessage(
   return published;
 }
 
-/** Slack DM conversation IDs start with D; channels, private channels, and group DMs are shared. */
-export function isDirectMessageChannel(channel: string): boolean {
-  return channel.startsWith("D");
-}
-
 /** Formats a shared-channel reply without splitting it. */
 function formatChannelReply(
   text: string,
@@ -158,10 +153,14 @@ function formatChannelReply(
   return formatSlackText(text.trim() || EMPTY_RESPONSE, allowedUserMentions);
 }
 
-function fitsSummary(summary: string, allowedUserMentions?: ReadonlySet<string>): boolean {
+function fitsSummary(
+  summary: string,
+  allowedUserMentions?: ReadonlySet<string>,
+  prefix = "",
+): boolean {
   return (
     Boolean(summary.trim()) &&
-    formatChannelReply(summary, allowedUserMentions).length <= SUMMARY_LIMIT
+    prefix.length + formatChannelReply(summary, allowedUserMentions).length <= SUMMARY_LIMIT
   );
 }
 
@@ -177,22 +176,27 @@ function channelSummaryPrompt(previousSummary?: string): string {
 }
 
 /**
- * Requests summary turns until a response fits the channel budget. Mentions are checked with no
- * allowances, which only escapes more text, so this check is never looser than delivery.
+ * Requests summary turns until a response fits the channel budget. `allowedUserMentions` is a
+ * subset of the mentions allowed at delivery; any other mention is checked escaped, which is only
+ * longer, so this check is never looser than delivery.
  */
-export function channelReplyReviser(): {
-  revise(response: string): string | undefined;
+export function channelReplyReviser(allowedUserMentions: ReadonlySet<string>): {
+  next(response: string): string | undefined;
   detail(): string | undefined;
 } {
   let detail: string | undefined;
   return {
-    revise(response) {
+    next(response) {
       if (detail === undefined) {
-        if (formatChannelReply(response).length <= CHANNEL_REPLY_LIMIT) return undefined;
+        if (formatChannelReply(response, allowedUserMentions).length <= CHANNEL_REPLY_LIMIT) {
+          return undefined;
+        }
         detail = response;
         return channelSummaryPrompt();
       }
-      return fitsSummary(response) ? undefined : channelSummaryPrompt(response);
+      return fitsSummary(response, allowedUserMentions)
+        ? undefined
+        : channelSummaryPrompt(response);
     },
     detail: () => detail,
   };
@@ -203,25 +207,27 @@ export type ChannelReply =
   | { kind: "detail"; text: string; fallback: string; detail: string };
 
 /**
- * Plans one shared-channel reply within {@link CHANNEL_REPLY_LIMIT}. A response that does not fit
- * is preserved in full as `detail` and introduced by a validated summary or an honest note.
- * `fallback` is the single reply to send when attaching the detail fails.
+ * Plans one shared-channel reply within {@link CHANNEL_REPLY_LIMIT}, including an optional trusted
+ * mrkdwn `label`. A response that does not fit is preserved in full as `detail` and introduced by
+ * a validated summary or an honest note. `fallback` is the single reply to send when attaching the
+ * detail fails.
  */
 export function planChannelReply(
   output: string,
   allowedUserMentions: ReadonlySet<string>,
-  detail?: string,
+  options: { detail?: string; label?: string } = {},
 ): ChannelReply {
-  const text = formatChannelReply(output, allowedUserMentions);
+  const { detail, label } = options;
+  const prefix = label ? `${label} ` : "";
+  const text = `${prefix}${formatChannelReply(output, allowedUserMentions)}`;
   if (detail === undefined && text.length <= CHANNEL_REPLY_LIMIT) return { kind: "inline", text };
-  const fullText = detail ?? output;
   const summary =
-    detail !== undefined && fitsSummary(output, allowedUserMentions) ? text : undefined;
+    detail !== undefined && fitsSummary(output, allowedUserMentions, prefix) ? text : undefined;
   return {
     kind: "detail",
-    text: summary ?? SUMMARY_UNAVAILABLE,
-    fallback: summary ? `${summary}${DETAIL_UNAVAILABLE_NOTE}` : LONG_REPLY_FAILED,
-    detail: fullText,
+    text: summary ?? `${prefix}${SUMMARY_UNAVAILABLE}`,
+    fallback: summary ? `${summary}${DETAIL_UNAVAILABLE_NOTE}` : `${prefix}${LONG_REPLY_FAILED}`,
+    detail: detail ?? output,
   };
 }
 

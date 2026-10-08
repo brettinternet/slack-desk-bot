@@ -60,10 +60,25 @@ export class ConversationCoordinator implements CancellableAgentBackend {
     admission?: AgentAdmission,
   ): Promise<string> {
     const lifecycle = this.observer(request, observer);
+    // Local attachments show the complete response, not a summary revised for Slack delivery.
+    let original: string | undefined;
+    const revision = request.revision;
+    const tracked = revision
+      ? {
+          ...request,
+          revision: {
+            next: (response: string) => {
+              original ??= response;
+              return revision.next(response);
+            },
+            failed: (error: unknown) => revision.failed(error),
+          },
+        }
+      : request;
     const result = admission
-      ? this.backend.run(request, lifecycle, admission)
-      : this.backend.run(request, lifecycle);
-    return this.publishResult(request.conversationId, result);
+      ? this.backend.run(tracked, lifecycle, admission)
+      : this.backend.run(tracked, lifecycle);
+    return this.publishResult(request.conversationId, result, () => original);
   }
 
   handleCommand(
@@ -171,10 +186,18 @@ export class ConversationCoordinator implements CancellableAgentBackend {
     };
   }
 
-  private async publishResult(conversationId: string, result: Promise<string>): Promise<string> {
+  private async publishResult(
+    conversationId: string,
+    result: Promise<string>,
+    originalResponse: () => string | undefined = () => undefined,
+  ): Promise<string> {
     try {
       const response = await result;
-      this.emit({ type: "response", conversationId, response: boundedEventText(response) });
+      this.emit({
+        type: "response",
+        conversationId,
+        response: boundedEventText(originalResponse() ?? response),
+      });
       return response;
     } catch (error) {
       this.emit({

@@ -130,7 +130,7 @@ Acknowledgements, side chatter, and messages addressed to others are ignored.
 
 **Access.** Only `SLACK_ALLOWED_USER_IDS` can invoke the bot. A denied user gets one explanation, then a `:no_entry:` reaction for ten minutes.
 
-**Replies.** In channels, one message of up to 1,000 characters, aiming for 50–100 words. Longer answers become a summary plus `full-response.md` attached (needs `files:write`). DMs split into up to three messages.
+**Replies.** In channels, one message of up to 1,000 characters, aiming for 50–100 words. Longer answers become a summary plus `full-response.md` attached (needs `files:write`; `task doctor` warns if it is missing). Long local operator replies posted to a channel are attached the same way. DMs split into up to three messages.
 
 **Catch-up.** After downtime the bot answers missed DMs, mentions, and thread requests from the last 24 hours (up to 10 messages from 25 conversations), skipping anything already answered. The first launch answers nothing old.
 

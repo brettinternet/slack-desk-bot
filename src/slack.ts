@@ -39,7 +39,6 @@ import {
   conversationId,
   formatSlackText,
   HELP_MESSAGE,
-  isDirectMessageChannel,
   isSupportedChannelMessage,
   isSupportedDirectMessage,
   parseSlackCommand,
@@ -142,6 +141,8 @@ interface InboundSlackMessage {
   requesterId: string;
   prompt: string;
   files: readonly SlackFileReference[];
+  /** From Slack's channel type; unknown conversations are treated as shared. */
+  directMessage: boolean;
   clientMessageId?: string;
   pendingAnswer?: boolean;
 }
@@ -209,6 +210,11 @@ function boundedLocalText(text: string, maxCharacters: number): string {
   return singleLine.length <= maxCharacters
     ? singleLine
     : `${singleLine.slice(0, maxCharacters - 1)}…`;
+}
+
+/** Mentions a reply may preserve before checking earlier thread messages. */
+function requestUserMentions(message: InboundSlackMessage): ReadonlySet<string> {
+  return new Set([...slackUserMentions(message.prompt), `<@${message.requesterId}>`]);
 }
 
 function slackDestination(conversation: string): { channel: string; thread_ts?: string } {
@@ -296,6 +302,7 @@ export class SlackAgent {
         requesterId: event.user,
         prompt,
         files,
+        directMessage: false,
         ...(event.client_msg_id ? { clientMessageId: event.client_msg_id } : {}),
       });
     });
@@ -351,6 +358,7 @@ export class SlackAgent {
         requesterId: event.user,
         prompt: intent.prompt,
         files,
+        directMessage,
         ...(pendingAnswer ? { pendingAnswer } : {}),
         ...(clientMessageId ? { clientMessageId } : {}),
       });
@@ -623,6 +631,7 @@ export class SlackAgent {
       requesterId: message.user,
       prompt,
       files,
+      directMessage: target.directMessage,
       ...(pendingAnswer ? { pendingAnswer } : {}),
       ...(!target.directMessage &&
       (rawText.includes(`<@${this.botUserId}>`) || /^\s*laptop\s*[:,]/i.test(rawText))
@@ -649,8 +658,15 @@ export class SlackAgent {
     response: string,
   ): Promise<void> {
     const destination = slackDestination(conversation);
-    await this.publishAttributed(destination, "*Local operator:*", prompt);
-    await this.publishAttributed(destination, "*Agent (operator request):*", response);
+    // Operator conversation IDs carry no channel type; only `dm:` IDs are known to be private.
+    const sharedChannel = !conversation.startsWith("dm:");
+    await this.publishAttributed(destination, "*Local operator:*", prompt, sharedChannel);
+    await this.publishAttributed(
+      destination,
+      "*Agent (operator request):*",
+      response,
+      sharedChannel,
+    );
   }
 
   /**
@@ -1006,12 +1022,36 @@ export class SlackAgent {
     };
   }
 
-  /** Splits and escapes untrusted text so one oversized frame cannot fail delivery. */
+  /**
+   * Escapes untrusted text so one oversized frame cannot fail delivery. Shared conversations get
+   * one budgeted message with any overflow attached; DMs keep chunked delivery.
+   */
   private async publishAttributed(
     destination: { channel: string; thread_ts?: string },
     label: string,
     text: string,
+    sharedChannel: boolean,
   ): Promise<void> {
+    if (sharedChannel) {
+      const delivery = await this.publishChannelResult(
+        this.app.client,
+        destination.channel,
+        destination.thread_ts,
+        planChannelReply(text, new Set(), { label }),
+        { unfurl_links: false, unfurl_media: false },
+      );
+      if (delivery.outcome !== "success") {
+        (this.options.operatorLog ?? writeStructuredLog)({
+          event: "operator_error",
+          component: "slack",
+          message: "Slack operator exchange delivery failure",
+          error_type: delivery.errorType ?? "UnknownDeliveryError",
+        });
+      }
+      if (delivery.outcome === "failure")
+        throw new Error("Slack operator exchange delivery failed");
+      return;
+    }
     const chunks = splitSlackMessage(formatSlackText(text));
     for (const [index, chunk] of chunks.entries()) {
       await this.chatOperation(() =>
@@ -1432,15 +1472,27 @@ export class SlackAgent {
     const countScheduleChange = () => {
       if (++scheduleChanges > 5) throw new Error("At most 5 schedule changes per request");
     };
-    const sharedChannel = !isDirectMessageChannel(message.channel);
-    const reviser = sharedChannel ? channelReplyReviser() : undefined;
+    const sharedChannel = !message.directMessage;
+    const reviser = sharedChannel ? channelReplyReviser(requestUserMentions(message)) : undefined;
     const request = {
       conversationId: id,
       requesterId: message.requesterId,
       prompt: sharedChannel
         ? [message.prompt.trim(), CHANNEL_REPLY_GUIDANCE].filter(Boolean).join("\n\n")
         : message.prompt,
-      ...(reviser ? { revise: reviser.revise } : {}),
+      ...(reviser
+        ? {
+            revision: {
+              next: reviser.next,
+              failed: (error: unknown) =>
+                this.reportOperatorError(
+                  "Channel reply summary failed; attaching the full response",
+                  message.requestId,
+                  errorType(error),
+                ),
+            },
+          }
+        : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       context: {
         ...(message.threadTs
@@ -1562,10 +1614,7 @@ export class SlackAgent {
   ): Promise<DeliveryResult> {
     let delivery = execution.delivery ?? { outcome: "failure", publishedMessages: 0 };
     if (execution.finalOutput !== undefined) {
-      const allowedUserMentions = new Set([
-        ...slackUserMentions(message.prompt),
-        `<@${message.requesterId}>`,
-      ]);
+      const allowedUserMentions = new Set(requestUserMentions(message));
       if (message.threadTs) {
         const unresolvedMentions = new Set(
           [...slackUserMentions(execution.finalOutput)].filter(
@@ -1582,8 +1631,7 @@ export class SlackAgent {
       }
       delivery = await this.publishResult(
         client,
-        message.channel,
-        message.threadTs,
+        message,
         execution.finalOutput,
         allowedUserMentions,
         execution.detail,
@@ -1686,18 +1734,18 @@ export class SlackAgent {
 
   private async publishResult(
     client: App["client"],
-    channel: string,
-    threadTs: string | undefined,
+    message: InboundSlackMessage,
     output: string,
     allowedUserMentions: ReadonlySet<string>,
     detail?: string,
   ): Promise<DeliveryResult> {
-    if (!isDirectMessageChannel(channel)) {
+    const { channel, threadTs } = message;
+    if (!message.directMessage) {
       return this.publishChannelResult(
         client,
         channel,
         threadTs,
-        planChannelReply(output, allowedUserMentions, detail),
+        planChannelReply(output, allowedUserMentions, detail === undefined ? {} : { detail }),
       );
     }
     const [first, ...rest] = splitSlackMessage(formatSlackText(output, allowedUserMentions));
@@ -1732,6 +1780,7 @@ export class SlackAgent {
     channel: string,
     threadTs: string | undefined,
     reply: ChannelReply,
+    postOptions: { unfurl_links?: boolean; unfurl_media?: boolean } = {},
   ): Promise<DeliveryResult> {
     let text = reply.text;
     let uploadError: string | undefined;
@@ -1754,7 +1803,7 @@ export class SlackAgent {
     }
     try {
       await this.chatOperation(() =>
-        client.chat.postMessage({ channel, thread_ts: threadTs, text }),
+        client.chat.postMessage({ channel, thread_ts: threadTs, text, ...postOptions }),
       );
     } catch (error) {
       return { outcome: "failure", publishedMessages: 0, errorType: errorType(error) };
