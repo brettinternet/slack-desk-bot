@@ -13,31 +13,6 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 
 ## Open items
 
-### SDB-054: Keep shared-channel replies short with optional full-detail files
-
-**Status:** Implemented; live Slack verification pending
-
-**Progress:** Channel requests carry per-request brevity guidance from `src/messages.ts`. Replies over the formatted 1,000-character budget trigger at most two summary turns inside the same queued job (`AgentRequest.revision`), so they share admission, deadline, and cancellation and cannot interleave with another request; failed summary turns are logged. `src/slack.ts` posts exactly one channel reply, attaching the complete response with `files.uploadV2` (`files:write`) in the request's thread; upload failure sends one honest fallback. Local operator replies in channels use the same budget, attached terminals show the complete response, Slack's channel type (not the ID prefix) selects DM delivery, and `task doctor` warns when `files:write` is missing. DMs keep chunked delivery. Remaining: reinstall the app for `files:write`, restart the service, and exercise short and long replies in a shared thread and a DM.
-
-**Why:** Long bot replies dominate shared Slack conversations and disrupt human connection, even inside threads. The current delivery limit permits three 3,500-character messages; it protects Slack's technical limits rather than human attention. Prompt-only brevity is not reliable enough, and truncation can remove the useful conclusion.
-
-**Scope:**
-
-- Strengthen Slack agent instructions: shared-channel replies should normally be 50–100 words, answer first, and include only the important caveat and next step. Avoid routine reports, repeated context, and tool narration; generate extensive detail only when requested or genuinely necessary.
-- Enforce one reply with a hard 1,000-character inline budget in shared channels, including thread replies. Apply the budget to the final Slack-formatted message, including any detail link; do not split overflow into additional messages. Retain the existing more permissive DM behavior.
-- For necessary long responses, publish a meaningful, standalone summary and link to the full response as a Slack snippet/text file in the same conversation. Preserve the full response rather than slicing its opening characters or silently dropping the remainder. Use Slack's supported file-upload API and document any required app scope.
-- Keep delivery policy in `src/messages.ts` and `src/slack.ts`, independent of agent backend implementations. Inspect existing response/status delivery and instruction wiring before choosing the smallest backend-neutral summary mechanism; validate the summary against the budget before posting, with bounded retries and no recursive summarization.
-- Preserve existing mention escaping, conversation authorization, cancellation, and response accounting. Treat generated detail as untrusted output, and ensure files are shared only to the authorized conversation. Do not broaden filesystem or shell permissions.
-- On summary or upload failure, send at most one short, honest failure/fallback reply; never revert to a wall of text or claim that unavailable details were attached. Avoid duplicate messages/files on retry.
-- Update README with channel-versus-DM behavior and file-upload requirements. This item implements only response overflow, not a generalized generated-artifact system.
-
-**Acceptance:**
-
-- A normal channel answer remains one concise message without an unnecessary attachment. A long requested report produces one summary of at most 1,000 characters plus an accessible full-detail file in the same thread, with no continuation messages.
-- The summary communicates the answer, material caveat, and next step without requiring the reader to open the file; the file preserves the complete response. Long inline replies remain prohibited even when depth is explicitly requested in a channel.
-- Extend existing message/Slack tests to catch budget bypass after formatting/link insertion, lost detail, incorrect channel/thread sharing, unsafe mentions, duplicate delivery, and summary/upload failure falling back to multi-message output. Verify DM behavior remains unchanged.
-- Run the relevant existing tests and `task check:staged`. After an approved service restart, exercise short and long replies in a real shared Slack thread and a DM, confirming file access and the absence of channel spillover.
-
 ### SDB-050: Run approved project tasks in a command sandbox
 
 **Status:** Draft
