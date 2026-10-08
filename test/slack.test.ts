@@ -17,7 +17,7 @@ import {
   QueuedAgentBackend,
 } from "../src/agent.ts";
 import type { RequestLog, StructuredLog } from "../src/log.ts";
-import { SLACK_MESSAGE_LIMIT } from "../src/messages.ts";
+import { CHANNEL_REPLY_GUIDANCE, SLACK_MESSAGE_LIMIT } from "../src/messages.ts";
 import { ScheduleService } from "../src/schedules.ts";
 import { AutomationService } from "../src/automations.ts";
 
@@ -36,7 +36,7 @@ interface SlackClient {
     delete: ReturnType<typeof mock>;
   };
   reactions: { add: ReturnType<typeof mock>; remove: ReturnType<typeof mock> };
-  files: { info: ReturnType<typeof mock> };
+  files: { info: ReturnType<typeof mock>; uploadV2: ReturnType<typeof mock> };
 }
 
 let app: MockSlackApp;
@@ -138,7 +138,10 @@ function client(): SlackClient {
       delete: mock(async () => ({})),
     },
     reactions: { add: mock(async () => ({})), remove: mock(async () => ({})) },
-    files: { info: mock(async () => ({ ok: true })) },
+    files: {
+      info: mock(async () => ({ ok: true })),
+      uploadV2: mock(async () => ({ ok: true })),
+    },
   };
 }
 
@@ -153,6 +156,10 @@ function backend(
     cancelActive: () => false,
     dispose: () => {},
   };
+}
+
+function channelPrompt(prompt: string): string {
+  return `${prompt}\n\n${CHANNEL_REPLY_GUIDANCE}`;
 }
 
 function createAgent(
@@ -309,7 +316,8 @@ describe("SlackAgent transport", () => {
         {
           conversationId: "C1:1709999991.000100",
           requesterId: "U_ALLOWED",
-          prompt: "offline mention",
+          prompt: channelPrompt("offline mention"),
+          revise: expect.any(Function),
           context: {
             readThreadHistory: expect.any(Function),
             sendDirectMessage: expect.any(Function),
@@ -497,7 +505,8 @@ describe("SlackAgent transport", () => {
       expect(run.mock.calls[0]?.[0]).toEqual({
         conversationId: "C2:1709999980.000100",
         requesterId: "U_ALLOWED",
-        prompt: "actually missed",
+        prompt: channelPrompt("actually missed"),
+        revise: expect.any(Function),
         context: {
           readThreadHistory: expect.any(Function),
           sendDirectMessage: expect.any(Function),
@@ -1326,7 +1335,8 @@ describe("SlackAgent transport", () => {
       {
         conversationId: "C1:1",
         requesterId: "U_ALLOWED",
-        prompt: "request",
+        prompt: channelPrompt("request"),
+        revise: expect.any(Function),
         context: {
           readThreadHistory: expect.any(Function),
           sendDirectMessage: expect.any(Function),
@@ -1494,7 +1504,8 @@ describe("SlackAgent transport", () => {
       {
         conversationId: "C1:1",
         requesterId: "U_ALLOWED",
-        prompt: "thread request",
+        prompt: channelPrompt("thread request"),
+        revise: expect.any(Function),
         context: {
           readThreadHistory: expect.any(Function),
           sendDirectMessage: expect.any(Function),
@@ -1867,7 +1878,8 @@ describe("SlackAgent transport", () => {
       {
         conversationId: "C1:3",
         requesterId: "U_ALLOWED",
-        prompt: "Please broadcast the follow up",
+        prompt: channelPrompt("Please broadcast the follow up"),
+        revise: expect.any(Function),
         context: {
           readThreadHistory: expect.any(Function),
           sendDirectMessage: expect.any(Function),
@@ -1941,7 +1953,7 @@ describe("SlackAgent transport", () => {
     expect(run).toHaveBeenCalledTimes(2);
     expect(slack.files.info).not.toHaveBeenCalled();
     expect(run).toHaveBeenLastCalledWith(
-      expect.objectContaining({ conversationId: "C1:6", prompt: "check staging" }),
+      expect.objectContaining({ conversationId: "C1:6", prompt: channelPrompt("check staging") }),
       expect.any(Object),
     );
   });
@@ -1972,7 +1984,7 @@ describe("SlackAgent transport", () => {
 
     expect(run).toHaveBeenCalledTimes(2);
     expect(run).toHaveBeenLastCalledWith(
-      expect.objectContaining({ conversationId: "C1:11", prompt: "main" }),
+      expect.objectContaining({ conversationId: "C1:11", prompt: channelPrompt("main") }),
       expect.any(Object),
     );
   });
@@ -2049,7 +2061,7 @@ describe("SlackAgent transport", () => {
       });
       expect(resumed).toHaveBeenCalledTimes(1);
       expect(resumed).toHaveBeenCalledWith(
-        expect.objectContaining({ conversationId: "C1:30", prompt: "6am ET" }),
+        expect.objectContaining({ conversationId: "C1:30", prompt: channelPrompt("6am ET") }),
         expect.any(Object),
       );
       await reply({
@@ -2110,7 +2122,7 @@ describe("SlackAgent transport", () => {
     }
     expect(run).toHaveBeenCalledTimes(2);
     expect(run).toHaveBeenLastCalledWith(
-      expect.objectContaining({ prompt: "main" }),
+      expect.objectContaining({ prompt: channelPrompt("main") }),
       expect.any(Object),
       expect.any(Object),
     );
@@ -2157,7 +2169,7 @@ describe("SlackAgent transport", () => {
     });
     expect(run).toHaveBeenCalledTimes(2);
     expect(run).toHaveBeenLastCalledWith(
-      expect.objectContaining({ requesterId: "U0CFB", prompt: "6am ET" }),
+      expect.objectContaining({ requesterId: "U0CFB", prompt: channelPrompt("6am ET") }),
       expect.any(Object),
     );
   });
@@ -2316,7 +2328,10 @@ describe("SlackAgent transport", () => {
 
     expect(restartedRun).toHaveBeenCalledTimes(1);
     expect(restartedRun).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: "C1:20", prompt: "Could you follow up?" }),
+      expect.objectContaining({
+        conversationId: "C1:20",
+        prompt: channelPrompt("Could you follow up?"),
+      }),
       expect.any(Object),
     );
     expect(hasConversation.mock.calls).toEqual([["C1:20"], ["C1:29"]]);
@@ -2471,44 +2486,155 @@ describe("SlackAgent transport", () => {
     });
   });
 
-  test("publishes long responses as ordered Slack-safe chunks", async () => {
+  test("keeps long DM responses as ordered Slack-safe chunks with the truncation cap", async () => {
     const output = Array.from({ length: 1_200 }, (_, index) => `word${index}`).join(" ");
-    const run = mock(async () => output);
+    const run = mock(async (_request: unknown) => output);
     createAgent(run);
     const slack = client();
+    const dm = (eventId: string, ts: string) =>
+      app.handlers.get("message")!({
+        body: { event_id: eventId },
+        event: { channel_type: "im", user: "U_ALLOWED", text: "request", channel: "D1", ts },
+        client: slack,
+      });
 
-    await app.handlers.get("app_mention")!({
-      body: { event_id: "E_CHUNKS" },
-      event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "4" },
-      client: slack,
-    });
-
+    await dm("E_CHUNKS", "4");
     const chunks = slack.chat.postMessage.mock.calls.map(([message]) => message.text as string);
     expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.every((text) => text.length <= 3_500)).toBe(true);
     expect(chunks.join(" ")).toBe(output);
-    expect(
-      slack.chat.postMessage.mock.calls.every(
-        ([message]) => message.channel === "C1" && message.thread_ts === "4",
-      ),
-    ).toBe(true);
-  });
+    expect(slack.chat.postMessage.mock.calls.every(([message]) => message.channel === "D1")).toBe(
+      true,
+    );
+    expect(run.mock.calls[0]?.[0]).toMatchObject({ prompt: "request" });
+    expect(run.mock.calls[0]?.[0]).not.toHaveProperty("revise");
 
-  test("caps published responses and shows the truncation marker", async () => {
-    const run = mock(async () => "word ".repeat(4_000));
-    createAgent(run);
-    const slack = client();
-
-    await app.handlers.get("app_mention")!({
-      body: { event_id: "E_TRUNCATED" },
-      event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "5" },
-      client: slack,
-    });
-
+    slack.chat.postMessage.mockClear();
+    run.mockImplementation(async () => "word ".repeat(4_000));
+    await dm("E_TRUNCATED", "5");
     const published = slack.chat.postMessage.mock.calls.map(([message]) => message.text as string);
     expect(published).toHaveLength(3);
     expect(published.every((text) => text.length <= 3_500)).toBe(true);
     expect(published[2]).toContain("Output truncated");
+    expect(slack.files.uploadV2).not.toHaveBeenCalled();
+  });
+
+  test("posts one budgeted channel summary with the complete response attached in the thread", async () => {
+    const full = `Report <!channel> & details\n${"finding ".repeat(400)}`;
+    const calls: Array<{ prompt: string; context: boolean }> = [];
+    const records: RequestLog[] = [];
+    const rawBackend: AgentBackend = {
+      run: async ({ prompt, context }) => {
+        calls.push({ prompt, context: Boolean(context) });
+        return calls.length === 1
+          ? full
+          : "Answer: ship it <!channel>. Caveat: flaky test. Next: rerun CI.";
+      },
+      dispose: () => {},
+    };
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: new QueuedAgentBackend(rawBackend, queueLimits()),
+      log: (record) => records.push(record),
+    });
+    const slack = client();
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_LONG_CHANNEL" },
+      event: { user: "U_ALLOWED", text: "full report please", channel: "C1", ts: "4" },
+      client: slack,
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual({ prompt: channelPrompt("full report please"), context: true });
+    expect(calls[1]?.prompt).toContain("standalone summary in at most 700 characters");
+    expect(calls[1]?.context).toBe(false);
+    expect(slack.chat.postMessage).not.toHaveBeenCalled();
+    expect(slack.files.uploadV2).toHaveBeenCalledTimes(1);
+    const upload = slack.files.uploadV2.mock.calls[0]?.[0];
+    expect(upload).toMatchObject({ channel_id: "C1", thread_ts: "4", content: full });
+    expect(upload.initial_comment).toBe(
+      "Answer: ship it &lt;!channel&gt;. Caveat: flaky test. Next: rerun CI.",
+    );
+    expect(records[0]).toMatchObject({ delivery_outcome: "success", published_messages: 1 });
+  });
+
+  test("enforces the channel budget after formatting and bounds summary retries", async () => {
+    // 600 raw characters expand to 3,000 once escaped for Slack.
+    const full = "&".repeat(600);
+    const prompts: string[] = [];
+    const rawBackend: AgentBackend = {
+      run: async ({ prompt }) => {
+        prompts.push(prompt);
+        return prompts.length === 1 ? full : "still too long ".repeat(80);
+      },
+      dispose: () => {},
+    };
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED"]),
+      agent: new QueuedAgentBackend(rawBackend, queueLimits()),
+    });
+    const slack = client();
+
+    await app.handlers.get("app_mention")!({
+      body: { event_id: "E_FORMATTED_BUDGET" },
+      event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "4" },
+      client: slack,
+    });
+
+    expect(prompts).toHaveLength(3);
+    expect(prompts[2]).toContain("Summarize your earlier full response again");
+    expect(slack.chat.postMessage).not.toHaveBeenCalled();
+    expect(slack.files.uploadV2).toHaveBeenCalledTimes(1);
+    expect(slack.files.uploadV2.mock.calls[0]?.[0]).toMatchObject({
+      channel_id: "C1",
+      thread_ts: "4",
+      content: full,
+      initial_comment: "The full response is long, so it is attached as a file.",
+    });
+  });
+
+  test("sends one short honest channel reply when attaching the full response fails", async () => {
+    for (const [index, summary] of ["Answer first. Next: rerun.", "x".repeat(2_000)].entries()) {
+      const rawBackend: AgentBackend = {
+        run: async ({ prompt }) => (prompt.startsWith("request") ? "y ".repeat(1_000) : summary),
+        dispose: () => {},
+      };
+      const records: RequestLog[] = [];
+      new SlackAgent({
+        botToken: "xoxb-test",
+        appToken: "xapp-test",
+        allowedUserIds: new Set(["U_ALLOWED"]),
+        agent: new QueuedAgentBackend(rawBackend, queueLimits()),
+        log: (record) => records.push(record),
+        operatorError: () => {},
+      });
+      const slack = client();
+      slack.files.uploadV2.mockImplementation(async () => {
+        throw new Error("upload unavailable");
+      });
+
+      await app.handlers.get("app_mention")!({
+        body: { event_id: `E_UPLOAD_FAILURE_${index}` },
+        event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "4" },
+        client: slack,
+      });
+
+      expect(slack.files.uploadV2).toHaveBeenCalledTimes(1);
+      expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
+      const text = slack.chat.postMessage.mock.calls[0]?.[0].text as string;
+      expect(text.length).toBeLessThanOrEqual(1_000);
+      expect(text).toBe(
+        index === 0
+          ? "Answer first. Next: rerun.\n\n_The full response could not be attached._"
+          : "The response was too long to post here, and attaching it as a file failed. Ask for a shorter answer or try again.",
+      );
+      expect(records[0]).toMatchObject({ delivery_outcome: "partial", published_messages: 1 });
+    }
   });
 
   test("retries one ratelimited final post", async () => {
@@ -2564,6 +2690,7 @@ describe("SlackAgent transport", () => {
       text: "response",
     });
     expect(slack.chat.update).not.toHaveBeenCalled();
+    expect(slack.files.uploadV2).not.toHaveBeenCalled();
     expect(records[0]).toMatchObject({
       delivery_outcome: "success",
       published_messages: 1,
@@ -2592,9 +2719,9 @@ describe("SlackAgent transport", () => {
       throw new Error("post unavailable");
     });
 
-    await app.handlers.get("app_mention")!({
+    await app.handlers.get("message")!({
       body: { event_id: "E_PARTIAL" },
-      event: { user: "U_ALLOWED", text: "request", channel: "C1", ts: "6" },
+      event: { channel_type: "im", user: "U_ALLOWED", text: "request", channel: "D1", ts: "6" },
       client: slack,
     });
 
@@ -2656,7 +2783,7 @@ describe("SlackAgent transport", () => {
     const rawBackend: AgentBackend = {
       run: async ({ prompt }, observer) => {
         observer?.onToolUse();
-        return prompt === "first" ? first.promise : "second response";
+        return prompt.startsWith("first") ? first.promise : "second response";
       },
       dispose: () => {},
     };

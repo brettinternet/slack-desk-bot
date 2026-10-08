@@ -32,13 +32,18 @@ import { SlackCatchUpStore } from "./slack-catch-up-store.ts";
 import { ThreadReplyStore } from "./thread-reply-store.ts";
 import {
   awaitsThreadReply,
+  CHANNEL_REPLY_GUIDANCE,
+  type ChannelReply,
+  channelReplyReviser,
   channelThreadIntent,
   conversationId,
   formatSlackText,
   HELP_MESSAGE,
+  isDirectMessageChannel,
   isSupportedChannelMessage,
   isSupportedDirectMessage,
   parseSlackCommand,
+  planChannelReply,
   slackUserMentions,
   splitSlackMessage,
   stripBotMention,
@@ -149,6 +154,8 @@ interface RequestStatus {
 interface ExecutionResult {
   outcome: "success" | "cancelled" | "error";
   finalOutput?: string;
+  /** Complete response when `finalOutput` is a summary requested for a shared channel. */
+  detail?: string;
   delivery?: DeliveryResult;
   cancelledBy?: string;
 }
@@ -1425,10 +1432,15 @@ export class SlackAgent {
     const countScheduleChange = () => {
       if (++scheduleChanges > 5) throw new Error("At most 5 schedule changes per request");
     };
+    const sharedChannel = !isDirectMessageChannel(message.channel);
+    const reviser = sharedChannel ? channelReplyReviser() : undefined;
     const request = {
       conversationId: id,
       requesterId: message.requesterId,
-      prompt: message.prompt,
+      prompt: sharedChannel
+        ? [message.prompt.trim(), CHANNEL_REPLY_GUIDANCE].filter(Boolean).join("\n\n")
+        : message.prompt,
+      ...(reviser ? { revise: reviser.revise } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       context: {
         ...(message.threadTs
@@ -1528,7 +1540,8 @@ export class SlackAgent {
     const output = admission
       ? await this.options.agent.run(request, observer, admission)
       : await this.options.agent.run(request, observer);
-    return { outcome: "success", finalOutput: output };
+    const detail = reviser?.detail();
+    return { outcome: "success", finalOutput: output, ...(detail !== undefined ? { detail } : {}) };
   }
 
   private isExpectedAgentError(error: unknown): boolean {
@@ -1573,6 +1586,7 @@ export class SlackAgent {
         message.threadTs,
         execution.finalOutput,
         allowedUserMentions,
+        execution.detail,
       );
       if (delivery.outcome !== "success") {
         this.reportOperatorError(
@@ -1676,7 +1690,16 @@ export class SlackAgent {
     threadTs: string | undefined,
     output: string,
     allowedUserMentions: ReadonlySet<string>,
+    detail?: string,
   ): Promise<DeliveryResult> {
+    if (!isDirectMessageChannel(channel)) {
+      return this.publishChannelResult(
+        client,
+        channel,
+        threadTs,
+        planChannelReply(output, allowedUserMentions, detail),
+      );
+    }
     const [first, ...rest] = splitSlackMessage(formatSlackText(output, allowedUserMentions));
     let publishedMessages = 0;
     try {
@@ -1698,5 +1721,46 @@ export class SlackAgent {
       }
     }
     return { outcome: "success", publishedMessages, postedText: rest.at(-1) ?? first };
+  }
+
+  /**
+   * Publishes exactly one shared-channel reply. Overflow is shared only to the request's channel
+   * and thread. Uploads are not retried, so an uncertain upload cannot duplicate the file.
+   */
+  private async publishChannelResult(
+    client: App["client"],
+    channel: string,
+    threadTs: string | undefined,
+    reply: ChannelReply,
+  ): Promise<DeliveryResult> {
+    let text = reply.text;
+    let uploadError: string | undefined;
+    if (reply.kind === "detail") {
+      try {
+        await this.slackOperation(
+          client.files.uploadV2({
+            ...(threadTs ? { channel_id: channel, thread_ts: threadTs } : { channel_id: channel }),
+            initial_comment: text,
+            content: reply.detail,
+            filename: "full-response.md",
+            title: "Full response",
+          }),
+        );
+        return { outcome: "success", publishedMessages: 1, postedText: text };
+      } catch (error) {
+        uploadError = errorType(error);
+        text = reply.fallback;
+      }
+    }
+    try {
+      await this.chatOperation(() =>
+        client.chat.postMessage({ channel, thread_ts: threadTs, text }),
+      );
+    } catch (error) {
+      return { outcome: "failure", publishedMessages: 0, errorType: errorType(error) };
+    }
+    return uploadError
+      ? { outcome: "partial", publishedMessages: 1, errorType: uploadError, postedText: text }
+      : { outcome: "success", publishedMessages: 1, postedText: text };
   }
 }

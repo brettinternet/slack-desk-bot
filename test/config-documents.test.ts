@@ -84,6 +84,7 @@ describe("configuration documents", () => {
         "chat:write",
         "emoji:read",
         "files:read",
+        "files:write",
         "groups:history",
         "groups:write",
         "im:history",

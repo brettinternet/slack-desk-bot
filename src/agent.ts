@@ -56,7 +56,14 @@ export interface AgentRequest {
   attachments?: readonly AgentAttachment[];
   context?: AgentConversationContext;
   signal?: AbortSignal;
+  /**
+   * Returns a follow-up prompt when a response must be revised before delivery. The queue runs
+   * bounded follow-ups in the same job, so they share its admission, deadline, and cancellation.
+   */
+  revise?(response: string): string | undefined;
 }
+
+const MAX_RESPONSE_REVISIONS = 2;
 
 export type AgentCommand = "reset" | "status" | "cancel";
 export type SessionCommand = Exclude<AgentCommand, "cancel">;
@@ -284,10 +291,41 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
   ): Promise<string> {
     return this.enqueue(
       request,
-      (signal) => this.backend.run({ ...request, signal }, observer),
+      (signal) => this.runWithRevisions(request, signal, observer),
       observer,
       admission,
     );
+  }
+
+  /**
+   * Revision turns omit attachments and conversation tools so they cannot repeat side effects.
+   * A failed revision keeps the previous response; cancellation and deadlines still propagate.
+   */
+  private async runWithRevisions(
+    request: AgentRequest,
+    signal: AbortSignal,
+    observer?: AgentRunObserver,
+  ): Promise<string> {
+    let response = await this.backend.run({ ...request, signal }, observer);
+    for (let revision = 0; revision < MAX_RESPONSE_REVISIONS; revision++) {
+      const prompt = request.revise?.(response);
+      if (prompt === undefined) break;
+      try {
+        response = await this.backend.run(
+          {
+            conversationId: request.conversationId,
+            requesterId: request.requesterId,
+            prompt,
+            signal,
+          },
+          observer,
+        );
+      } catch (error) {
+        if (signal.aborted) throw error;
+        break;
+      }
+    }
+    return response;
   }
 
   handleCommand(

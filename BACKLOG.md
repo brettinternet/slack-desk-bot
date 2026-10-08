@@ -15,7 +15,9 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 
 ### SDB-054: Keep shared-channel replies short with optional full-detail files
 
-**Status:** Draft
+**Status:** Implemented; live Slack verification pending
+
+**Progress:** Channel requests carry per-request brevity guidance from `src/messages.ts`. Replies over the formatted 1,000-character budget trigger at most two summary turns inside the same queued job (`AgentRequest.revise`), so they share admission, deadline, and cancellation and cannot interleave with another request. `src/slack.ts` posts exactly one channel reply, attaching the complete response with `files.uploadV2` (`files:write`) in the request's thread; upload failure sends one honest fallback. DMs keep chunked delivery. Remaining: reinstall the app for `files:write`, restart the service, and exercise short and long replies in a shared thread and a DM.
 
 **Why:** Long bot replies dominate shared Slack conversations and disrupt human connection, even inside threads. The current delivery limit permits three 3,500-character messages; it protects Slack's technical limits rather than human attention. Prompt-only brevity is not reliable enough, and truncation can remove the useful conclusion.
 

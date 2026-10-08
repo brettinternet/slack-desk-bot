@@ -6,6 +6,22 @@ export const TRUNCATION_MARKER =
   "\n\n_Output truncated. Ask for a narrower response to see the omitted portion._";
 const AGENT_COMMANDS = new Set<AgentCommand>(["reset", "status", "cancel"]);
 
+/** Hard inline budget for one formatted reply in a shared channel, including thread replies. */
+export const CHANNEL_REPLY_LIMIT = 1_000;
+const EMPTY_RESPONSE = "Completed without a text response.";
+const DETAIL_UNAVAILABLE_NOTE = "\n\n_The full response could not be attached._";
+const SUMMARY_LIMIT = CHANNEL_REPLY_LIMIT - DETAIL_UNAVAILABLE_NOTE.length;
+/** Requested summary length; leaves room for formatting expansion before the hard check. */
+const SUMMARY_TARGET = 700;
+const SUMMARY_UNAVAILABLE = "The full response is long, so it is attached as a file.";
+const LONG_REPLY_FAILED =
+  "The response was too long to post here, and attaching it as a file failed. Ask for a shorter answer or try again.";
+
+/** Per-request guidance for shared channels; DMs keep the backend's default style. */
+export const CHANNEL_REPLY_GUIDANCE = `<slack-delivery>
+This is a shared Slack channel thread. Reply in about 50–100 words: lead with the answer, then only the important caveat and next step. Skip routine reports, repeated context, and tool narration. Write extensive detail only when requested or genuinely necessary; a reply over ${CHANNEL_REPLY_LIMIT.toLocaleString("en-US")} characters is posted as a short summary with the full text attached as a file.
+</slack-delivery>`;
+
 export const HELP_MESSAGE = `SlackDeskBot commands:
 • !help — show this help
 • !status — show the conversation session
@@ -127,6 +143,86 @@ export function splitSlackMessage(
     published[maxMessages - 1]!.slice(0, limit - TRUNCATION_MARKER.length).trimEnd() +
     TRUNCATION_MARKER;
   return published;
+}
+
+/** Slack DM conversation IDs start with D; channels, private channels, and group DMs are shared. */
+export function isDirectMessageChannel(channel: string): boolean {
+  return channel.startsWith("D");
+}
+
+/** Formats a shared-channel reply without splitting it. */
+function formatChannelReply(
+  text: string,
+  allowedUserMentions: ReadonlySet<string> = new Set(),
+): string {
+  return formatSlackText(text.trim() || EMPTY_RESPONSE, allowedUserMentions);
+}
+
+function fitsSummary(summary: string, allowedUserMentions?: ReadonlySet<string>): boolean {
+  return (
+    Boolean(summary.trim()) &&
+    formatChannelReply(summary, allowedUserMentions).length <= SUMMARY_LIMIT
+  );
+}
+
+/**
+ * Prompts for a standalone summary after a too-long channel reply. Retries summarize the original
+ * full response again rather than condensing the previous summary.
+ */
+function channelSummaryPrompt(previousSummary?: string): string {
+  const request = `Write a standalone summary in at most ${SUMMARY_TARGET} characters: the answer, the material caveat, and the next step, so readers need not open the file. Do not mention the file or use tools. Reply with only the summary.`;
+  return previousSummary === undefined
+    ? `Your response above is too long for this shared Slack channel; the complete text will be attached as a file. ${request}`
+    : `That summary was ${previousSummary.trim().length} characters, which is still too long. Summarize your earlier full response again, not the previous summary. ${request}`;
+}
+
+/**
+ * Requests summary turns until a response fits the channel budget. Mentions are checked with no
+ * allowances, which only escapes more text, so this check is never looser than delivery.
+ */
+export function channelReplyReviser(): {
+  revise(response: string): string | undefined;
+  detail(): string | undefined;
+} {
+  let detail: string | undefined;
+  return {
+    revise(response) {
+      if (detail === undefined) {
+        if (formatChannelReply(response).length <= CHANNEL_REPLY_LIMIT) return undefined;
+        detail = response;
+        return channelSummaryPrompt();
+      }
+      return fitsSummary(response) ? undefined : channelSummaryPrompt(response);
+    },
+    detail: () => detail,
+  };
+}
+
+export type ChannelReply =
+  | { kind: "inline"; text: string }
+  | { kind: "detail"; text: string; fallback: string; detail: string };
+
+/**
+ * Plans one shared-channel reply within {@link CHANNEL_REPLY_LIMIT}. A response that does not fit
+ * is preserved in full as `detail` and introduced by a validated summary or an honest note.
+ * `fallback` is the single reply to send when attaching the detail fails.
+ */
+export function planChannelReply(
+  output: string,
+  allowedUserMentions: ReadonlySet<string>,
+  detail?: string,
+): ChannelReply {
+  const text = formatChannelReply(output, allowedUserMentions);
+  if (detail === undefined && text.length <= CHANNEL_REPLY_LIMIT) return { kind: "inline", text };
+  const fullText = detail ?? output;
+  const summary =
+    detail !== undefined && fitsSummary(output, allowedUserMentions) ? text : undefined;
+  return {
+    kind: "detail",
+    text: summary ?? SUMMARY_UNAVAILABLE,
+    fallback: summary ? `${summary}${DETAIL_UNAVAILABLE_NOTE}` : LONG_REPLY_FAILED,
+    detail: fullText,
+  };
 }
 
 /** Returns user mention entities that the Slack user explicitly included. */

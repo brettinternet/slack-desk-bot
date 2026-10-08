@@ -67,6 +67,41 @@ describe("QueuedAgentBackend", () => {
     queued.dispose();
   });
 
+  test("runs bounded revisions before the next queued request and keeps the last good response", async () => {
+    const first = deferred();
+    const calls: Array<{ prompt: string; context: boolean }> = [];
+    const backend: AgentBackend = {
+      run: async ({ prompt, context }) => {
+        calls.push({ prompt, context: Boolean(context) });
+        if (prompt === "first") return first.promise;
+        if (prompt === "revise-2") throw new Error("provider failed");
+        return `${prompt} response`;
+      },
+      dispose: () => {},
+    };
+    const queued = new QueuedAgentBackend(backend, limits());
+    const prompts = ["revise-1", "revise-2", "revise-3"];
+
+    const firstRun = queued.run({
+      ...request("thread", "first"),
+      context: {},
+      revise: () => prompts.shift(),
+    });
+    const secondRun = queued.run(request("thread", "second"));
+    await Bun.sleep(0);
+    first.resolve("long");
+
+    expect(await firstRun).toBe("revise-1 response");
+    expect(await secondRun).toBe("second response");
+    expect(calls).toEqual([
+      { prompt: "first", context: true },
+      { prompt: "revise-1", context: false },
+      { prompt: "revise-2", context: false },
+      { prompt: "second", context: false },
+    ]);
+    queued.dispose();
+  });
+
   test("reports sanitized active, queued, limit, and disposal state", async () => {
     const active = deferred();
     const backend: AgentBackend = {
