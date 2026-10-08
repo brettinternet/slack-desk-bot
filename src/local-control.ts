@@ -110,7 +110,9 @@ export class LocalControlServer {
     }
     const client: ClientState = { socket, buffer: Buffer.alloc(0), pending: 0 };
     this.clients.add(client);
-    socket.on("data", (chunk) => this.receive(client, chunk));
+    socket.on("data", (chunk) =>
+      this.receive(client, typeof chunk === "string" ? Buffer.from(chunk) : chunk),
+    );
     socket.on("close", () => this.disconnect(client));
     socket.on("error", () => this.disconnect(client));
   }
