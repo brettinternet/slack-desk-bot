@@ -12,6 +12,7 @@ import type { ConversationCoordinator, ConversationEvent } from "./conversation-
 import type { ScheduleInput, ScheduleService } from "./schedules.ts";
 import type { DmAuditConversationsPage, DmAuditMessagesPage, DmAuditQuery } from "./dm-audit.ts";
 import type { PersonMatch } from "./people-lookup.ts";
+import type { AbuseGate } from "./abuse-gate.ts";
 import {
   isLocalRequest,
   LOCAL_OPERATOR_ID,
@@ -36,6 +37,7 @@ interface LocalControlOptions {
   auditDmMessages?: (query: DmAuditQuery) => Promise<DmAuditMessagesPage>;
   findPeople?: (query: string) => Promise<PersonMatch[]>;
   schedules?: ScheduleService;
+  abuse?: AbuseGate;
   /**
    * Test seam for simulating a rejected peer. Neither Node nor Bun exposes
    * `SO_PEERCRED`/`getpeereid`, so the real boundary is the owner-only `0700`
@@ -260,6 +262,21 @@ export class LocalControlServer {
         ...(request.threadTs ? { threadTs: request.threadTs } : {}),
         ...(request.cursor ? { cursor: request.cursor } : {}),
       });
+    }
+    if (request.type.startsWith("abuse-")) {
+      const abuse = this.options.abuse;
+      if (!abuse) throw new Error("Abuse controls are unavailable");
+      if (request.type === "abuse-list") return abuse.snapshot();
+      if (typeof request.userId !== "string") throw new Error("userId is required");
+      if (request.durationMs !== undefined && typeof request.durationMs !== "number")
+        throw new Error("durationMs must be a number");
+      if (request.type === "abuse-block") return abuse.block(request.userId, request.durationMs);
+      if (request.type === "abuse-unblock") return { removed: abuse.unblock(request.userId) };
+      if (request.type === "abuse-grant") {
+        if (request.durationMs === undefined) throw new Error("durationMs is required");
+        return abuse.grant(request.userId, request.durationMs);
+      }
+      return { removed: abuse.revoke(request.userId) };
     }
     if (request.type.startsWith("schedule-")) {
       const schedules = this.options.schedules;

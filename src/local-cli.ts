@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import type { ConversationSummary, DirectMessageReceipt } from "./agent.ts";
 import { defaultSocketPath } from "./config.ts";
 import type { Schedule, ScheduleInput } from "./schedules.ts";
+import type { AbuseSnapshot } from "./abuse-gate.ts";
 import type { DmAuditConversationsPage, DmAuditMessage, DmAuditMessagesPage } from "./dm-audit.ts";
 import { IDENTITY_USAGE, runIdentityCommand } from "./identity-cli.ts";
 import { LocalClient } from "./local-client.ts";
@@ -38,6 +39,16 @@ Schedules
       --daily <HH:mm> --tz <zone>  Repeat daily in an IANA time zone
       --weekly <0-6,...> --time <HH:mm> --tz <zone>
                                     Repeat on weekdays (0 = Sunday)
+
+Abuse controls
+  abuse list                       Show blocks, grants, and recent abuse events
+  abuse block <user-id> [--for <duration>]
+                                    Block a user (permanent unless --for)
+  abuse unblock <user-id>          Remove a block or cooldown
+  abuse grant <user-id> [--for <duration>]
+                                    Authorize elevated budgets (default 1h, max 24h)
+  abuse revoke <user-id>           Remove an elevated-budget grant
+    <duration> is <n>m, <n>h, or <n>d
 
 Identities
   identities scan                  Match Git authors to Slack users
@@ -343,6 +354,66 @@ export function parseScheduleArguments(args: readonly string[]): {
   return { socketPath, type: verb === "add" ? "schedule-create" : "schedule-update", id, input };
 }
 
+const ABUSE_TYPES = {
+  list: "abuse-list",
+  block: "abuse-block",
+  unblock: "abuse-unblock",
+  grant: "abuse-grant",
+  revoke: "abuse-revoke",
+} as const;
+
+export function parseAbuseArguments(args: readonly string[]): {
+  socketPath?: string;
+  type: (typeof ABUSE_TYPES)[keyof typeof ABUSE_TYPES];
+  userId?: string;
+  durationMs?: number;
+} {
+  const tokens = [...args];
+  let socketPath: string | undefined;
+  if (tokens[0] === "--socket") {
+    socketPath = tokens[1];
+    tokens.splice(0, 2);
+    if (!socketPath) throw new Error("--socket requires a path");
+  } else if (tokens[0]?.startsWith("--socket=")) {
+    socketPath = tokens.shift()!.slice(9);
+    if (!socketPath) throw new Error("--socket requires a path");
+  }
+  if (tokens.shift() !== "abuse") throw new Error(USAGE);
+  const verb = tokens.shift();
+  if (!verb || !(verb in ABUSE_TYPES)) throw new Error(USAGE);
+  const type = ABUSE_TYPES[verb as keyof typeof ABUSE_TYPES];
+  if (type === "abuse-list") {
+    if (tokens.length > 0) throw new Error(USAGE);
+    return { socketPath, type };
+  }
+  const userId = tokens.shift();
+  if (!userId || userId.startsWith("--")) throw new Error(USAGE);
+  let durationMs: number | undefined;
+  if (tokens[0] === "--for" && (type === "abuse-block" || type === "abuse-grant")) {
+    const match = /^(\d+)([mhd])$/.exec(tokens[1] ?? "");
+    if (!match) throw new Error("--for requires a duration such as 30m, 2h, or 1d");
+    durationMs = Number(match[1]) * { m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2] as "m"];
+    tokens.splice(0, 2);
+  }
+  if (tokens.length > 0) throw new Error(USAGE);
+  if (type === "abuse-grant") durationMs ??= 3_600_000;
+  return { socketPath, type, userId, ...(durationMs !== undefined ? { durationMs } : {}) };
+}
+
+function printAbuse(snapshot: AbuseSnapshot): void {
+  const time = (at?: number) => (at === undefined ? "permanent" : new Date(at).toISOString());
+  for (const block of snapshot.blocks)
+    console.log(`${block.kind} ${block.userId} until ${time(block.until)}`);
+  for (const grant of snapshot.grants)
+    console.log(`elevated ${grant.userId} until ${time(grant.until)}`);
+  for (const event of snapshot.events)
+    console.log(
+      `[${time(event.lastAt)}] ${event.reason} ${event.user} ${terminalLine(event.conversation)}${event.count > 1 ? ` x${event.count}` : ""}`,
+    );
+  if (snapshot.blocks.length + snapshot.grants.length + snapshot.events.length === 0)
+    console.log("No blocks, grants, or abuse events.");
+}
+
 export function parseDmAuditArguments(args: readonly string[]): {
   socketPath?: string;
   oldest: string;
@@ -542,6 +613,39 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       else {
         const item = result as Schedule;
         console.log(`Scheduled ${item.id} for ${item.nextAt}`);
+      }
+    } finally {
+      client.close();
+    }
+    return;
+  }
+  if (
+    args[0] === "abuse" ||
+    (args[0] === "--socket" && args[2] === "abuse") ||
+    (args[0]?.startsWith("--socket=") && args[1] === "abuse")
+  ) {
+    const { socketPath: requested, type, userId, durationMs } = parseAbuseArguments(args);
+    const socketPath =
+      requested ?? (process.env.SLACK_AGENT_SOCKET_PATH?.trim() || defaultSocketPath());
+    let client: LocalClient;
+    try {
+      client = await LocalClient.connect(socketPath);
+    } catch {
+      throw new Error(`Cannot connect to SlackDeskBot at ${socketPath}`);
+    }
+    try {
+      const result = await client.request(type, {
+        ...(userId ? { userId } : {}),
+        ...(durationMs !== undefined ? { durationMs } : {}),
+      });
+      if (type === "abuse-list") printAbuse(result as AbuseSnapshot);
+      else if (type === "abuse-unblock" || type === "abuse-revoke")
+        console.log((result as { removed: boolean }).removed ? `Updated ${userId}` : "No change");
+      else {
+        const until = (result as { until?: number }).until;
+        console.log(
+          `${type === "abuse-block" ? "Blocked" : "Elevated"} ${userId} until ${until === undefined ? "removed" : new Date(until).toISOString()}`,
+        );
       }
     } finally {
       client.close();

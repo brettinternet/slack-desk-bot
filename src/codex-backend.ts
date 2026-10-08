@@ -238,10 +238,13 @@ export class CodexBackend implements AgentBackend {
             this.saveMappings();
           } else if (event.type === "item.started") {
             const item = event.item as Record<string, unknown> | undefined;
-            if (item?.type === "command_execution") observer?.onToolUse();
+            if (item?.type === "command_execution") observer?.onToolUse("local");
+            else if (item?.type === "web_search" || item?.type === "mcp_tool_call")
+              observer?.onToolUse("research");
           } else if (event.type === "item.completed") {
             const item = event.item as Record<string, unknown> | undefined;
             if (item?.type === "agent_message" && typeof item.text === "string") {
+              observer?.onOutput?.(item.text.length);
               finalResponse = item.text.trim();
             } else if (item?.type === "error" && typeof item.message === "string") {
               itemError = item.message;

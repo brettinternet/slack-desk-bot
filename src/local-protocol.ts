@@ -23,7 +23,12 @@ export type LocalRequestType =
   | "schedule-list"
   | "schedule-create"
   | "schedule-update"
-  | "schedule-cancel";
+  | "schedule-cancel"
+  | "abuse-list"
+  | "abuse-block"
+  | "abuse-unblock"
+  | "abuse-grant"
+  | "abuse-revoke";
 
 export interface LocalRequest {
   v: typeof LOCAL_PROTOCOL_VERSION;
@@ -42,6 +47,7 @@ export interface LocalRequest {
   text?: string;
   id?: string;
   at?: string;
+  durationMs?: number;
   recurrence?: { time: string; timezone: string; weekdays?: number[] };
 }
 
@@ -77,6 +83,11 @@ const REQUEST_TYPES: readonly string[] = [
   "schedule-create",
   "schedule-update",
   "schedule-cancel",
+  "abuse-list",
+  "abuse-block",
+  "abuse-unblock",
+  "abuse-grant",
+  "abuse-revoke",
 ];
 
 export function isLocalRequest(value: unknown): value is LocalRequest {

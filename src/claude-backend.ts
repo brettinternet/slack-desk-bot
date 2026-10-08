@@ -16,6 +16,7 @@ import type {
   AgentRunObserver,
   ConversationSummary,
   SessionCommand,
+  ToolUseKind,
 } from "./agent.ts";
 import type { AgentMode } from "./config.ts";
 
@@ -132,6 +133,13 @@ function claudeTools(mode: AgentMode): string[] {
   return mode === "read-write"
     ? ["Read", "Glob", "Grep", "Edit", "Write"]
     : ["Read", "Glob", "Grep"];
+}
+
+/** Web and MCP tools are denied by settings, but still count as research if one runs. */
+function claudeToolKind(name: unknown): ToolUseKind {
+  return typeof name === "string" && (name.startsWith("Web") || name.startsWith("mcp__"))
+    ? "research"
+    : "local";
 }
 
 function claudeSettings(mode: AgentMode): string {
@@ -278,19 +286,13 @@ export class ClaudeBackend implements AgentBackend {
             const message = event.message as Record<string, unknown> | undefined;
             const content = Array.isArray(message?.content) ? message.content : [];
             for (const block of content) {
-              if (
-                block &&
-                typeof block === "object" &&
-                (block as Record<string, unknown>).type === "tool_use"
-              )
-                observer?.onToolUse();
-              if (
-                block &&
-                typeof block === "object" &&
-                (block as Record<string, unknown>).type === "text" &&
-                typeof (block as Record<string, unknown>).text === "string"
-              )
-                finalResponse = String((block as Record<string, unknown>).text).trim();
+              if (!block || typeof block !== "object") continue;
+              const { type, name, text } = block as Record<string, unknown>;
+              if (type === "tool_use") observer?.onToolUse(claudeToolKind(name));
+              if (type === "text" && typeof text === "string") {
+                observer?.onOutput?.(text.length);
+                finalResponse = text.trim();
+              }
             }
           } else if (event.type === "result") {
             if (

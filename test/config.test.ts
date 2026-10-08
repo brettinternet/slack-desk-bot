@@ -56,6 +56,20 @@ describe("loadConfig", () => {
         rateLimitBurst: 3,
         rateLimitRefillMs: 60_000,
       },
+      turnBudgets: {
+        standard: {
+          maxToolCalls: 60,
+          maxResearchCalls: 10,
+          maxOutputCharacters: 30_000,
+          wallTimeMs: 180_000,
+        },
+        elevated: {
+          maxToolCalls: 200,
+          maxResearchCalls: 60,
+          maxOutputCharacters: 120_000,
+          wallTimeMs: 300_000,
+        },
+      },
       configuredMaxConcurrentConversations: 3,
       sessionDir: undefined,
       maxActiveSessions: 32,

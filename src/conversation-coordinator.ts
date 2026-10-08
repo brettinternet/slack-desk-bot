@@ -179,10 +179,11 @@ export class ConversationCoordinator implements CancellableAgentBackend {
         downstream?.onStarted?.();
         this.emit({ type: "started", conversationId, ...lifecycleDetails });
       },
-      onToolUse: () => {
-        downstream?.onToolUse();
+      onToolUse: (kind) => {
+        downstream?.onToolUse(kind);
         this.emit({ type: "tool-use", conversationId });
       },
+      onOutput: (characters) => downstream?.onOutput?.(characters),
     };
   }
 

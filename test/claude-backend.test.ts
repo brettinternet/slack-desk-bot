@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { AgentBudgetExceededError, QueuedAgentBackend, type ToolUseKind } from "../src/agent.ts";
 import {
   ClaudeBackend,
   ClaudeCapabilityError,
@@ -18,6 +19,8 @@ interface FakeRun {
   events: string[];
   code?: number;
   wait?: boolean;
+  /** Writes events but keeps the process running until it is killed. */
+  hold?: boolean;
   stderr?: string;
   /** Destroys stdin before the prompt is written, reproducing an EPIPE. */
   stdinEpipe?: boolean;
@@ -63,6 +66,7 @@ function fakeSpawner(runs: FakeRun[], calls: string[][], inputs?: string[]) {
       if (run.wait) return;
       queueMicrotask(() => {
         for (const event of run.events) child.stdout.write(`${event}\n`);
+        if (run.hold) return;
         if (run.stderr) child.stderr.write(run.stderr);
         child.stdout.end();
         child.stderr.end();
@@ -304,6 +308,70 @@ describe("Claude sessions and stream output", () => {
       await expect(pending).rejects.toBe(reason);
     } finally {
       item.backend.dispose();
+      rmSync(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("reports tool kinds and output, and a queue budget stops the running process", async () => {
+    const assistant = (content: object[]) =>
+      JSON.stringify({ type: "assistant", session_id: "session-budget", message: { content } });
+    const item = backend(
+      [
+        {
+          events: [
+            assistant([
+              { type: "tool_use", name: "Read" },
+              { type: "text", text: "abcd" },
+            ]),
+            assistant([{ type: "tool_use", name: "WebSearch" }]),
+            assistant([{ type: "tool_use", name: "mcp__linear__get_issue" }]),
+          ],
+          hold: true,
+        },
+      ],
+      [],
+    );
+    const kinds: Array<ToolUseKind | undefined> = [];
+    let output = 0;
+    const queued = new QueuedAgentBackend(item.backend, {
+      timeoutMs: 10_000,
+      queueWaitMs: 10_000,
+      maxQueuedPerConversation: 1,
+      maxConcurrentConversations: 1,
+      maxGlobalQueue: 1,
+      maxPendingPerRequester: 1,
+      rateLimitBurst: 5,
+      rateLimitRefillMs: 60_000,
+    });
+    try {
+      const error = await queued
+        .run(
+          {
+            conversationId: "C",
+            requesterId: "U",
+            prompt: "research",
+            budget: {
+              maxToolCalls: 10,
+              maxResearchCalls: 1,
+              maxOutputCharacters: 1_000,
+              wallTimeMs: 10_000,
+            },
+          },
+          {
+            onToolUse: (kind) => kinds.push(kind),
+            onOutput: (characters) => (output += characters),
+          },
+        )
+        .catch((caught: unknown) => caught);
+      expect((error as AgentBudgetExceededError).reason).toBe("research_budget");
+      expect(kinds).toEqual(["local", "research", "research"]);
+      expect(output).toBe(4);
+      for (let attempt = 0; attempt < 50 && queued.snapshot().active > 0; attempt++)
+        await Bun.sleep(5);
+      expect(queued.snapshot().active).toBe(0);
+      queued.admit("U").release();
+    } finally {
+      queued.dispose();
       rmSync(item.root, { recursive: true, force: true });
     }
   });

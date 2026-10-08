@@ -6,6 +6,7 @@ import {
   type QueueSnapshot,
   QueuedAgentBackend,
 } from "./agent.ts";
+import { AbuseGate } from "./abuse-gate.ts";
 import { BACKENDS } from "./backend-table.ts";
 import type { DmAuditConversationsPage, DmAuditMessagesPage, DmAuditQuery } from "./dm-audit.ts";
 import { dirname, join } from "node:path";
@@ -64,6 +65,7 @@ interface ApplicationDependencies {
     health: HealthState;
     schedules: ScheduleService;
     automations?: AutomationService;
+    abuse: AbuseGate;
   }) => SlackLifecycle;
   startHealthServer?: (
     port: number,
@@ -79,6 +81,7 @@ interface ApplicationDependencies {
     auditDmMessages?: (query: DmAuditQuery) => Promise<DmAuditMessagesPage>;
     findPeople?: (query: string) => Promise<PersonMatch[]>;
     schedules: ScheduleService;
+    abuse: AbuseGate;
   }) => LocalControlLifecycle;
 }
 
@@ -127,6 +130,12 @@ export async function startApplication(
     github: dependencies.githubReady ?? checkGithubReadiness,
   });
 
+  const abuse = new AbuseGate({
+    operatorUserIds: config.operatorUserIds,
+    budgets: config.turnBudgets,
+    statePath: join(dirname(config.socketPath), "abuse-state.json"),
+    log,
+  });
   const health = new HealthState();
   const backend = (dependencies.createBackend ?? defaultBackend)(config);
   const agent = new ConversationCoordinator(backend);
@@ -161,10 +170,11 @@ export async function startApplication(
       : undefined;
   slack = (
     dependencies.createSlackAgent ??
-    (({ config, agent, health, schedules, automations }) =>
+    (({ config, agent, health, schedules, automations, abuse }) =>
       new SlackAgent({
         schedules,
         automations,
+        abuse,
         botToken: config.slackBotToken,
         appToken: config.slackAppToken,
         allowedUserIds: config.allowedUserIds,
@@ -176,7 +186,7 @@ export async function startApplication(
         threadReplyStatePath: join(dirname(config.socketPath), "slack-thread-replies.json"),
         catchUp: { statePath: join(dirname(config.socketPath), "slack-catch-up.json") },
       }))
-  )({ config, agent, health, schedules, automations });
+  )({ config, agent, health, schedules, automations, abuse });
   let directory:
     { loadedAt: number; users: Awaited<ReturnType<typeof loadSlackUsers>> } | undefined;
   let pendingDirectory: ReturnType<typeof loadSlackUsers> | undefined;
@@ -196,6 +206,7 @@ export async function startApplication(
       socketPath: config.socketPath,
       coordinator: agent,
       schedules,
+      abuse,
       findPeople: lookup,
       ...(slack.inspectConversation
         ? { inspector: { inspectConversation: slack.inspectConversation.bind(slack) } }

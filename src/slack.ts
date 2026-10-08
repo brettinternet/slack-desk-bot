@@ -1,5 +1,6 @@
 import { App, LogLevel, SocketModeReceiver } from "@slack/bolt";
 import {
+  AgentBudgetExceededError,
   AgentCancelledError,
   AgentTimeoutError,
   ConversationQueueFullError,
@@ -19,7 +20,9 @@ import {
   type DirectMessageReceipt,
   type ThreadHistoryOptions,
   type ThreadHistoryPage,
+  type TurnBudget,
 } from "./agent.ts";
+import type { AbuseGate, RejectionReason } from "./abuse-gate.ts";
 import { MAX_DIRECT_MESSAGE_CHARACTERS } from "./direct-message-tool.ts";
 import type { DmAuditConversationsPage, DmAuditMessagesPage, DmAuditQuery } from "./dm-audit.ts";
 import type { ScheduleService } from "./schedules.ts";
@@ -56,6 +59,8 @@ interface SlackAgentOptions {
   allowedUserIds: ReadonlySet<string>;
   operatorUserIds?: ReadonlySet<string>;
   agent: CancellableAgentBackend;
+  /** Rejects abusive or unauthorized high-budget requests before any work starts. */
+  abuse?: AbuseGate;
   schedules?: ScheduleService;
   automations?: AutomationService;
   fetch?: typeof fetch;
@@ -145,6 +150,10 @@ interface InboundSlackMessage {
   directMessage: boolean;
   clientMessageId?: string;
   pendingAnswer?: boolean;
+  /** Per-turn budget selected by the abuse gate. */
+  budget?: TurnBudget;
+  /** Lets a request that failed for operational reasons be retried without a duplicate rejection. */
+  forgetDuplicate?: () => void;
 }
 
 interface RequestStatus {
@@ -159,6 +168,7 @@ interface ExecutionResult {
   detail?: string;
   delivery?: DeliveryResult;
   cancelledBy?: string;
+  budgetExceeded?: boolean;
 }
 
 function eventFiles(event: object): SlackFileReference[] {
@@ -182,6 +192,9 @@ export function userFacingAgentError(error: unknown, requestId: string): string 
   if (error instanceof RateLimitError) {
     return "You're sending requests too quickly. Wait a minute, then try again.";
   }
+  if (error instanceof AgentBudgetExceededError) {
+    return "This request hit its per-turn tool, research, or output budget and was stopped. Narrow it, or ask an operator to authorize a larger request.";
+  }
   if (error instanceof AgentTimeoutError) {
     return "The request timed out before completion. Try a smaller or more focused request.";
   }
@@ -190,6 +203,17 @@ export function userFacingAgentError(error: unknown, requestId: string): string 
   }
   return `The request failed unexpectedly. Try again or contact the operator with request ID \`${requestId}\`.`;
 }
+
+const REJECTION_MESSAGES: Record<RejectionReason, string> = {
+  duplicate:
+    "You already sent this request here recently. Wait for the earlier answer, or rephrase what you need.",
+  spam: "This message wasn't processed because it matches the agent's spam rules. Send one focused request instead.",
+  high_budget:
+    "This asks for high-budget work, such as open-ended research or large tool or source fan-out. Narrow the request, or ask an operator to authorize it.",
+  cooldown:
+    "You're temporarily paused after repeated rejected requests. Try again later; `!cancel` still works.",
+  blocked: "You're blocked from using this agent. Contact the operator; `!cancel` still works.",
+};
 
 function errorType(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
@@ -1205,8 +1229,13 @@ export class SlackAgent {
 
   private async respondWithinLimit(
     client: App["client"],
-    message: InboundSlackMessage,
+    inbound: InboundSlackMessage,
   ): Promise<void> {
+    const message = await this.screen(client, inbound);
+    if (!message) {
+      this.markProcessed(inbound);
+      return;
+    }
     if (this.activeResponses >= MAX_CONCURRENT_RESPONSES) {
       if (!this.responseCapacityWarningLogged) {
         (this.options.operatorLog ?? writeStructuredLog)({
@@ -1217,6 +1246,7 @@ export class SlackAgent {
         this.responseCapacityWarningLogged = true;
       }
       this.restorePendingAnswer(message);
+      message.forgetDuplicate?.();
       await this.reportCapacityDrop(client, message);
       return;
     }
@@ -1225,19 +1255,66 @@ export class SlackAgent {
     try {
       await this.respond(client, message);
     } finally {
-      try {
-        this.catchUpStore?.markProcessed(
-          `${message.channel}:${message.messageTs}`,
-          (this.options.catchUp?.now ?? Date.now)(),
-        );
-      } catch (error) {
-        this.reportCatchUpError("Unable to save processed Slack message state", error);
-      }
+      this.markProcessed(message);
       this.activeResponses--;
       if (this.activeResponses < MAX_CONCURRENT_RESPONSES) {
         this.responseCapacityWarningLogged = false;
       }
     }
+  }
+
+  private markProcessed(message: InboundSlackMessage): void {
+    try {
+      this.catchUpStore?.markProcessed(
+        `${message.channel}:${message.messageTs}`,
+        (this.options.catchUp?.now ?? Date.now)(),
+      );
+    } catch (error) {
+      this.reportCatchUpError("Unable to save processed Slack message state", error);
+    }
+  }
+
+  /**
+   * Applies the abuse gate before capacity, file, queue, or session work. Each rejected message
+   * costs at most one Slack call: one reply per dedupe window, then an `x` reaction, and nothing
+   * at all for blocked or cooling-down users.
+   */
+  private async screen(
+    client: App["client"],
+    message: InboundSlackMessage,
+  ): Promise<InboundSlackMessage | undefined> {
+    const gate = this.options.abuse;
+    if (!gate) return message;
+    const command = message.files.length === 0 ? parseSlackCommand(message.prompt) : undefined;
+    const decision = gate.check({
+      requesterId: message.requesterId,
+      conversationId: conversationId(message.channel, message.threadTs),
+      prompt: message.prompt,
+      fileIds: message.files.map((file, index) => file.id ?? `unknown-${index}`),
+      ...(command ? { command: command.kind === "agent" ? command.command : command.kind } : {}),
+    });
+    if (decision.allowed) {
+      return {
+        ...message,
+        forgetDuplicate: decision.forget,
+        ...(decision.budget ? { budget: decision.budget } : {}),
+      };
+    }
+    this.restorePendingAnswer(message);
+    if (decision.notify) {
+      await this.bestEffortChatOperation(() =>
+        client.chat.postMessage({
+          channel: message.channel,
+          thread_ts: message.threadTs,
+          text: REJECTION_MESSAGES[decision.reason],
+        }),
+      );
+    } else if (decision.reason !== "blocked" && decision.reason !== "cooldown") {
+      await this.bestEffortSlackOperation(
+        client.reactions.add({ channel: message.channel, timestamp: message.messageTs, name: "x" }),
+      );
+    }
+    return undefined;
   }
 
   private async reportCapacityDrop(
@@ -1285,6 +1362,7 @@ export class SlackAgent {
         admission = this.options.agent.admit?.(message.requesterId);
       } catch (error) {
         this.restorePendingAnswer(message);
+        message.forgetDuplicate?.();
         await this.postAdmissionError(client, message, error);
         return;
       }
@@ -1320,6 +1398,7 @@ export class SlackAgent {
     const startedAt = performance.now();
     const status = this.createRequestStatus();
     const execution = await this.executeRequest(client, message, command, admission, status);
+    if (execution.outcome !== "success" && !execution.budgetExceeded) message.forgetDuplicate?.();
     const delivery = await this.deliverRequest(client, message, execution);
     this.updateThreadAttention(message, execution, delivery);
     this.recordRequest(message, status, execution, delivery, startedAt);
@@ -1383,6 +1462,14 @@ export class SlackAgent {
       return await this.performRequest(client, message, command, admission, status);
     } catch (error) {
       const cancelled = error instanceof AgentCancelledError;
+      const budgetExceeded = error instanceof AgentBudgetExceededError;
+      if (budgetExceeded) {
+        this.options.abuse?.recordBudgetExceeded(
+          message.requesterId,
+          conversationId(message.channel, message.threadTs),
+          error.reason,
+        );
+      }
       const expected = cancelled || this.isExpectedAgentError(error);
       if (!expected) {
         this.reportOperatorError(
@@ -1394,6 +1481,7 @@ export class SlackAgent {
       return {
         outcome: cancelled ? "cancelled" : "error",
         finalOutput: userFacingAgentError(error, message.requestId),
+        ...(budgetExceeded ? { budgetExceeded } : {}),
       };
     }
   }
@@ -1494,6 +1582,7 @@ export class SlackAgent {
           }
         : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
+      ...(message.budget ? { budget: message.budget } : {}),
       context: {
         ...(message.threadTs
           ? {
@@ -1602,6 +1691,7 @@ export class SlackAgent {
       error instanceof GlobalQueueFullError ||
       error instanceof RequesterLimitError ||
       error instanceof RateLimitError ||
+      error instanceof AgentBudgetExceededError ||
       error instanceof AgentTimeoutError ||
       error instanceof QueueWaitTimeoutError
     );

@@ -2,7 +2,9 @@ import { describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AbuseGate } from "../src/abuse-gate.ts";
 import {
+  AgentBudgetExceededError,
   AgentCancelledError,
   AgentTimeoutError,
   ConversationQueueFullError,
@@ -15,6 +17,7 @@ import {
   type CancellableAgentBackend,
   type QueueLimits,
   QueuedAgentBackend,
+  type TurnBudget,
 } from "../src/agent.ts";
 import type { RequestLog, StructuredLog } from "../src/log.ts";
 import { CHANNEL_REPLY_GUIDANCE, SLACK_MESSAGE_LIMIT } from "../src/messages.ts";
@@ -3055,5 +3058,114 @@ describe("SlackAgent transport", () => {
         onToolUse: expect.any(Function),
       },
     );
+  });
+});
+
+describe("SlackAgent abuse gate", () => {
+  const standard: TurnBudget = {
+    maxToolCalls: 5,
+    maxResearchCalls: 1,
+    maxOutputCharacters: 100,
+    wallTimeMs: 1_000,
+  };
+  const elevated: TurnBudget = { ...standard, maxToolCalls: 50 };
+
+  function gatedAgent(run: ReturnType<typeof mock>) {
+    const abuse = new AbuseGate({
+      operatorUserIds: new Set(["U_OPERATOR"]),
+      budgets: { standard, elevated },
+      log: () => {},
+    });
+    const admit = mock(() => ({ release: () => {} }));
+    const cancelActive = mock(() => true);
+    new SlackAgent({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUserIds: new Set(["U_ALLOWED", "UBLOCKED", "U_OPERATOR"]),
+      operatorUserIds: new Set(["U_OPERATOR"]),
+      agent: { ...backend(run), admit, cancelActive },
+      abuse,
+      operatorLog: () => {},
+    });
+    const slack = client();
+    let sequence = 0;
+    const send = (user: string, text: string, files: object[] = []) => {
+      sequence++;
+      return app.handlers.get("message")!({
+        body: { event_id: `E_ABUSE_${sequence}` },
+        event: {
+          ...(files.length > 0 ? { subtype: "file_share", files } : {}),
+          channel_type: "im",
+          user,
+          text,
+          channel: `D_${user}`,
+          ts: `${sequence}.0`,
+        },
+        client: slack,
+      });
+    };
+    return { abuse, admit, cancelActive, slack, send };
+  }
+
+  test("rejects abusive requests before files, admission, or sessions with bounded Slack traffic", async () => {
+    const run = mock(async (_request: { budget?: TurnBudget }) => "response");
+    const { abuse, admit, cancelActive, slack, send } = gatedAgent(run);
+    abuse.block("UBLOCKED");
+
+    await send("UBLOCKED", "please review this file", [{ id: "F1" }]);
+    await send("UBLOCKED", "please review this file again", [{ id: "F2" }]);
+    await send("UBLOCKED", "!status");
+    expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
+    expect(slack.chat.postMessage.mock.calls[0]![0].text).toContain("You're blocked");
+    expect(slack.reactions.add).not.toHaveBeenCalled();
+    await send("UBLOCKED", "!cancel");
+    expect(cancelActive).toHaveBeenCalledTimes(1);
+
+    const prompt = "Summarize the failing CI job for me";
+    await send("U_ALLOWED", prompt);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0]![0].budget).toEqual(standard);
+    slack.chat.postMessage.mockClear();
+    await send("U_ALLOWED", `${prompt}!`);
+    await send("U_ALLOWED", prompt.toLowerCase());
+    await send("U_ALLOWED", "Do exhaustive research on every CI provider and compare them", [
+      { id: "F3" },
+    ]);
+    expect(slack.chat.postMessage.mock.calls.map(([message]) => message.text)).toEqual([
+      expect.stringContaining("already sent this request"),
+      expect.stringContaining("temporarily paused"),
+    ]);
+    expect(slack.reactions.add).toHaveBeenCalledTimes(1);
+    expect(slack.reactions.add.mock.calls[0]![0]).toMatchObject({ name: "x" });
+
+    expect(slack.files.info).not.toHaveBeenCalled();
+    expect(admit).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(abuse.snapshot().events.map(({ user, reason, count }) => [user, reason, count])).toEqual(
+      [
+        ["UBLOCKED", "blocked", 3],
+        ["U_ALLOWED", "duplicate", 2],
+        ["U_ALLOWED", "high_budget", 1],
+        ["U_ALLOWED", "cooldown", 1],
+      ],
+    );
+  });
+
+  test("gives operators elevated budgets and records budget aborts as strikes", async () => {
+    const run = mock(async (request: { requesterId: string; budget?: TurnBudget }) => {
+      if (request.requesterId === "U_ALLOWED") throw new AgentBudgetExceededError("tool_budget");
+      return "response";
+    });
+    const { abuse, slack, send } = gatedAgent(run);
+
+    await send("U_OPERATOR", "Do exhaustive research on every CI provider");
+    expect(run.mock.calls[0]![0].budget).toEqual(elevated);
+
+    await send("U_ALLOWED", "Investigate why the deploy pipeline is slow");
+    expect(slack.chat.postMessage.mock.calls.at(-1)![0].text).toContain("per-turn tool");
+    expect(abuse.snapshot().events).toMatchObject([{ user: "U_ALLOWED", reason: "tool_budget" }]);
+    // A budget abort is not forgotten, so resending the same request is a duplicate.
+    await send("U_ALLOWED", "Investigate why the deploy pipeline is slow");
+    expect(run).toHaveBeenCalledTimes(2);
   });
 });

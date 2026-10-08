@@ -9,6 +9,7 @@ import {
   type SessionInfo,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { AgentBudgetExceededError, QueuedAgentBackend, type ToolUseKind } from "../src/agent.ts";
 import {
   AgentResponseError,
   createPiResources,
@@ -41,17 +42,22 @@ interface FakeSessionControls {
   names: string[];
   model?: AgentSession["model"];
   stats?: Partial<ReturnType<AgentSession["getSessionStats"]>>;
-  onPrompt?: () => Promise<void>;
+  onPrompt?: (emit: (event: AgentSessionEvent) => void) => Promise<void>;
   onAbort?: () => Promise<void>;
 }
 
 function fakeSession(manager: SessionManager, controls: FakeSessionControls): AgentSession {
   const id = manager.getSessionId();
+  const listeners = new Set<(event: AgentSessionEvent) => void>();
   return {
     sessionId: id,
     sessionFile: manager.getSessionFile(),
-    subscribe: () => () => {},
-    prompt: async () => controls.onPrompt?.(),
+    subscribe: (listener: (event: AgentSessionEvent) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    prompt: async () =>
+      controls.onPrompt?.((event) => listeners.forEach((listener) => listener(event))),
     abort: async () => controls.onAbort?.(),
     dispose: () => controls.disposed.push(id),
     setSessionName: (name: string) => controls.names.push(name),
@@ -607,5 +613,73 @@ describe("Pi session management", () => {
     controller.abort(cancellation);
     await expect(running).rejects.toBe(cancellation);
     backend.dispose();
+  });
+
+  test("reports tool kinds and output, and a queue budget aborts the session", async () => {
+    let finish!: () => void;
+    const controls: FakeSessionControls = {
+      disposed: [],
+      names: [],
+      onPrompt: (emit) => {
+        const pending = new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        emit(event({ type: "tool_execution_start", toolName: "read" }));
+        emit(event({ type: "message_start", message: { role: "assistant" } }));
+        emit(
+          event({
+            type: "message_update",
+            assistantMessageEvent: { type: "text_delta", delta: "abcde" },
+          }),
+        );
+        emit(event({ type: "tool_execution_start", toolName: "github_pr" }));
+        emit(event({ type: "tool_execution_start", toolName: "mcp_linear_get_issue" }));
+        return pending;
+      },
+      onAbort: async () => finish(),
+    };
+    const backend = new PiBackend(process.cwd(), {
+      sessionDir: "/tmp",
+      conversationStorePath: testConversationStorePath(),
+      sessionLister: async () => [],
+      freshSessionManagerFactory: () => SessionManager.inMemory(process.cwd()),
+      sessionFactory: async (manager) => fakeSession(manager, controls),
+    });
+    const kinds: Array<ToolUseKind | undefined> = [];
+    let output = 0;
+    const queued = new QueuedAgentBackend(backend, {
+      timeoutMs: 10_000,
+      queueWaitMs: 10_000,
+      maxQueuedPerConversation: 1,
+      maxConcurrentConversations: 1,
+      maxGlobalQueue: 1,
+      maxPendingPerRequester: 1,
+      rateLimitBurst: 5,
+      rateLimitRefillMs: 60_000,
+    });
+    const error = await queued
+      .run(
+        {
+          conversationId: "thread",
+          requesterId: "user",
+          prompt: "research",
+          budget: {
+            maxToolCalls: 10,
+            maxResearchCalls: 1,
+            maxOutputCharacters: 1_000,
+            wallTimeMs: 10_000,
+          },
+        },
+        { onToolUse: (kind) => kinds.push(kind), onOutput: (characters) => (output += characters) },
+      )
+      .catch((caught: unknown) => caught);
+    expect((error as AgentBudgetExceededError).reason).toBe("research_budget");
+    expect(kinds).toEqual(["local", "research", "research"]);
+    expect(output).toBe(5);
+    for (let attempt = 0; attempt < 50 && queued.snapshot().active > 0; attempt++)
+      await Bun.sleep(5);
+    expect(queued.snapshot().active).toBe(0);
+    queued.admit("user").release();
+    queued.dispose();
   });
 });

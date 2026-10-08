@@ -130,6 +130,8 @@ Acknowledgements, side chatter, and messages addressed to others are ignored.
 
 **Access.** Only `SLACK_ALLOWED_USER_IDS` can invoke the bot. A denied user gets one explanation, then a `:no_entry:` reaction for ten minutes.
 
+**Abuse protection.** Before any file download, queue slot, or session is used, the bot rejects repeated near-identical requests, obvious spam (noise, link or mention floods, repeated text, mass messaging), and unauthorized high-budget work. A rejection is explained once per conversation for ten minutes, then gets an `:x:` reaction. Repeated rejections start a temporary cooldown; cooled-down and blocked users get one notice, then silence. `!cancel` always works. See [Abuse controls and budgets](#abuse-controls-and-budgets).
+
 **Replies.** In channels, one message of up to 1,000 characters, aiming for 50–100 words. Longer answers become a summary plus `full-response.md` attached (needs `files:write`; `task doctor` warns if it is missing). Long local operator replies posted to a channel are attached the same way. DMs split into up to three messages.
 
 **Catch-up.** After downtime the bot answers missed DMs, mentions, and thread requests from the last 24 hours (up to 10 messages from 25 conversations), skipping anything already answered. The first launch answers nothing old.
@@ -205,6 +207,11 @@ slack-desk dm audit                       # last 100 bot DMs
 slack-desk dm audit --to U0123
 slack-desk dm audit --since 2026-03-01 --json
 slack-desk channel leave C0123            # or G… for private
+slack-desk abuse list                     # blocks, grants, recent abuse events
+slack-desk abuse block U0123 --for 1d     # permanent without --for
+slack-desk abuse unblock U0123            # also clears a cooldown
+slack-desk abuse grant U0123 --for 2h     # elevated budgets; default 1h, max 24h
+slack-desk abuse revoke U0123
 ```
 
 Inside `attach`, type prompts or `/status`, `/cancel`, `/quit`. Slack and terminal prompts share one queue, and terminal turns post back to the Slack thread with attribution. Detaching leaves the session running.
@@ -309,12 +316,27 @@ Only listed tools are registered, and calls are checked again at runtime. URLs m
 | Active/queued per user     | 3                    |
 | Rate limit                 | 3 burst, 1/min       |
 | Agent timeout / queue wait | 5 min / 10 min       |
+| Standard turn wall time    | 3 min                |
 | Files per message          | 4                    |
 | Text / image / total size  | 1 / 5 / 10 MiB       |
 | Text types                 | txt, md, JSON, XML   |
 | Image types                | PNG, JPEG, GIF, WebP |
 
 Attachments are kept in memory and never written to disk.
+
+## Abuse controls and budgets
+
+Every admitted turn has a budget for tool calls, research calls (web, MCP, and GitHub tools), wall time, and generated output. The queue counts what the backend reports and aborts the turn at the first exceeded limit, for every backend; it does not rely on prompt instructions. A budget abort tells the user, frees the queue slot, and counts toward a cooldown.
+
+| Requester                                 | Budget   | High-budget requests |
+| ----------------------------------------- | -------- | -------------------- |
+| Allowed user                              | Standard | Rejected             |
+| User with an `abuse grant` (max 24 hours) | Elevated | Allowed              |
+| `SLACK_OPERATOR_USER_IDS`                 | Elevated | Allowed              |
+
+Standard budgets fit normal engineering questions, and elevated ones are bounded too; wall time never exceeds `SLACK_AGENT_TIMEOUT_MS`. High-budget means explicitly asking for open-ended or exhaustive research, or large source, search, or tool-call counts. Detailed or in-depth engineering questions aren't high-budget. Whether work is worth a larger budget is decided by operator authorization, not by a model judging how serious the request seems. The exact thresholds and matching rules are deliberately left out of this document.
+
+Operators are exempt from content rules and can't be blocked. Blocks and grants are stored in `abuse-state.json` beside the control socket, and a corrupt file stops startup rather than silently unblocking anyone. Abuse events are reason-coded (`duplicate`, `spam`, `high_budget`, `cooldown`, `blocked`, `tool_budget`, `research_budget`, `output_budget`) with user and conversation IDs only. They're logged once per dedupe window and kept in memory for `slack-desk abuse list`. Prompts and file contents are never recorded.
 
 ## Health
 

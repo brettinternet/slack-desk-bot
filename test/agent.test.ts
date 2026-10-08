@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  AgentBudgetExceededError,
   AgentCancelledError,
   AgentTimeoutError,
   type AgentBackend,
@@ -10,6 +11,8 @@ import {
   QueueWaitTimeoutError,
   RateLimitError,
   RequesterLimitError,
+  type ToolUseKind,
+  type TurnBudget,
 } from "../src/agent.ts";
 
 function deferred<T = string>() {
@@ -474,5 +477,62 @@ describe("QueuedAgentBackend", () => {
     await expect(running).rejects.toBeInstanceOf(AgentCancelledError);
     expect(await reset).toBe("reset");
     expect(calls).toEqual(["run", "reset"]);
+  });
+
+  test("stops a turn at each per-turn budget and releases queue and requester accounting", async () => {
+    const budget: TurnBudget = {
+      maxToolCalls: 3,
+      maxResearchCalls: 1,
+      maxOutputCharacters: 10,
+      wallTimeMs: 10_000,
+    };
+    const activity = new Map<string, Array<ToolUseKind | number>>([
+      ["tools", ["local", "local", "local", "local"]],
+      ["research", ["research", "local", "research"]],
+      ["output", [6, 6]],
+    ]);
+    let settled = 0;
+    const backend: AgentBackend = {
+      run: ({ prompt, signal }, observer) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => {
+              settled++;
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+          for (const item of activity.get(prompt)!) {
+            if (typeof item === "number") observer?.onOutput?.(item);
+            else observer?.onToolUse(item);
+          }
+        }),
+      dispose: () => {},
+    };
+    const queued = new QueuedAgentBackend(backend, limits({ maxPendingPerRequester: 1 }));
+
+    for (const [prompt, reason] of [
+      ["tools", "tool_budget"],
+      ["research", "research_budget"],
+      ["output", "output_budget"],
+    ] as const) {
+      const admission = queued.admit("user");
+      const error = await queued
+        .run({ ...request("thread", prompt), budget }, undefined, admission)
+        .catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(AgentBudgetExceededError);
+      expect((error as AgentBudgetExceededError).reason).toBe(reason);
+      await Bun.sleep(0);
+      expect(queued.snapshot()).toMatchObject({ active: 0, queued: 0 });
+    }
+    expect(settled).toBe(3);
+
+    const timed = queued.run({
+      ...request("thread", "output"),
+      budget: { ...budget, maxOutputCharacters: 100, wallTimeMs: 10 },
+    });
+    await expect(timed).rejects.toBeInstanceOf(AgentTimeoutError);
+    queued.dispose();
   });
 });

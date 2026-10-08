@@ -49,6 +49,17 @@ import { workspacePolicy } from "./workspace-policy.ts";
 
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
 const BROKERED_TOOLS = ["git_inspect", "repo_fun", "system_info"];
+/** Tools that stay inside the workspace or this Slack conversation; any other tool is research. */
+const LOCAL_TOOLS = new Set([
+  ...READ_ONLY_TOOLS,
+  "edit",
+  "write",
+  ...BROKERED_TOOLS,
+  THREAD_HISTORY_TOOL,
+  DIRECT_MESSAGE_TOOL,
+  SCHEDULE_TOOL,
+  AUTOMATION_TOOL,
+]);
 export const PI_RESOURCE_POLICY_DESCRIPTION =
   "User extensions, skills, and prompt templates are disabled; only mode-approved tools are allowed";
 
@@ -133,7 +144,7 @@ export function createResponseCollector(observer?: AgentRunObserver) {
   return {
     handle(event: AgentSessionEvent): void {
       if (event.type === "tool_execution_start") {
-        observer?.onToolUse();
+        observer?.onToolUse(LOCAL_TOOLS.has(event.toolName) ? "local" : "research");
       } else if (event.type === "message_start" && event.message.role === "assistant") {
         currentMessage = [];
       } else if (
@@ -141,6 +152,7 @@ export function createResponseCollector(observer?: AgentRunObserver) {
         event.assistantMessageEvent.type === "text_delta"
       ) {
         currentMessage?.push(event.assistantMessageEvent.delta);
+        observer?.onOutput?.(event.assistantMessageEvent.delta.length);
       } else if (event.type === "message_end" && event.message.role === "assistant") {
         failed = event.message.stopReason === "error";
         if (!failed && currentMessage?.length) output.push(currentMessage.join(""));

@@ -1,7 +1,7 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { QueueLimits } from "./agent.ts";
+import type { QueueLimits, TurnBudget } from "./agent.ts";
 import { loadMcpConfig, type McpConfig } from "./mcp-context.ts";
 
 export type AgentMode = "read-only" | "read-write";
@@ -25,6 +25,8 @@ export interface Config {
   mcp?: { path: string; config: McpConfig };
   github?: { repos: string[] };
   queueLimits: QueueLimits;
+  /** Ordinary users get `standard`; operators and operator-authorized users get `elevated`. */
+  turnBudgets: { standard: TurnBudget; elevated: TurnBudget };
   configuredMaxConcurrentConversations: number;
   sessionDir?: string;
   maxActiveSessions: number;
@@ -45,6 +47,7 @@ const DEFAULTS = {
   rateLimitRefillMs: 60_000,
   maxActiveSessions: 32,
   sessionIdleMs: 3_600_000,
+  standardWallTimeMs: 180_000,
   healthHost: "127.0.0.1",
   healthPort: 3_210,
 } as const;
@@ -215,6 +218,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
   if (github && agentBackend !== "pi")
     throw new Error("GitHub integration currently requires SLACK_AGENT_BACKEND=pi");
 
+  const timeoutMs = positiveInteger(environment, "SLACK_AGENT_TIMEOUT_MS", DEFAULTS.timeoutMs);
   const configuredMaxConcurrentConversations = positiveInteger(
     environment,
     "SLACK_AGENT_MAX_CONCURRENT_CONVERSATIONS",
@@ -238,7 +242,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
     mcp,
     github,
     queueLimits: {
-      timeoutMs: positiveInteger(environment, "SLACK_AGENT_TIMEOUT_MS", DEFAULTS.timeoutMs),
+      timeoutMs,
       queueWaitMs: positiveInteger(environment, "SLACK_AGENT_QUEUE_WAIT_MS", DEFAULTS.queueWaitMs),
       maxQueuedPerConversation: positiveInteger(
         environment,
@@ -267,6 +271,21 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
         "SLACK_AGENT_RATE_LIMIT_REFILL_MS",
         DEFAULTS.rateLimitRefillMs,
       ),
+    },
+    // Thresholds are intentionally not environment-configurable or documented in detail.
+    turnBudgets: {
+      standard: {
+        maxToolCalls: 60,
+        maxResearchCalls: 10,
+        maxOutputCharacters: 30_000,
+        wallTimeMs: Math.min(timeoutMs, DEFAULTS.standardWallTimeMs),
+      },
+      elevated: {
+        maxToolCalls: 200,
+        maxResearchCalls: 60,
+        maxOutputCharacters: 120_000,
+        wallTimeMs: timeoutMs,
+      },
     },
     configuredMaxConcurrentConversations,
     sessionDir: configuredSessionDir ? resolve(configuredSessionDir) : undefined,

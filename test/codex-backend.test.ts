@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
+import { AgentBudgetExceededError, QueuedAgentBackend, type ToolUseKind } from "../src/agent.ts";
 import {
   CodexBackend,
   CodexCapabilityError,
@@ -18,6 +19,8 @@ interface FakeRun {
   code?: number;
   stderr?: string;
   wait?: boolean;
+  /** Writes events but keeps the process running until it is killed. */
+  hold?: boolean;
   exitBeforeEvents?: boolean;
   /** Destroys stdin before the prompt is written, reproducing an EPIPE. */
   stdinEpipe?: boolean;
@@ -65,6 +68,7 @@ function fakeSpawner(runs: FakeRun[], calls: string[][], inputs?: string[]) {
       queueMicrotask(() => {
         if (run.exitBeforeEvents) child.emit("exit", run.code ?? 0, null);
         for (const event of run.events) child.stdout.write(`${event}\n`);
+        if (run.hold) return;
         if (run.stderr) child.stderr.write(run.stderr);
         child.stdout.end();
         child.stderr.end();
@@ -372,6 +376,71 @@ describe("Codex output", () => {
         backend.dispose();
         rmSync(home, { recursive: true, force: true });
       }
+    }
+  });
+
+  test("reports tool kinds and output, and a queue budget stops the running process", async () => {
+    const started = (type: string) => JSON.stringify({ type: "item.started", item: { type } });
+    const { backend, home } = temporaryBackend(
+      [
+        {
+          events: [
+            JSON.stringify({ type: "thread.started", thread_id: "thread-budget" }),
+            started("command_execution"),
+            JSON.stringify({
+              type: "item.completed",
+              item: { type: "agent_message", text: "abc" },
+            }),
+            started("web_search"),
+            started("mcp_tool_call"),
+          ],
+          hold: true,
+        },
+      ],
+      [],
+    );
+    const kinds: Array<ToolUseKind | undefined> = [];
+    let output = 0;
+    const queued = new QueuedAgentBackend(backend, {
+      timeoutMs: 10_000,
+      queueWaitMs: 10_000,
+      maxQueuedPerConversation: 1,
+      maxConcurrentConversations: 1,
+      maxGlobalQueue: 1,
+      maxPendingPerRequester: 1,
+      rateLimitBurst: 5,
+      rateLimitRefillMs: 60_000,
+    });
+    try {
+      const error = await queued
+        .run(
+          {
+            conversationId: "C5:5",
+            requesterId: "U5",
+            prompt: "research",
+            budget: {
+              maxToolCalls: 10,
+              maxResearchCalls: 1,
+              maxOutputCharacters: 1_000,
+              wallTimeMs: 10_000,
+            },
+          },
+          {
+            onToolUse: (kind) => kinds.push(kind),
+            onOutput: (characters) => (output += characters),
+          },
+        )
+        .catch((caught: unknown) => caught);
+      expect((error as AgentBudgetExceededError).reason).toBe("research_budget");
+      expect(kinds).toEqual(["local", "research", "research"]);
+      expect(output).toBe(3);
+      for (let attempt = 0; attempt < 50 && queued.snapshot().active > 0; attempt++)
+        await Bun.sleep(5);
+      expect(queued.snapshot().active).toBe(0);
+      queued.admit("U5").release();
+    } finally {
+      queued.dispose();
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });

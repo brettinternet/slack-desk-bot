@@ -56,6 +56,8 @@ export interface AgentRequest {
   attachments?: readonly AgentAttachment[];
   context?: AgentConversationContext;
   signal?: AbortSignal;
+  /** Per-turn limits enforced by the queue independently of backend cooperation. */
+  budget?: TurnBudget;
   /**
    * Revises a response before delivery. The queue runs bounded follow-ups in the same job, so they
    * share its admission, deadline, and cancellation.
@@ -75,11 +77,25 @@ const MAX_RESPONSE_REVISIONS = 2;
 export type AgentCommand = "reset" | "status" | "cancel";
 export type SessionCommand = Exclude<AgentCommand, "cancel">;
 
+/** `research` marks external lookups such as web, MCP, or GitHub tools. */
+export type ToolUseKind = "local" | "research";
+
 export interface AgentRunObserver {
   onQueued?(): void;
   onStarted?(): void;
-  onToolUse(): void;
+  onToolUse(kind?: ToolUseKind): void;
+  /** Reports newly generated response text so output budgets can stop a runaway turn. */
+  onOutput?(characters: number): void;
 }
+
+export interface TurnBudget {
+  maxToolCalls: number;
+  maxResearchCalls: number;
+  maxOutputCharacters: number;
+  wallTimeMs: number;
+}
+
+export type TurnBudgetReason = "tool_budget" | "research_budget" | "output_budget";
 
 export type ConversationStateName = "queued" | "running" | "idle" | "inactive";
 
@@ -207,6 +223,13 @@ export class AgentCancelledError extends Error {
   }
 }
 
+export class AgentBudgetExceededError extends Error {
+  constructor(readonly reason: TurnBudgetReason) {
+    super("The agent request exceeded its per-turn budget");
+    this.name = "AgentBudgetExceededError";
+  }
+}
+
 export class QueueWaitTimeoutError extends Error {
   constructor() {
     super("The agent request waited too long in the queue");
@@ -215,7 +238,7 @@ export class QueueWaitTimeoutError extends Error {
 
 interface Job {
   request: AgentRequest;
-  operation: (signal: AbortSignal) => Promise<string>;
+  operation: (signal: AbortSignal, observer?: AgentRunObserver) => Promise<string>;
   controller: AbortController;
   resolve: (value: string) => void;
   reject: (reason: unknown) => void;
@@ -298,7 +321,7 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
   ): Promise<string> {
     return this.enqueue(
       request,
-      (signal) => this.runWithRevisions(request, signal, observer),
+      (signal, budgeted) => this.runWithRevisions(request, signal, budgeted),
       observer,
       admission,
     );
@@ -422,7 +445,7 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
 
   private enqueue(
     request: AgentRequest,
-    operation: (signal: AbortSignal) => Promise<string>,
+    operation: (signal: AbortSignal, observer?: AgentRunObserver) => Promise<string>,
     observer?: AgentRunObserver,
     admission?: AgentAdmission,
   ): Promise<string> {
@@ -539,14 +562,25 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
     try {
       job.observer?.onStarted?.();
     } catch {}
-    const runtimeTimer = setTimeout(() => {
-      const error = new AgentTimeoutError();
+    const stop = (error: Error) => {
+      if (job.controller.signal.aborted) return;
       job.controller.abort(error);
       this.completeJob(job, undefined, error);
-    }, this.limits.timeoutMs);
+    };
+    const budget = job.request.budget;
+    const runtimeTimer = setTimeout(
+      () => stop(new AgentTimeoutError()),
+      Math.min(this.limits.timeoutMs, budget?.wallTimeMs ?? Infinity),
+    );
 
     try {
-      const value = await job.operation(job.controller.signal);
+      const value = await job.operation(
+        job.controller.signal,
+        // Stops outside the backend's event callback so abort is never re-entrant.
+        budget
+          ? budgetedObserver(budget, (error) => queueMicrotask(() => stop(error)), job.observer)
+          : job.observer,
+      );
       if (job.controller.signal.aborted) {
         this.completeJob(job, undefined, job.controller.signal.reason);
       } else {
@@ -598,4 +632,33 @@ export class QueuedAgentBackend implements CancellableAgentBackend {
     if (remaining <= 0) this.pendingByRequester.delete(requesterId);
     else this.pendingByRequester.set(requesterId, remaining);
   }
+}
+
+/**
+ * Counts tool use and output across a whole job, including revision turns, and stops the job at
+ * the first exceeded limit. Backends only report activity; enforcement does not need their help.
+ */
+function budgetedObserver(
+  budget: TurnBudget,
+  stop: (error: Error) => void,
+  downstream?: AgentRunObserver,
+): AgentRunObserver {
+  let tools = 0;
+  let research = 0;
+  let output = 0;
+  return {
+    onQueued: () => downstream?.onQueued?.(),
+    onStarted: () => downstream?.onStarted?.(),
+    onToolUse: (kind = "local") => {
+      downstream?.onToolUse(kind);
+      if (++tools > budget.maxToolCalls) stop(new AgentBudgetExceededError("tool_budget"));
+      else if (kind === "research" && ++research > budget.maxResearchCalls)
+        stop(new AgentBudgetExceededError("research_budget"));
+    },
+    onOutput: (characters) => {
+      downstream?.onOutput?.(characters);
+      output += characters;
+      if (output > budget.maxOutputCharacters) stop(new AgentBudgetExceededError("output_budget"));
+    },
+  };
 }

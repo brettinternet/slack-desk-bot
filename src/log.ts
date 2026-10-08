@@ -59,6 +59,14 @@ export interface DirectMessageLog {
   messages: number;
 }
 
+/** Reason-coded abuse metadata; never includes prompts or file contents. */
+export interface AbuseLog {
+  event: "abuse_rejected";
+  reason: string;
+  user: string;
+  conversation: string;
+}
+
 export type StructuredLog =
   | RequestLog
   | StartupLog
@@ -66,7 +74,8 @@ export type StructuredLog =
   | CapacityDropLog
   | OperatorErrorLog
   | ShutdownLog
-  | DirectMessageLog;
+  | DirectMessageLog
+  | AbuseLog;
 
 export type RequestLogWriter = (fields: RequestLog) => void;
 export type LogWriter = (fields: StructuredLog) => void;

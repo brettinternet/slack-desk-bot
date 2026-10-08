@@ -8,6 +8,7 @@ import {
   formatSessions,
   parseArguments,
   parseDmAuditArguments,
+  parseAbuseArguments,
   parseScheduleArguments,
 } from "../src/local-cli.ts";
 import { isLocalServerMessage, LOCAL_PROTOCOL_VERSION } from "../src/local-protocol.ts";
@@ -59,6 +60,31 @@ describe("slack-desk argument parsing", () => {
       ["channel", "leave", "C0123", "--history", "1"],
     ])
       expect(() => parseArguments(args)).toThrow("Usage");
+  });
+
+  test("parses abuse control durations and defaults grants to one hour", () => {
+    expect(parseAbuseArguments(["abuse", "block", "U0BOB"])).toEqual({
+      type: "abuse-block",
+      userId: "U0BOB",
+      socketPath: undefined,
+    });
+    expect(
+      parseAbuseArguments(["--socket=/tmp/a.sock", "abuse", "block", "U0BOB", "--for", "2h"]),
+    ).toMatchObject({ socketPath: "/tmp/a.sock", durationMs: 7_200_000 });
+    expect(parseAbuseArguments(["abuse", "grant", "U0BOB"])).toMatchObject({
+      type: "abuse-grant",
+      durationMs: 3_600_000,
+    });
+    expect(() => parseAbuseArguments(["abuse", "grant", "U0BOB", "--for", "1w"])).toThrow(
+      "--for requires a duration",
+    );
+    for (const args of [
+      ["abuse", "list", "extra"],
+      ["abuse", "unblock"],
+      ["abuse", "revoke", "U0BOB", "--for", "1h"],
+      ["abuse", "ban", "U0BOB"],
+    ])
+      expect(() => parseAbuseArguments(args)).toThrow("Usage");
   });
 });
 
