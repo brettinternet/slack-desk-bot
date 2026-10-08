@@ -53,7 +53,12 @@ hum down
 **Pi (default):** `SLACK_AGENT_BACKEND=pi`
 
 - Uses this service's `.pi/settings.json` for its default provider and model, without changing the global Pi default. If the file is absent, it uses the Pi agent directory's default model. `models.json` and `auth.json` still come from the Pi agent directory reported by `task doctor`.
-- Does not load that directory's extensions, skills, or prompt templates. It also ignores all other fields in the service's `.pi/settings.json`.
+- Does not load that directory's extensions, skills, or prompt templates. It also ignores all other fields in the service's `.pi/settings.json`, which is gitignored so each operator can set it:
+
+    ```json
+    { "defaultProvider": "openrouter", "defaultModel": "anthropic/claude-opus-4.5" }
+    ```
+
 - Can read the current Slack thread on demand when asked to catch up, summarize, or use earlier thread context. History is not loaded unless the model calls the conversation-scoped tool.
 - Can send a private Slack DM when the requester asks it to tell or notify someone, or when information belongs in a private message. Each DM starts with `Message from @requester:`, may mention only the recipient and requester, and is limited to five per request.
 - Tools restricted to the `SLACK_AGENT_MODE` and `SLACK_AGENT_COMMAND_MODE` allowlist, enforced again at call time.
