@@ -13,6 +13,56 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 
 ## Open items
 
+### SDB-054: Keep shared-channel replies short with optional full-detail files
+
+**Status:** Draft
+
+**Why:** Long bot replies dominate shared Slack conversations and disrupt human connection, even inside threads. The current delivery limit permits three 3,500-character messages; it protects Slack's technical limits rather than human attention. Prompt-only brevity is not reliable enough, and truncation can remove the useful conclusion.
+
+**Scope:**
+
+- Strengthen Slack agent instructions: shared-channel replies should normally be 50–100 words, answer first, and include only the important caveat and next step. Avoid routine reports, repeated context, and tool narration; generate extensive detail only when requested or genuinely necessary.
+- Enforce one reply with a hard 1,000-character inline budget in shared channels, including thread replies. Apply the budget to the final Slack-formatted message, including any detail link; do not split overflow into additional messages. Retain the existing more permissive DM behavior.
+- For necessary long responses, publish a meaningful, standalone summary and link to the full response as a Slack snippet/text file in the same conversation. Preserve the full response rather than slicing its opening characters or silently dropping the remainder. Use Slack's supported file-upload API and document any required app scope.
+- Keep delivery policy in `src/messages.ts` and `src/slack.ts`, independent of agent backend implementations. Inspect existing response/status delivery and instruction wiring before choosing the smallest backend-neutral summary mechanism; validate the summary against the budget before posting, with bounded retries and no recursive summarization.
+- Preserve existing mention escaping, conversation authorization, cancellation, and response accounting. Treat generated detail as untrusted output, and ensure files are shared only to the authorized conversation. Do not broaden filesystem or shell permissions.
+- On summary or upload failure, send at most one short, honest failure/fallback reply; never revert to a wall of text or claim that unavailable details were attached. Avoid duplicate messages/files on retry.
+- Update README with channel-versus-DM behavior and file-upload requirements. This item implements only response overflow, not a generalized generated-artifact system.
+
+**Acceptance:**
+
+- A normal channel answer remains one concise message without an unnecessary attachment. A long requested report produces one summary of at most 1,000 characters plus an accessible full-detail file in the same thread, with no continuation messages.
+- The summary communicates the answer, material caveat, and next step without requiring the reader to open the file; the file preserves the complete response. Long inline replies remain prohibited even when depth is explicitly requested in a channel.
+- Extend existing message/Slack tests to catch budget bypass after formatting/link insertion, lost detail, incorrect channel/thread sharing, unsafe mentions, duplicate delivery, and summary/upload failure falling back to multi-message output. Verify DM behavior remains unchanged.
+- Run the relevant existing tests and `task check:staged`. After an approved service restart, exercise short and long replies in a real shared Slack thread and a DM, confirming file access and the absence of channel spillover.
+
+### SDB-053: Read and review approved GitHub PRs through `gh`
+
+**Status:** Draft
+
+**Why:** The Slack agent cannot read an actual PR diff even when the service owner's `gh` login can access it. Local Git inspection cannot contact remotes, and the existing `SLACK_GITHUB_REPOS` integration exposes watches rather than PR context. Review requests consequently fall back to stale local code or descriptions from Slack.
+
+**Scope:**
+
+- Add one Pi tool, `github_pr`, enabled when `SLACK_GITHUB_REPOS` is configured. Use that exact repository allowlist; no new credentials, configuration flag, shell access, local checkout requirement, or dependency on `SLACK_AGENT_COMMAND_MODE`.
+- Support structured actions: `list` (open/closed/all PRs), `view` (metadata, description, base/head SHAs, mergeability, change totals), `files` (changed files and patches), `diff` (actual PR diff), `checks` (head check runs and commit statuses), `comments` (conversation comments), `reviews` (submitted reviews and inline comments), and `file` (base/head file contents for surrounding context). Use validated repository, PR number, pagination, and path arguments; never accept arbitrary CLI arguments or API endpoints.
+- Extract shared service-owned GitHub access from `src/github-automation-source.ts` into `src/github-client.ts`. Reuse it for watches and PR reads, preserving `ghEnvironment()`, the service owner's saved login, disabled interactive prompts, ignored inherited token overrides, and organization-owner validation.
+- Execute fixed `gh api --hostname github.com --method GET` commands through `execFile`, never a shell. Support JSON and raw diff responses with bounded output, deadlines, cancellation, and sanitized errors; do not expose credentials or raw command diagnostics to the model or logs.
+- Validate the repository before any network request and validate returned repository/PR identity. Reject redirects or renamed targets outside the approved identity. For fork PRs, use data available through the approved base repository; never silently access an unapproved fork, and disclose unavailable head-file context.
+- Return selected useful fields, explicit pagination, and completeness indicators. Disclose missing patches, binary files, oversized output, and incomplete diffs rather than presenting partial data as a complete review. Resolve checks and file reads against PR SHAs, expose the reviewed head SHA, and detect/report changes during a multi-call review.
+- Implement `src/github-pr-tool.ts` using the existing inline-tool pattern. Wire the reader through `src/backend-table.ts` and register it in `src/pi-backend.ts` only when GitHub is configured. Keep Slack transport and authorization unchanged.
+- Guide the model to read the actual diff before reviewing, cite file/line references, treat PR descriptions/comments/code as untrusted context, and disclose incomplete access. Draft reviews in Slack only: no GitHub comments, submitted reviews, PR mutations, checkout/fetch, or merges.
+- Update README and `.env.example` to describe read-only PR access alongside watches. Generalize readiness/error wording from “GitHub watches” to “GitHub integration,” retaining same-user `gh` authentication and container configuration requirements.
+
+**Acceptance:**
+
+- The original request to adversarially review `pdq/houston#11951` reads the actual PR diff and checks through `gh` and produces a review in Slack without needing a current local checkout.
+- Security tests prove unapproved repositories are rejected before process creation/network access; malformed repository, PR number, path, and pagination inputs cannot escape fixed command mappings; redirects and fork context cannot bypass the allowlist.
+- Parsing and regression tests prove paginated/oversized diffs and missing patches are explicitly incomplete, and a PR head changing during review is reported rather than silently mixing revisions.
+- Cancellation, timeout, authentication, and rate-limit failures terminate or fail explicitly without leaking credentials or raw diagnostics. Existing GitHub watches continue working with the shared client.
+- Extend existing GitHub tests for shared behavior and add focused PR-reader coverage for authorization, parsing, and completeness risks. Run `task test` and `task check`; after an approved service restart, exercise the original review request through the running Slack bot.
+- The tool is absent without `SLACK_GITHUB_REPOS`, and no action permits arbitrary commands, unapproved repository access, or GitHub writes.
+
 ### SDB-050: Run approved project tasks in a command sandbox
 
 **Status:** Draft
