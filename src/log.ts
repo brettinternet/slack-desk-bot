@@ -36,7 +36,7 @@ export interface CapacityDropLog {
 
 export interface OperatorErrorLog {
   event: "operator_error";
-  component: "slack" | "pi" | "codex" | "claude" | "schedules" | "automations";
+  component: "slack" | "pi" | "codex" | "claude" | "schedules" | "automations" | "github";
   message: string;
   error_type: string;
   request_id?: string;

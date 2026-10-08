@@ -1,13 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AutomationService } from "../src/automations.ts";
+import { githubSources } from "../src/github-automation-source.ts";
 import {
+  type GhExecutor,
   ghEnvironment,
-  githubSources,
+  githubCliClient,
   type GitHubLookup,
-} from "../src/github-automation-source.ts";
+} from "../src/github-client.ts";
 import { slackAutomationTool } from "../src/automation-tool.ts";
 
 const repo = { full_name: "work-org/project", owner: { type: "Organization" } };
@@ -57,6 +59,103 @@ function fixture() {
     issue: () => issue,
   };
 }
+
+describe("GitHub client", () => {
+  test("runs one fixed read-only gh api command and rejects option-like endpoints", async () => {
+    const calls: { args: readonly string[]; env: NodeJS.ProcessEnv; cwd: string }[] = [];
+    const execute: GhExecutor = async (_file, args, options) => {
+      calls.push({ args, env: options.env, cwd: options.cwd });
+      return { stdout: 'HTTP/2.0 200 OK\r\nLink: <x>; rel="next"\r\n\r\ndiff --git a/x b/x' };
+    };
+    const client = githubCliClient(execute);
+    const response = await client.get("repos/work-org/project/pulls/42", {
+      accept: "application/vnd.github.diff",
+    });
+    expect(response.body).toBe("diff --git a/x b/x");
+    expect(response.headers.get("link")).toContain('rel="next"');
+    expect(calls[0]!.args).toEqual([
+      "api",
+      "--hostname",
+      "github.com",
+      "--method",
+      "GET",
+      "--include",
+      "--header",
+      "Accept: application/vnd.github.diff",
+      "repos/work-org/project/pulls/42",
+    ]);
+    expect(calls[0]!.cwd).toBe("/");
+    expect(calls[0]!.env.GH_PROMPT_DISABLED).toBe("1");
+    for (const endpoint of [
+      "--method=POST",
+      "https://evil.example/x",
+      "repos/a/b -X POST",
+      "graphql\nquery",
+      "repos/{owner}/{repo}",
+    ])
+      await expect(client.get(endpoint)).rejects.toThrow("Invalid GitHub endpoint");
+    expect(calls).toHaveLength(1);
+  });
+
+  test("maps failures to fixed messages without leaking gh diagnostics", async () => {
+    const secret = "gho_secretTokenValue";
+    const failing =
+      (error: object): GhExecutor =>
+      async () => {
+        throw Object.assign(new Error(`gh: ${secret}`), error);
+      };
+    const logged: string[] = [];
+    const log = console.log;
+    console.log = (line: string) => logged.push(line);
+    try {
+      const cases: [object, RegExp][] = [
+        [
+          { code: 1, stdout: `HTTP/2.0 401 Unauthorized\r\n\r\n{"message":"${secret}"}` },
+          /re-authenticate/,
+        ],
+        [
+          {
+            code: 1,
+            stdout: `HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\n\r\n{"message":"${secret}"}`,
+          },
+          /rate limit/,
+        ],
+        [{ code: 1, stdout: "HTTP/2.0 429 Too Many Requests\r\n\r\n{}" }, /rate limit/],
+        [{ killed: true, signal: "SIGTERM" }, /timed out/],
+        [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }, /size limit/],
+        [{ code: 4, stdout: "" }, /verify the service owner's gh login/],
+      ];
+      for (const [error, message] of cases) {
+        const failure = githubCliClient(failing(error)).get("repos/work-org/project");
+        await expect(failure).rejects.toThrow(message);
+        await failure.catch((caught: Error) => expect(caught.message).not.toContain(secret));
+      }
+    } finally {
+      console.log = log;
+    }
+    expect(logged.length).toBeGreaterThan(0);
+    expect(logged.join("\n")).not.toContain(secret);
+  });
+
+  test("cancellation terminates the gh process", async () => {
+    const bin = mkdtempSync(join(tmpdir(), "github-client-gh-"));
+    writeFileSync(join(bin, "gh"), "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    try {
+      const controller = new AbortController();
+      const started = Date.now();
+      const request = githubCliClient().get("repos/work-org/project", {
+        signal: controller.signal,
+      });
+      setTimeout(() => controller.abort(), 50);
+      await expect(request).rejects.toThrow("cancelled");
+      expect(Date.now() - started).toBeLessThan(5_000);
+    } finally {
+      process.env.PATH = path;
+    }
+  });
+});
 
 describe("GitHub watches", () => {
   test("uses the saved gh login without inherited token overrides or prompts", () => {

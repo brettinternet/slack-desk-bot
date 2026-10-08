@@ -22,11 +22,8 @@ import { SlackAgent } from "./slack.ts";
 import { ScheduleService } from "./schedules.ts";
 import { AutomationService } from "./automations.ts";
 import { linearIssueSource } from "./linear-automation-source.ts";
-import {
-  checkGithubReadiness,
-  githubCliLookup,
-  githubSources,
-} from "./github-automation-source.ts";
+import { githubSources } from "./github-automation-source.ts";
+import { checkGithubReadiness, githubCliClient, githubJsonLookup } from "./github-client.ts";
 import { McpContextProvider } from "./mcp-context.ts";
 
 interface SlackLifecycle extends Partial<ConversationInspector> {
@@ -148,7 +145,9 @@ export async function startApplication(
             ...(linearConfigured
               ? { "linear-issue": linearIssueSource(new McpContextProvider(config.mcp!.config)) }
               : {}),
-            ...(config.github ? githubSources(githubCliLookup(), config.github.repos) : {}),
+            ...(config.github
+              ? githubSources(githubJsonLookup(githubCliClient()), config.github.repos)
+              : {}),
           },
           (recipientId, text, creatorId) => {
             if (!config.allowedUserIds.has(creatorId))

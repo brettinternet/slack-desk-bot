@@ -38,7 +38,9 @@ This backlog captures remaining safety, setup, developer-experience, and Slack u
 
 ### SDB-053: Read and review approved GitHub PRs through `gh`
 
-**Status:** Draft
+**Status:** Implemented; pending live Slack verification after an approved service restart.
+
+**Progress:** `github_pr` (`src/github-pr-tool.ts`) and the shared client (`src/github-client.ts`) are merged. `task check` and `task test` pass. A direct Pi session with an empty workspace reviewed `pdq/houston#11951` through `view`, pinned `diff`, `checks`, and `file` calls. Remaining: restart the service and repeat the request through the running Slack bot.
 
 **Why:** The Slack agent cannot read an actual PR diff even when the service owner's `gh` login can access it. Local Git inspection cannot contact remotes, and the existing `SLACK_GITHUB_REPOS` integration exposes watches rather than PR context. Review requests consequently fall back to stale local code or descriptions from Slack.
 

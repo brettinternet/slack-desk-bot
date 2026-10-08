@@ -5,6 +5,8 @@ import type { AgentBackendKind, Config } from "./config.ts";
 import { GitSlackIdentityResolver, loadSlackUsers } from "./git-slack-identities.ts";
 import { defaultSessionDirectory, PiBackend } from "./pi-backend.ts";
 import { McpContextProvider } from "./mcp-context.ts";
+import { githubCliClient } from "./github-client.ts";
+import { githubPrReader } from "./github-pr-tool.ts";
 
 export interface BackendReadinessChecks {
   pi(workspace: string): Promise<string>;
@@ -47,6 +49,10 @@ export const BACKENDS: Record<AgentBackendKind, BackendDefinition> = {
             : []),
           ...(config.github ? ["github-pr" as const, "github-issue" as const] : []),
         ],
+        github: config.github && {
+          reader: githubPrReader(githubCliClient(), config.github.repos),
+          repos: config.github.repos,
+        },
       }),
     checkReady: async (config, checks) => {
       const model = await checks.pi(config.workspace);

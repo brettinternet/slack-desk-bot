@@ -19,7 +19,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { WebClient } from "@slack/web-api";
 import { BACKENDS } from "./backend-table.ts";
-import { checkGithubReadiness } from "./github-automation-source.ts";
+import { checkGithubReadiness } from "./github-client.ts";
 import {
   codexProcessEnvironment,
   codexSandboxProfile,

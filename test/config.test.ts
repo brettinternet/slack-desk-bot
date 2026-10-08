@@ -12,7 +12,7 @@ const valid = {
 };
 
 describe("loadConfig", () => {
-  test("requires an explicit organization repository allowlist for GitHub watches", () => {
+  test("requires an explicit organization repository allowlist for GitHub integration", () => {
     const env = { ...valid, SLACK_GITHUB_REPOS: "work-org/repo,work-org/other" };
     expect(loadConfig(env).github).toEqual({ repos: ["work-org/repo", "work-org/other"] });
     expect(loadConfig(valid).github).toBeUndefined();
@@ -23,7 +23,7 @@ describe("loadConfig", () => {
       "explicit org/repo",
     );
     expect(() => loadConfig({ ...env, SLACK_AGENT_BACKEND: "claude" })).toThrow(
-      "require SLACK_AGENT_BACKEND=pi",
+      "GitHub integration currently requires SLACK_AGENT_BACKEND=pi",
     );
     expect(() => loadConfig({ ...env, GH_CONFIG_DIR: workspace })).toThrow(
       "GH_CONFIG_DIR must be outside SLACK_AGENT_CWD",

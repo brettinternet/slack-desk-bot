@@ -204,6 +204,20 @@ describe("Pi configuration", () => {
     ).toBe(true);
   });
 
+  test("loads the read-only GitHub PR tool only when GitHub is configured", async () => {
+    const loaded = async (options: Parameters<typeof createPiResources>[1]) => {
+      const { resourceLoader } = createPiResources(process.cwd(), options);
+      await resourceLoader.reload();
+      return resourceLoader
+        .getExtensions()
+        .extensions.some((extension) => extension.path === "<inline:github-pr-tool>");
+    };
+    expect(await loaded({})).toBe(false);
+    expect(
+      await loaded({ github: { reader: async () => ({}), repos: ["work-org/project"] } }),
+    ).toBe(true);
+  });
+
   test("appends Slack-specific instructions to the system prompt", async () => {
     const { resourceLoader } = createPiResources(process.cwd(), {
       instructions: "Keep Slack replies brief.",

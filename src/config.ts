@@ -213,7 +213,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
     throw new Error("MCP context tools currently require SLACK_AGENT_BACKEND=pi");
   }
   if (github && agentBackend !== "pi")
-    throw new Error("GitHub watches currently require SLACK_AGENT_BACKEND=pi");
+    throw new Error("GitHub integration currently requires SLACK_AGENT_BACKEND=pi");
 
   const configuredMaxConcurrentConversations = positiveInteger(
     environment,

@@ -37,6 +37,7 @@ import {
   type AutomationActions,
   type AutomationKind,
 } from "./automation-tool.ts";
+import { GITHUB_PR_TOOL, type GitHubPrReader, githubPrTool } from "./github-pr-tool.ts";
 import { type DiscoveredMcpTool, McpContextProvider, mcpContextTools } from "./mcp-context.ts";
 import { applyServicePiModel } from "./service-pi-settings.ts";
 import {
@@ -95,6 +96,12 @@ export interface PiBackendOptions {
   brokeredToolsOptions?: BrokeredToolsOptions;
   mcpProvider?: McpContextProvider;
   automationKinds?: readonly AutomationKind[];
+  github?: GitHubPrAccess;
+}
+
+export interface GitHubPrAccess {
+  reader: GitHubPrReader;
+  repos: readonly string[];
 }
 
 export function preparePiPrompt(prompt: string, attachments: readonly AgentAttachment[] = []) {
@@ -170,6 +177,7 @@ interface PiResourceOptions {
   scheduleActions?: () => ScheduleActions;
   automationActions?: () => AutomationActions;
   automationKinds?: readonly AutomationKind[];
+  github?: GitHubPrAccess;
   agentDir?: string;
 }
 
@@ -182,6 +190,7 @@ export function createPiResources(workspace: string, options: PiResourceOptions 
     ...(options.directMessageSender ? [DIRECT_MESSAGE_TOOL] : []),
     ...(options.scheduleActions ? [SCHEDULE_TOOL] : []),
     ...(options.automationActions ? [AUTOMATION_TOOL] : []),
+    ...(options.github ? [GITHUB_PR_TOOL] : []),
   ];
   const allowedTools = toolsForMode(options.mode ?? "read-only", commandMode, contextToolNames);
   const settingsManager = SettingsManager.create(workspace, agentDir, { projectTrusted: false });
@@ -205,6 +214,7 @@ export function createPiResources(workspace: string, options: PiResourceOptions 
       ...(options.automationActions
         ? [slackAutomationTool(options.automationActions, options.automationKinds)]
         : []),
+      ...(options.github ? [githubPrTool(options.github.reader, options.github.repos)] : []),
     ],
     noExtensions: true,
     noSkills: true,
@@ -425,6 +435,7 @@ export class PiBackend implements AgentBackend {
             return actions;
           }
         : undefined,
+      github: this.options.github,
     });
     await resourceLoader.reload();
     const { session } = await createAgentSession({
@@ -438,6 +449,7 @@ export class PiBackend implements AgentBackend {
         DIRECT_MESSAGE_TOOL,
         SCHEDULE_TOOL,
         ...(this.options.automationKinds?.length ? [AUTOMATION_TOOL] : []),
+        ...(this.options.github ? [GITHUB_PR_TOOL] : []),
       ]),
     });
     return session;
