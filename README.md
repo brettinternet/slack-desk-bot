@@ -1,16 +1,17 @@
 # SlackDeskBot
 
-Bring your local coding agent into Slack. It answers questions in channels and threads with context from your local codebase.
-
-Use your existing agent configuration and credentials. SlackDeskBot exposes only the tools you enable.
+Your local coding agent, answering in Slack with context from your codebase. It uses your existing agent config and credentials and exposes only the tools you enable.
 
 <p align="center">
     <img width="496" src="./docs/profile.png" alt="slack profile of agent" style="padding:0.25rem" />
 </p>
 
-## Platform
+| Deployment                | Backends          |
+| ------------------------- | ----------------- |
+| macOS (LaunchAgent + Hum) | Pi, Codex, Claude |
+| Linux container (GHCR)    | Pi                |
 
-SlackDeskBot supports a macOS desktop deployment managed by LaunchAgent and Hum, plus a Linux container deployment published to GHCR. The Linux image currently supports the Pi backend; Codex and Claude remain macOS-only because their process confinement uses Seatbelt.
+Codex and Claude are macOS-only because they are confined with Seatbelt.
 
 ## Quick start
 
@@ -21,243 +22,260 @@ mise install
 mise exec task -- task init
 ```
 
-### Slack app
+Create the Slack app:
 
-1. Optionally rename the app in [`slack-app-manifest.yaml`](slack-app-manifest.yaml).
-2. Create a Slack app from the manifest.
-3. Under **Basic Information → App-Level Tokens**, create a token with `connections:write`.
-4. Install the app into the workspace. Reinstall existing apps to pick up manifest scopes and event subscriptions.
-5. Copy the bot token (`xoxb-…`) and app token (`xapp-…`).
+1. Create an app from [`slack-app-manifest.yaml`](slack-app-manifest.yaml) (rename it first if you like).
+2. **Basic Information → App-Level Tokens**: create a token with `connections:write`.
+3. Install the app. Reinstall after any manifest change.
+4. Copy the bot token (`xoxb-…`) and app token (`xapp-…`).
 
-Socket Mode is enabled, so no public endpoint is needed.
-
-### Configure and run
-
-Authenticate Pi if needed (`pi`, then `/login` and select a model), then:
+Socket Mode means no public endpoint. Authenticate Pi (`pi`, `/login`, pick a model), then:
 
 ```sh
-cp .env.example .env
-# Fill in tokens, absolute SLACK_AGENT_CWD, and allowed Slack user IDs.
-task doctor    # validates settings, tokens, paths, ports, Slack auth, and backend readiness
-hum up
+cp .env.example .env   # tokens, absolute SLACK_AGENT_CWD, SLACK_ALLOWED_USER_IDS
+task doctor            # checks settings, tokens, paths, ports, Slack, backend
+hum up                 # hum status | hum logs agent | hum down
 ```
 
-```sh
-hum status
-hum logs agent
-hum down
+All settings are in [`.env.example`](.env.example). Run `task doctor` after any change.
+
+## Backends
+
+### Pi (default)
+
+```dotenv
+SLACK_AGENT_BACKEND=pi
 ```
 
-### Agent backend
+Model comes from the gitignored `.pi/settings.json` in this repo (other fields ignored), falling back to the Pi agent directory's default:
 
-**Pi (default):** `SLACK_AGENT_BACKEND=pi`
+```json
+{ "defaultProvider": "openrouter", "defaultModel": "anthropic/claude-opus-4.5" }
+```
 
-- Uses this service's `.pi/settings.json` for its default provider and model, without changing the global Pi default. If the file is absent, it uses the Pi agent directory's default model. `models.json` and `auth.json` still come from the Pi agent directory reported by `task doctor`.
-- Does not load that directory's extensions, skills, or prompt templates. It also ignores all other fields in the service's `.pi/settings.json`, which is gitignored so each operator can set it:
+`models.json` and `auth.json` come from the Pi agent directory shown by `task doctor`. Its extensions, skills, and prompt templates are not loaded. Tools are limited by `SLACK_AGENT_MODE` and `SLACK_AGENT_COMMAND_MODE`, checked again on every call.
 
-    ```json
-    { "defaultProvider": "openrouter", "defaultModel": "anthropic/claude-opus-4.5" }
-    ```
+Pi-only features: reading thread history on demand, DMing people, schedules, watches, the GitHub PR tool, brokered commands, and MCP context.
 
-- Can read the current Slack thread on demand when asked to catch up, summarize, or use earlier thread context. History is not loaded unless the model calls the conversation-scoped tool.
-- Can send a private Slack DM when the requester asks it to tell or notify someone, or when information belongs in a private message. Each DM starts with `Message from @requester:`, may mention only the recipient and requester, and is limited to five per request.
-- Tools restricted to the `SLACK_AGENT_MODE` and `SLACK_AGENT_COMMAND_MODE` allowlist, enforced again at call time.
-- Authenticate with desktop Pi as usual. No credential copy needed.
-
-**Codex:**
+### Codex
 
 ```sh
 mise use -g codex@latest
-mkdir -p "$HOME/Library/Application Support/SlackDeskBot/codex"
-CODEX_HOME="$HOME/Library/Application Support/SlackDeskBot/codex" codex login
+export CODEX_HOME="$HOME/Library/Application Support/SlackDeskBot/codex"
+mkdir -p "$CODEX_HOME" && codex login
 ```
 
 ```dotenv
 SLACK_AGENT_BACKEND=codex
-SLACK_AGENT_MODE=read-only
+SLACK_AGENT_MODE=read-only          # read-write is unsupported
 SLACK_CODEX_HOME=/Users/you/Library/Application Support/SlackDeskBot/codex
-# Optional when codex is not on the LaunchAgent PATH:
-SLACK_CODEX_EXECUTABLE=/absolute/path/to/codex
+SLACK_CODEX_EXECUTABLE=/abs/codex   # only if codex isn't on the LaunchAgent PATH
 ```
 
-Requires macOS, an authenticated `SLACK_CODEX_HOME`, and the Seatbelt process sandbox. Read-write mode is intentionally unsupported. Thread mappings and transcripts under `SLACK_CODEX_HOME` survive restarts, so Slack and `slack-desk attach` resume the exact thread.
+Threads persist under `SLACK_CODEX_HOME`, so Slack and `slack-desk attach` resume across restarts.
 
-**Claude:**
+### Claude
 
 ```sh
-mkdir -p "$HOME/Library/Application Support/SlackDeskBot/claude"
-CLAUDE_CONFIG_DIR="$HOME/Library/Application Support/SlackDeskBot/claude" claude auth login
+export CLAUDE_CONFIG_DIR="$HOME/Library/Application Support/SlackDeskBot/claude"
+mkdir -p "$CLAUDE_CONFIG_DIR" && claude auth login
 ```
 
-Set `SLACK_AGENT_BACKEND=claude` and optionally `SLACK_CLAUDE_HOME` or `SLACK_CLAUDE_EXECUTABLE`.
+```dotenv
+SLACK_AGENT_BACKEND=claude
+# optional: SLACK_CLAUDE_HOME, SLACK_CLAUDE_EXECUTABLE
+```
 
-| Mode       | Tools                                                  |
-| ---------- | ------------------------------------------------------ |
-| read-only  | `Read`, `Glob`, `Grep`                                 |
-| read-write | adds `Edit`, `Write`; keeps global single-writer limit |
+| Mode       | Tools                                          |
+| ---------- | ---------------------------------------------- |
+| read-only  | `Read`, `Glob`, `Grep`                         |
+| read-write | adds `Edit`, `Write` (one active conversation) |
 
-Claude requires macOS Seatbelt. It runs via `claude -p` with `stream-json`, a dedicated `CLAUDE_CONFIG_DIR`, inherited settings ignored, and no permission prompts.
+Runs `claude -p --output-format stream-json` with its own config dir, inherited settings ignored, and no permission prompts. Bash, web, and shell tools are denied. Sessions resume after the first successful reply.
 
-- Bash, WebFetch, WebSearch, shell/code tools, out-of-workspace paths, and credential-like paths are denied by Claude policy and Seatbelt.
-- Text attachments are inlined; images are rejected.
-- Session IDs persist only after a successful response. Subsequent turns resume that session.
+### Comparison
 
-Run `task doctor` after switching backends.
+|                       | Pi  | Codex | Claude |
+| --------------------- | --- | ----- | ------ |
+| Read-write mode       | Yes | No    | Yes    |
+| Text attachments      | Yes | Yes   | Yes    |
+| Image attachments     | Yes | No    | No     |
+| Linux container       | Yes | No    | No     |
+| MCP context, brokered | Yes | No    | No     |
 
-## Slack interaction
-
-Mention the bot in a channel to start a conversation, or message it directly in a DM:
+## Using it in Slack
 
 ```text
 @bot summarize this thread
 laptop: check the failing test
+!status
 ```
 
-In an active bot-owned thread, clear requests from the person who last invited the bot need no mention for 24 hours. A short answer to the bot's question needs no mention from the person the bot asked (the requester by default, or someone directly @addressed in the question). These turns survive restarts and expire after 24 hours. General observations, acknowledgements, human-to-human questions, explicit no-reply notes, and messages addressed to another user are ignored. Other people and older threads can @mention the bot or prefix a message with `laptop:` to rejoin.
+| Situation                             | Needs a mention?          |
+| ------------------------------------- | ------------------------- |
+| Channel, new conversation             | Yes (`@bot`)              |
+| DM                                    | No                        |
+| Bot thread, last inviter, within 24h  | No, for clear requests    |
+| Answering the bot's question          | No, for the person asked  |
+| Anyone else, or thread older than 24h | Yes (`@bot` or `laptop:`) |
 
-With the Pi backend, the bot can read paginated history for its current thread on demand when asked to catch up or summarize. It can also DM someone for you, such as "tell <@U0123456789> the deploy is done"; the DM names you as the requester. Only `SLACK_ALLOWED_USER_IDS` can invoke the bot. The first unauthorized mention explains the denial; repeated attempts from the same user and conversation within ten minutes receive a `:no_entry:` reaction, persisting across restarts. After a successful response, the bot has a 20% chance of adding a random custom workspace emoji reaction.
+Acknowledgements, side chatter, and messages addressed to others are ignored.
 
-Channel replies, including thread replies and group DMs, are one message of at most 1,000 characters after Slack formatting. Each channel request asks the agent for about 50–100 words: the answer first, then only the important caveat and next step. When a reply is still too long, even if depth was requested, the agent writes a standalone summary in a follow-up turn and the bot posts it with the complete response attached as `full-response.md` in the same thread. If the summary does not fit after two attempts, a short note introduces the file instead. If the upload fails, the bot sends one short reply saying the full response could not be attached; it never splits a channel reply into continuation messages. DMs are unchanged: long replies are split into up to three messages, and further text is truncated. Attachments need the `files:write` scope; reinstall an existing app after adding it.
+| Command              | Effect                                 |
+| -------------------- | -------------------------------------- |
+| `!help`              | Usage and commands                     |
+| `!status`            | Model, context, cost, messages         |
+| `!reset`             | New session (old transcript kept)      |
+| `!cancel` / `cancel` | Cancel your request (any, if operator) |
 
-When starting after downtime, background catch-up reconciles eligible DMs, mentions, and thread requests from the past 24 hours. It reads at most 25 conversations and processes up to 10 messages, prioritizing DMs and existing threads. Messages already covered by an agent session, thread starters with replies, and DMs or threads with later messages are skipped. A durable checkpoint file beside the local control socket prevents duplicate replies, rapid restarts within five minutes share a cooldown before another scan, and the initial launch sets the checkpoint without replying to older messages.
+**Access.** Only `SLACK_ALLOWED_USER_IDS` can invoke the bot. A denied user gets one explanation, then a `:no_entry:` reaction for ten minutes.
 
-| Command              | Effect                                                |
-| -------------------- | ----------------------------------------------------- |
-| `!help`              | Show usage examples and all commands                  |
-| `!status`            | Model, context, cumulative cost, messages (live only) |
-| `!reset`             | Fresh session (previous transcript retained)          |
-| `!cancel` / `cancel` | Cancel active request (own, or any if operator)       |
+**Replies.** In channels, one message of up to 1,000 characters, aiming for 50–100 words. Longer answers become a summary plus `full-response.md` attached (needs `files:write`). DMs split into up to three messages.
 
-Commands are case-insensitive exact messages. An unsupported `!`-prefixed message points back to `!help`.
+**Catch-up.** After downtime the bot answers missed DMs, mentions, and thread requests from the last 24 hours (up to 10 messages from 25 conversations), skipping anything already answered. The first launch answers nothing old.
 
-## Local terminal attachment
+**Extras (Pi).** Asks like these work:
 
-SlackDeskBot owns all mutable agent sessions. A local client joins over an owner-only Unix socket:
+```text
+@bot catch me up on this thread
+@bot tell @alice the deploy is done           # DM starts "Message from @you:"
+@bot remind me every weekday at 9am ET to check CI
+@bot watch ENG-123 and DM me when it's done
+@bot DM me when work-org/repo#42 is merged
+@bot adversarially review work-org/repo#42
+```
+
+Requester DMs may mention only the recipient and requester, max five per request. About 20% of successful replies get a random custom emoji reaction.
+
+## Schedules and watches
+
+Schedules send DMs as the bot. Only the creator (or a `SLACK_OPERATOR_USER_IDS` member) manages one from Slack; the CLI manages all. Recurring schedules need an explicit time zone.
 
 ```sh
-bun link                 # once, from this checkout
-slack-desk --help         # command reference on stdout; no service required
-slack-desk sessions      # labels and participants when Slack metadata is available
-slack-desk attach f82ab719
-slack-desk attach f82ab719 --history 50  # default: 20; --no-history to disable
-slack-desk channel leave C0123456789  # leave a public channel (G... for private)
-slack-desk dm U0123456789 Deploy finished  # DM a member ID as the bot
-slack-desk dm audit  # most recent 100 bot-authored DMs
-slack-desk dm audit --to U0123456789  # most recent 100 to one recipient
-slack-desk dm audit --since 2026-03-01 --json  # all since UTC midnight, JSON Lines
-slack-desk schedule add U0123456789 --at 2026-12-01T09:00:00-05:00 Deploy finished
-slack-desk schedule add U0123456789 --daily 09:00 --tz America/New_York Morning update
-slack-desk schedule add U0123456789 --weekly 1,3,5 --time 09:00 --tz America/New_York Standup
+slack-desk schedule add U0123 --at 2026-12-01T09:00:00-05:00 Deploy finished
+slack-desk schedule add U0123 --daily 09:00 --tz America/New_York Morning update
+slack-desk schedule add U0123 --weekly 1,3,5 --time 09:00 --tz America/New_York Standup  # 0=Sun
 slack-desk schedule list
-slack-desk schedule update <id> U0123456789 --at 2026-12-02T09:00:00-05:00 Revised text
+slack-desk schedule update <id> U0123 --at 2026-12-02T09:00:00-05:00 Revised text
 slack-desk schedule cancel <id>
 ```
 
-`slack-desk channel leave <channel-id>` makes the bot leave a public (C...) or private (G...) channel via the running service. It does not need an attached session, does not leave DMs, and does not delete previous agent sessions or cancel in-flight replies. Slack may refuse to leave certain channels (such as #general). Reinstall the app to grant `channels:manage` and `groups:write` before using it.
+| Missed while down   | Result                               |
+| ------------------- | ------------------------------------ |
+| One-off             | Sent on restart                      |
+| Recurring           | One current delivery, then next slot |
+| Failed mid-delivery | **Not retried**; see `schedule list` |
 
-Schedules and `slack-desk dm` do not need an attached session. CLI-created scheduled messages speak as the bot without requester attribution. With Pi, ask the bot to schedule a DM or a reminder to yourself, list your schedules, replace one by ID, or cancel one. Messages scheduled or edited from Slack name the most recent editor when delivered; CLI edits send in the bot's voice. Only the creator can manage a schedule through Slack, except users in `SLACK_OPERATOR_USER_IDS`, who can manage all schedules; the local CLI can manage all. The bot needs an explicit time zone for daily/weekly reminders. Weekdays are `0` (Sunday) through `6` (Saturday).
+Watches poll every 15 minutes and DM the creator once on a match. They expire after 30 days and report after three failed checks. Existing matches are reported up front instead of creating a watch.
 
-With the Pi backend and read-only Linear `get_issue` configured, you can ask the bot to “watch ENG-123 and DM me when it’s done,” list your automations, or pause, resume, and cancel one by ID. “Done” means Linear’s `completed` status type; a named status can be watched instead. The bot checks the current state when creating the watch (and reports if it already matches), then polls every 15 minutes. Watches DM only their creator once on a match, expire after 30 days, and notify the creator after three consecutive check failures. Only the creator or a configured Slack operator can manage them; bot creation requires an explicit request. No agent prompt or ticket content is executed on a timer. Automation definitions and state persist in an owner-only `automations.json` beside the schedule store. If a source is no longer configured, its existing watches remain on disk but are not polled. Watches owned by users removed from the Slack allowlist are paused before another check or DM. As with scheduled DMs, delivery is claimed before sending; an uncertain delivery is not retried automatically.
+| Source | Matches                                                 | Requires                   |
+| ------ | ------------------------------------------------------- | -------------------------- |
+| Linear | `completed` status type, or a named status              | MCP `get_issue`            |
+| GitHub | PR merged (closed-unmerged doesn't count), issue closed | `SLACK_GITHUB_REPOS`, `gh` |
 
-For GitHub watches, ask “DM me when work-org/repo#42 PR is merged” or “DM me when work-org/repo#17 issue is closed.” A closed-but-unmerged PR does **not** match. The bot checks that the target exists and belongs to an approved organization repository before creating a watch; if it already matches, no watch is created. Notifications include the validated GitHub target URL. GitHub watches use the same polling, persistence, ownership, expiry, and delivery rules as Linear watches.
+Schedules and watches are stored in owner-only `schedules.json` and `automations.json` beside the socket (on Linux with `XDG_RUNTIME_DIR`: `~/.local/state/slack-desk-bot/`). Watches pause for users removed from the allowlist and stay idle if their source is unconfigured.
 
-The same configuration gives Pi a read-only `github_pr` tool for approved repositories, so you can ask “adversarially review work-org/repo#42” without a current local checkout. It lists PRs and reads PR metadata, the actual diff, changed files and patches, head-commit checks and statuses, conversation comments, reviews and inline comments, and file contents at the PR base or head commit. Results are paged, pinned to the PR's head SHA, and say when anything is incomplete (more pages, missing or truncated patches, binary files, diffs GitHub will not render); a head that moves during a review is reported rather than mixed. Fork PRs are read only through the approved base repository. The tool cannot comment, submit reviews, merge, check out, or fetch: reviews are drafted in Slack only. PR text, comments, and code are treated as untrusted context.
+## GitHub
 
-Set `SLACK_GITHUB_REPOS=work-org/repo,work-org/other` to the exact approved organization repositories (no wildcards). Remove any previous `SLACK_GITHUB_TOKEN_FILE` setting; it is no longer used. Without the repository allowlist, GitHub watches and PR reads are not offered. Install `gh` and authenticate it for `github.com` **as the same OS user and with the same `GH_CONFIG_DIR`/home used by the service** (keep `GH_CONFIG_DIR` outside `SLACK_AGENT_CWD`) (`gh auth login`, then `gh auth status --hostname github.com`). The service checks CLI authentication at startup and uses fixed `gh api` GET requests for read-only lookups. It disables interactive prompts and ignores inherited token environment overrides so it uses that saved login. A headless service cannot rely on a different user's interactive `gh` session; for Compose, the image includes `gh`, but you must provide an authenticated `gh` config accessible to the container's `bun` user (the default Compose file does not mount one). No `gh` command, API endpoint, or credential is exposed to Pi; it supplies only a repository, PR number, and validated paging or path arguments. **The `gh` login may have access to personal repositories**; only the app-level allowlist and organization check restrict what the GitHub integration requests. This is not credential-level isolation. Existing watches remain stored but are not polled if `SLACK_GITHUB_REPOS` is removed.
-
-Schedules persist in an owner-only `schedules.json` beside the socket (or under `~/.local/state/slack-desk-bot/` when Linux uses an `XDG_RUNTIME_DIR` socket). Overdue one-off messages send when the service restarts; missed recurring occurrences are skipped (one current delivery, then the next calendar slot). A due slot is recorded before sending to prevent restart duplicates: if Slack delivery fails or the process stops during delivery, it is **not retried** automatically. Check `schedule list` for failed one-offs or the last error on a recurring schedule, and update the schedule if needed.
-
-`slack-desk dm` sends the message as the bot without requester attribution and does not need an attached session. It works only for people, not bots or deactivated accounts. To prevent recipients from replying, set `messages_tab_read_only_enabled: true` in the Slack app manifest. This also stops users from starting DM conversations with the bot.
-
-`slack-desk dm audit` reads Slack history through the running bot's owner-only local socket. With no `--since`, it shows the 100 most recent bot-authored DMs across recipients, newest first. Use `--since` with a UTC date or ISO timestamp with offset to show all messages since then, grouped by recipient. Both modes include thread replies, text, timestamp, and Slack link; use `--to` to filter by member ID or `--json` for one JSON object per message. It pages through accessible DM conversations and history, including messages sent through the agent, CLI, and schedules. This is not a durable archive: deleted messages, expired history, and DMs Slack no longer lets the bot access cannot be recovered. To find recent replies in older threads, it scans accessible DM history back to the beginning; long audits may take time or be subject to Slack API rate limits. The command fails rather than silently skipping an inaccessible conversation.
-
-Attaching prints thread/DM identity, participants, permalink, and recent history, then streams live events. Inside an attachment, use prompts normally or `/status`, `/cancel`, `/quit`. Slack and local prompts share one per-conversation queue. Local operator prompts and replies post back to the originating Slack thread with attribution; disconnecting does not stop the session or an active request.
-
-Scopes `channels:read`, `channels:manage`, `groups:read`, `groups:write`, `im:read`, `users:read`, and `users:read.email` are required; reinstall an existing app after adding them. History and automatic Git identity matching fall back gracefully when Slack denies access.
-
-On macOS, the socket defaults to `~/Library/Application Support/SlackDeskBot/control.sock`. Override with `SLACK_AGENT_SOCKET_PATH` (absolute); the client reads the same variable or accepts `--socket <path>`.
-
-The protocol is versioned newline-delimited JSON, local-only, with bounded frames, clients, pending requests, subscriptions, and buffered output. Session state and bounded Slack metadata/history are exposed only to the local operator.
-
-### MCP for local agents
-
-Install once from this checkout, then register the stable launcher in each agent's user-level **stdio MCP** configuration:
+```dotenv
+SLACK_GITHUB_REPOS=work-org/repo,work-org/other   # exact, no wildcards
+```
 
 ```sh
-task mcp:install
-# Installed MCP launcher: /path/to/home/.local/bin/slack-desk-mcp
+gh auth login && gh auth status --hostname github.com
+```
+
+Run `gh` as the service's OS user with the same `GH_CONFIG_DIR`, kept outside `SLACK_AGENT_CWD`. Containers include `gh` but need an authenticated config mounted for the `bun` user.
+
+This enables GitHub watches and the read-only `github_pr` tool. It reads PR metadata, diffs, files, checks, comments, reviews, and file contents at base or head, all pinned to the head SHA. It can't comment, review, merge, or fetch, so reviews stay in Slack. Pi only supplies a repo, PR number, and validated paging/path arguments.
+
+> [!WARNING]
+> The `gh` login may reach personal repos. Only the app allowlist and an org-ownership check limit what gets requested. That isn't credential-level isolation.
+
+## Local CLI
+
+The service owns every session. `slack-desk` connects over an owner-only Unix socket.
+
+```sh
+bun link                                  # once
+slack-desk sessions
+slack-desk attach f82ab719                # --history 50, --no-history
+slack-desk dm U0123 Deploy finished       # as the bot, people only
+slack-desk dm audit                       # last 100 bot DMs
+slack-desk dm audit --to U0123
+slack-desk dm audit --since 2026-03-01 --json
+slack-desk channel leave C0123            # or G… for private
+```
+
+Inside `attach`, type prompts or `/status`, `/cancel`, `/quit`. Slack and terminal prompts share one queue, and terminal turns post back to the Slack thread with attribution. Detaching leaves the session running.
+
+`dm audit` reads live Slack history. It isn't an archive and fails rather than skipping a conversation it can't read. Set `messages_tab_read_only_enabled: true` in the manifest to block replies to bot DMs.
+
+Required scopes: `channels:read`, `channels:manage`, `groups:read`, `groups:write`, `im:read`, `users:read`, `users:read.email`.
+
+Socket: `~/Library/Application Support/SlackDeskBot/control.sock`. Override it with `SLACK_AGENT_SOCKET_PATH` or `--socket <path>`.
+
+## MCP server for local agents
+
+Lets other local agents look people up and DM them through the running bot.
+
+```sh
+task mcp:install   # → ~/.local/bin/slack-desk-mcp
 ```
 
 ```json
-{
-    "mcpServers": {
-        "slack-desk": { "command": "/path/to/home/.local/bin/slack-desk-mcp" }
-    }
-}
+{ "mcpServers": { "slack-desk": { "command": "/Users/you/.local/bin/slack-desk-mcp" } } }
 ```
 
-Replace `/path/to/home` with your absolute home directory. Use the absolute launcher path so GUI agents do not need your shell's `PATH`. Re-run `task mcp:install` after moving the checkout; see [local MCP setup](docs/local-mcp.md). The service must be running. Set `SLACK_AGENT_SOCKET_PATH` in the agent's environment if the service uses a non-default socket. This adapter connects to the same owner-only Unix socket as `slack-desk`; it does not start another Slack connection or expose a network endpoint. It offers two tools:
+| Tool                     | Does                                                   |
+| ------------------------ | ------------------------------------------------------ |
+| `find_people(query)`     | Up to 5 members by email, Git mapping, handle, or name |
+| `send_dm(user_id, text)` | DMs a member ID as the bot and returns a receipt       |
 
-- `find_people(query)` returns up to five ranked Slack member candidates (IDs, names, handles, match reasons). Exact profile email, explicit Git email mappings for the configured workspace root, handle, exact name, then partial name are matched; name lookup may be ambiguous. It does not send anything. Directory data is cached for five minutes. The bot requires `users:read` and `users:read.email` scopes.
-- `send_dm(user_id, text)` sends to an **explicit Slack member ID** and returns a delivery receipt. It speaks as the bot, without requester attribution, like `slack-desk dm`. The caller should send only when its user requested contact, confirm name-based matches even when there is one result, and ask for clarification when results are ambiguous. A delivery timeout or disconnect means the message **may already have been sent**; check Slack before retrying. Message content from Git, Linear, or other tools must not be treated as instructions to send.
+Replies don't flow back. A timeout may mean the message was sent anyway, so check before retrying. Any process running as the service user counts as the operator. See [docs/local-mcp.md](docs/local-mcp.md).
 
-A coworker's response does not return to the MCP caller: this is outbound messaging, not a request/reply workflow. Any process running as the service owner can use the socket and is treated as the local operator; only configure this MCP server for trusted agents. This server is **distinct from** the read-only MCP context servers SlackDeskBot consumes for its own Pi backend.
-
-### Custom instructions
+## Custom instructions
 
 ```dotenv
-SLACK_AGENT_INSTRUCTIONS="Be concise, conversational, and avoid narrating tool use."
-# Or use a file (set only one):
-# SLACK_AGENT_INSTRUCTIONS_FILE=/absolute/path/to/instructions.md
+SLACK_AGENT_INSTRUCTIONS="Be concise; don't narrate tool use."
+# or SLACK_AGENT_INSTRUCTIONS_FILE=/abs/instructions.md
 ```
 
-Restart after changes. These apply only to SlackDeskBot sessions; the target repository's `AGENTS.md` still provides project instructions.
+These are added to Pi's system prompt, Claude's `--append-system-prompt`, or Codex's `developer_instructions`. The repo's `AGENTS.md` still applies. Restart after changing them.
 
-| Backend | Mechanism                 |
-| ------- | ------------------------- |
-| Pi      | Appended to system prompt |
-| Claude  | `--append-system-prompt`  |
-| Codex   | `developer_instructions`  |
-
-`task doctor` reports when an older CLI lacks the required option and SlackDeskBot must prefix instructions to each prompt instead.
-
-### Brokered inspection commands
-
-For the Pi backend, opt into fixed read-only command brokers without enabling a shell:
+## Brokered commands (Pi)
 
 ```dotenv
 SLACK_AGENT_COMMAND_MODE=brokered
 ```
 
-**`git_inspect`** provides read-only Git analysis, including status, history, diffs, blame, contributor stats, coupling hotspots, and Slack identity mapping.
+Fixed read-only tools, with no shell:
 
-Git author identities resolve through `.mailmap` and match Slack profiles by workspace email. Names are never fuzzy-matched. You can map explicit aliases locally or globally:
+| Tool          | Reports                                                                   |
+| ------------- | ------------------------------------------------------------------------- |
+| `git_inspect` | Status, log, diff, blame, contributors, hotspots, bus factor, Slack names |
+| `repo_fun`    | Repo personality, birthday, commit weather, fortunes, trivia              |
+| `system_info` | Battery, uptime, versions, disk, memory, thermal, power, process health   |
+
+Git runs as `/usr/bin/git` with fixed args and no hooks, pager, config, remotes, or writes. In nested layouts it resolves repos under `SLACK_AGENT_CWD`. On Linux, `system_info` reports the container, not the host.
+
+Git authors match Slack users by email, never by name. Add aliases with:
 
 ```sh
-slack-desk identities scan
-slack-desk identities list
-slack-desk identities link U012ABCDEF brett@users.noreply.github.com
-slack-desk identities link U012ABCDEF brett@company.com --global
+slack-desk identities scan                                   # report only
+slack-desk identities link U012ABC brett@users.noreply.github.com
+slack-desk identities link U012ABC brett@company.com --global
 ```
 
-Project mappings go to `.slack-desk-bot/identities.yaml`; global mappings go to `~/.config/slack-desk-bot/identities.yaml`. Project mappings take precedence. `scan` only reports matches and unresolved authors; it does not save mappings or need to run on a schedule. The Pi backend matches identities automatically, reads explicit mappings on each lookup, and refreshes its Slack user directory after five minutes when a lookup occurs. `scan` requires `SLACK_BOT_TOKEN` and the `users:read.email` scope. The `contributors`, `identities`, and `bus_factor` actions include resolved Slack names and stable user IDs without exposing workspace email addresses.
+Project mappings in `.slack-desk-bot/identities.yaml` override global ones in `~/.config/slack-desk-bot/identities.yaml`.
 
-- `SLACK_AGENT_CWD` is the outer access boundary, either a single repo root or a parent of multiple repos.
-- In nested layouts, `git_inspect` resolves a workspace-relative repo root and uses paths relative to it.
-- Other file tools stay relative to `SLACK_AGENT_CWD`, reaching files across allowed projects without changing directories.
-- Repository selection rejects traversal, symlink escapes, non-root subdirectories, and paths outside `SLACK_AGENT_CWD`.
-- Sensitive paths (`.env`, `.git`, credentials, private keys) are rejected or omitted.
-- Git runs as `/usr/bin/git` with exact arguments, no pager, hooks, lazy fetching, optional locks, global/system config, credential prompts, or inherited service environment. It cannot contact remotes or mutate the repository.
+## MCP context (Pi)
 
-**`repo_fun`** derives playful local-only reports from Git metadata: repository personality and birthday, ancient artifacts, hot zones, team constellations, commit weather, deterministic fortunes, activity sparklines, milestones, and trivia. Personality, weather, ownership, and concentration results are approximate.
+Expose an allowlisted set of tools from Streamable HTTP MCP servers. The config is read from the first path that exists:
 
-**`system_info`** reports battery/health, uptime/load, OS/kernel/CPU/runtime/tool versions, workspace disk and volume space, memory and thermal pressure, power settings, redacted display summaries, computer name, local clock, combined system pressure, and SlackDeskBot process health. Each action uses in-process facts or a fixed executable with fixed arguments; no shell or free-form arguments are accepted. On Linux it reports container-runtime facts—not the Docker host—and explicitly rejects unavailable battery, thermal, power, and display actions. Hardware serials and private scheduled activity returned by macOS are never included.
-
-Brokered commands are off by default, currently Pi-only, and independent of `SLACK_AGENT_MODE`; read-only and read-write sessions receive the same inspection-only operations.
-
-### Read-only MCP context
-
-The Pi backend can dynamically expose an operator-approved subset of tools from Streamable HTTP MCP servers. By default, SlackDeskBot reads `$SLACK_AGENT_CWD/.slack-desk-bot/mcp.json`, then `~/.config/slack-desk-bot/mcp.json`. Set `SLACK_AGENT_MCP_CONFIG_FILE` to an absolute path when the configuration lives elsewhere, such as the service repository's gitignored `.slack-desk-bot/mcp.json` when the service repository and `SLACK_AGENT_CWD` differ. MCP configuration under `SLACK_AGENT_CWD` is blocked from agent file tools and should be gitignored by that workspace. MCP is disabled when none of these paths exists.
+1. `SLACK_AGENT_MCP_CONFIG_FILE`
+2. `$SLACK_AGENT_CWD/.slack-desk-bot/mcp.json` (gitignore it)
+3. `~/.config/slack-desk-bot/mcp.json`
 
 ```json
 {
@@ -266,260 +284,140 @@ The Pi backend can dynamically expose an operator-approved subset of tools from 
         "linear": {
             "transport": "streamable-http",
             "url": "https://mcp.linear.app/mcp/readonly",
-            "tokenFile": "/absolute/path/to/linear-token",
+            "tokenFile": "/abs/outside/workspace/linear-token",
             "allowedTools": {
-                "search_issues": { "localName": "linear_search" },
-                "get_issue": { "localName": "linear_get_issue" }
-            }
-        },
-        "notion": {
-            "transport": "streamable-http",
-            "url": "http://127.0.0.1:4312/mcp",
-            "tokenFile": "/absolute/path/to/notion-token",
-            "allowedTools": {
-                "search": { "localName": "notion_search" },
-                "fetch": { "localName": "notion_fetch" }
+                "get_issue": { "localName": "linear_get_issue" },
+                "search_issues": {
+                    "localName": "linear_search",
+                    "schemaSha256": "<optional 64-hex>"
+                }
             }
         }
     }
 }
 ```
 
-At startup, SlackDeskBot calls `tools/list`, intersects the result with each exact `allowedTools` entry, and registers only those advertised schemas with Pi. Unlisted tools are never registered and are rejected again at call time. Tool descriptions, schemas, arguments, call durations, and text results are bounded; binary results are omitted, and servers marked destructive are rejected. MCP responses are treated as untrusted external context.
+Only listed tools are registered, and calls are checked again at runtime. URLs must be HTTPS or loopback HTTP. `stdio` isn't supported, token files must be outside `SLACK_AGENT_CWD`, and destructive tools are rejected. A `schemaSha256` mismatch fails startup. Use read-only credentials. Notion's hosted MCP isn't read-only, so put a read-only adapter in front of it. See [docs/mcp-linear.md](docs/mcp-linear.md).
 
-Endpoints must use HTTPS, with loopback HTTP allowed only for local adapters. The `stdio` transport is unsupported to prevent arbitrary command execution. Token files must be absolute, readable paths outside `SLACK_AGENT_CWD`, and token contents are never exposed to the model. In container deployments, mount token files at the exact container paths specified in `tokenFile`.
+## Limits
 
-For change-controlled schemas, add the SHA-256 of the canonical input schema:
+| Limit                      | Default              |
+| -------------------------- | -------------------- |
+| Concurrent conversations   | 3 (read-write: 1)    |
+| Queued per conversation    | 2                    |
+| Global queue               | 20                   |
+| Active/queued per user     | 3                    |
+| Rate limit                 | 3 burst, 1/min       |
+| Agent timeout / queue wait | 5 min / 10 min       |
+| Files per message          | 4                    |
+| Text / image / total size  | 1 / 5 / 10 MiB       |
+| Text types                 | txt, md, JSON, XML   |
+| Image types                | PNG, JPEG, GIF, WebP |
 
-```json
-"search_issues": {
-  "localName": "linear_search",
-  "schemaSha256": "64-lowercase-hex-characters"
-}
-```
+Attachments are kept in memory and never written to disk.
 
-A mismatch fails startup. Without `schemaSha256`, schema changes for that exact allowed tool are accepted dynamically. Upstream credentials must still be read-only: use Linear's `/readonly` endpoint, and place a read-only Notion API integration behind a local MCP adapter because Notion's hosted MCP is not read-only.
-
-## Resource limits
-
-| Limit                                 | Default               |
-| ------------------------------------- | --------------------- |
-| Concurrent conversations (read-only)  | 3                     |
-| Concurrent conversations (read-write) | 1 (enforced)          |
-| Queued per conversation               | 2                     |
-| Global queue                          | 20                    |
-| Active/queued per user                | 3                     |
-| Rate limit                            | 3 burst, 1/min refill |
-| Agent timeout                         | 5 min                 |
-| Queue wait                            | 10 min                |
-| Max response messages                 | 3 (10,500 chars)      |
-
-### File attachments
-
-| Constraint        | Limit                           |
-| ----------------- | ------------------------------- |
-| Files per message | 4                               |
-| Text file size    | 1 MiB                           |
-| Image file size   | 5 MiB                           |
-| Total per message | 10 MiB                          |
-| Text types        | plain text, Markdown, JSON, XML |
-| Image types       | PNG, JPEG, GIF, WebP            |
-
-Files are downloaded from Slack into memory and never written to disk. Pi accepts all listed text and image types. Codex and Claude inline text attachments but reject images (their CLIs require an image file path).
-
-See [`.env.example`](.env.example) for all tunable `SLACK_AGENT_*` settings.
-
-## Readiness and health
-
-| Endpoint   | Purpose                                                                                                                                                            |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `/healthz` | Liveness. OK during Slack reconnects.                                                                                                                              |
-| `/readyz`  | `ready` when Slack connected and backend available; `degraded` during reconnects or repeated delivery failures; `unhealthy` when disconnected or backend disposed. |
+## Health
 
 ```sh
 curl -fsS "http://127.0.0.1:${SLACK_AGENT_HEALTH_PORT:-3210}/readyz"
 ```
 
-Response includes start/uptime, queue counts, connection state, and last successful Slack operation time. No prompts, IDs, paths, tokens, or file data.
+| Endpoint   | Returns                                                              |
+| ---------- | -------------------------------------------------------------------- |
+| `/healthz` | OK while the process is alive, including during reconnects           |
+| `/readyz`  | `ready`, `degraded` (reconnecting or delivery failures), `unhealthy` |
 
-## Linux container deployment
+Responses include uptime, queue counts, and connection state, but no prompts, IDs, paths, or tokens.
 
-The Pi-only Linux image is published as `ghcr.io/brettinternet/slack-desk-bot`. `main` tracks the default branch, `sha-…` tags are immutable, and version tags are published from `v*` Git tags. Images are built for `linux/amd64` and `linux/arm64`.
+## Linux container
 
-The container runs as an unprivileged user and needs three separate locations:
-
-| Container path        | Purpose                                                           | Access               |
-| --------------------- | ----------------------------------------------------------------- | -------------------- |
-| `/workspace`          | Repository or parent directory exposed to the agent               | Read-only by default |
-| `/config/pi-agent`    | Pi credentials, model settings, and credential lock/refresh state | Persistent, writable |
-| `/var/lib/slack-desk` | Sessions, conversation mappings, socket, and catch-up checkpoint  | Persistent, writable |
-
-Authenticate Pi on the host first. Then export the Compose inputs; use the Pi agent directory reported by `task doctor` if it differs from `~/.pi/agent`.
+Image: `ghcr.io/brettinternet/slack-desk-bot` (`main`, `sha-…`, `v*`; amd64 and arm64). Pi only.
 
 ```sh
-export SLACK_BOT_TOKEN=xoxb-...
-export SLACK_APP_TOKEN=xapp-...
-export SLACK_ALLOWED_USER_IDS=U01234567
-export SLACK_AGENT_WORKSPACE=/absolute/path/to/repository
-export SLACK_DESK_PI_AGENT_DIR="$HOME/.pi/agent"
-docker compose up -d
-```
-
-```sh
-docker compose ps
+export SLACK_BOT_TOKEN=xoxb-... SLACK_APP_TOKEN=xapp-... SLACK_ALLOWED_USER_IDS=U0123
+export SLACK_AGENT_WORKSPACE=/abs/repo
+export SLACK_DESK_PI_AGENT_DIR="$HOME/.pi/agent"   # from task doctor
+docker compose up -d                                # or: docker compose build first
 docker compose logs -f agent
-curl -fsS "http://127.0.0.1:${SLACK_AGENT_HEALTH_PORT:-3210}/readyz"
 docker compose exec agent bun src/local-cli.ts sessions
-docker compose down
 ```
 
-The default workspace mount and agent mode are read-only. To deliberately enable writes, set both controls before starting:
+| Path                  | Holds                               | Mount                  |
+| --------------------- | ----------------------------------- | ---------------------- |
+| `/workspace`          | Repo(s) for the agent               | Read-only by default   |
+| `/config/pi-agent`    | Pi auth and models (locks, refresh) | Writable               |
+| `/var/lib/slack-desk` | Sessions, socket, checkpoints       | Writable, one instance |
+
+Writes need both `SLACK_AGENT_MODE=read-write` and `SLACK_AGENT_WORKSPACE_READ_ONLY=false`. Don't mount the Docker socket, your home directory, or credentials under `/workspace`. Health is published on host loopback only.
+
+## macOS service
 
 ```sh
-export SLACK_AGENT_MODE=read-write
-export SLACK_AGENT_WORKSPACE_READ_ONLY=false
-docker compose up -d
-```
-
-The Pi agent directory must be writable because Pi locks credential reads beside `auth.json` and may refresh OAuth credentials. Agent file tools remain confined to `/workspace`; the directory is writable only by trusted service code. Do not mount the Docker socket, an entire home directory, or credentials beneath `/workspace`. Linux `system_info` describes the container runtime and cannot inspect the Docker host. Git inspection accepts bind-mounted repositories whose host UID differs from the container UID, while path validation still confines selection to `SLACK_AGENT_CWD`.
-
-The health endpoint binds to all container interfaces so Docker and orchestration probes can reach it; Compose publishes it only on host loopback. The process handles `SIGTERM`, and Compose allows 20 seconds for its 15-second graceful shutdown deadline. The named `state` volume must not be shared by concurrently running instances.
-
-To build locally instead of pulling GHCR:
-
-```sh
-docker compose build
-docker compose up -d
-```
-
-## macOS deployment
-
-```sh
-mkdir -p "$HOME/.config/slack-desk-bot" "$HOME/Library/Application Support/SlackDeskBot/sessions"
-cp .env.example "$HOME/.config/slack-desk-bot/service.env"
-chmod 600 "$HOME/.config/slack-desk-bot/service.env"
-# Edit service.env: tokens, allowed users, SLACK_AGENT_CWD, SLACK_AGENT_SESSION_DIR
+mkdir -p ~/.config/slack-desk-bot "$HOME/Library/Application Support/SlackDeskBot/sessions"
+cp .env.example ~/.config/slack-desk-bot/service.env
+chmod 600 ~/.config/slack-desk-bot/service.env
+# edit: tokens, allowed users, SLACK_AGENT_CWD, SLACK_AGENT_SESSION_DIR
+set -a; source ~/.config/slack-desk-bot/service.env; set +a
+task doctor && task service:install
 ```
 
 ```sh
-set -a; source "$HOME/.config/slack-desk-bot/service.env"; set +a
-task doctor
-task service:install
+hum status | hum logs agent | hum restart agent | hum down
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.slackdeskbot.agent.plist
 ```
+
+Upgrade (stop and back up first):
 
 ```sh
-hum status
-hum logs agent
-hum restart agent
-launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.slackdeskbot.agent.plist"
-hum down
+git pull --ff-only && mise install && bun install --frozen-lockfile
+task check && task test && task doctor && task service:install
 ```
 
-### Backup and restore
+To roll back, unload the LaunchAgent, check out the previous tag, and reinstall.
 
-Session data is the only data requiring backup. Stop the service first.
+### Backup
 
-| Backend | Session location          |
-| ------- | ------------------------- |
-| Pi      | `SLACK_AGENT_SESSION_DIR` |
-| Codex   | `SLACK_CODEX_HOME`        |
-| Claude  | `SLACK_CLAUDE_HOME`       |
+Stop the service first. Only session data needs backing up.
 
 ```sh
-tar -C "$HOME/Library/Application Support/SlackDeskBot" -czf "slackdeskbot-sessions-$(date +%Y%m%d).tgz" sessions
+tar -C "$HOME/Library/Application Support/SlackDeskBot" -czf "sessions-$(date +%Y%m%d).tgz" sessions
 ```
 
-Restore: stop the service, move existing sessions aside, extract the archive, verify permissions, run `task doctor`, then `task service:install`. Never merge two session directories or run two instances against one.
+| Backend | Sessions                  | Offline resume (service stopped)                |
+| ------- | ------------------------- | ----------------------------------------------- |
+| Pi      | `SLACK_AGENT_SESSION_DIR` | `pi --session <file>` (on a copy)               |
+| Codex   | `SLACK_CODEX_HOME`        | `CODEX_HOME=<home> codex resume <thread-id>`    |
+| Claude  | `SLACK_CLAUDE_HOME`       | `CLAUDE_CONFIG_DIR=<home> claude --resume <id>` |
 
-**Offline resume** is recovery-only. Stop SlackDeskBot first. Concurrent access outside the service bypasses the in-memory queue and can fork history.
+Never merge session directories or run two instances against one.
 
-| Backend | Offline resume command                                             |
-| ------- | ------------------------------------------------------------------ |
-| Pi      | `pi --session <file>` (use a copy or exclusively owned session)    |
-| Codex   | `CODEX_HOME=<configured-home> codex resume <thread-id>`            |
-| Claude  | `CLAUDE_CONFIG_DIR=<configured-home> claude --resume <session-id>` |
+### Smoke test
 
-### Upgrade and rollback
-
-```sh
-# Stop, back up sessions, then:
-git pull --ff-only
-mise install
-bun install --frozen-lockfile
-task check && task test
-# Load service.env, then:
-task doctor
-task service:install
-```
-
-Rollback: unload LaunchAgent, check out the previous tag or commit, rerun install and verify steps.
-
-### Smoke checklist
-
-1. Bootstrap, Slack setup, external `service.env`, durable session directory.
-2. `task doctor` passes.
-3. `task service:install`, then `hum status` reports ready and `/readyz` returns 200.
-4. Send `!help` in a DM, then send a prompt and confirm a reply.
-5. `slack-desk sessions`, attach, alternate one Slack turn and one terminal turn. Confirm both replies use the same backend session and Slack thread without another process opening the session.
+1. `task doctor` passes and `/readyz` returns 200.
+2. DM `!help`, then send a prompt and get a reply.
+3. `slack-desk attach <id>`, then alternate Slack and terminal turns. Both should land in the same session and thread.
 
 ## Security
 
-**Allowlist:** `SLACK_ALLOWED_USER_IDS` (required) controls invocation. `SLACK_OPERATOR_USER_IDS` (optional subset) can cancel any active request. Rejected users get one reply per conversation every ten minutes. Find member IDs from **Profile → More → Copy member ID**.
+| Control       | Behavior                                                                                     |
+| ------------- | -------------------------------------------------------------------------------------------- |
+| Invocation    | `SLACK_ALLOWED_USER_IDS` (Profile → More → Copy member ID); operators can cancel any request |
+| Default tools | `read`, `grep`, `find`, `ls`. `read-write` adds `edit`, `write` and allows one conversation  |
+| Path scope    | Confined to `SLACK_AGENT_CWD`; symlinks resolved                                             |
+| Blocked paths | `.env*` (not templates), `.ssh`, `.git/`, keys, cloud creds, `.netrc`, `.npmrc`, `.pypirc`   |
+| Repo `.pi/`   | Cannot inject extensions, settings, or prompts                                               |
+| Socket        | `0600` in a `0700` dir, no TCP; any same-user process is the operator                        |
 
-**Read-only by default.** `read`, `grep`, `find`, `ls` are allowed. Set `SLACK_AGENT_MODE=read-write` to enable `edit` and `write` (enforces one active conversation). Brokered commands are separately controlled by `SLACK_AGENT_COMMAND_MODE` and never add a shell or mutation capability.
+Path blocking isn't secret detection, so use a checkout without secrets. User-level Pi extensions in `~/.pi/agent` run as trusted code.
 
-**Path policy** blocks `.env` files (except templates), `.ssh`, `.git` contents, private keys, cloud credentials, `.netrc`, `.npmrc`, `.pypirc`. It applies in both modes, follows symlinks, and normalizes `~`, `@`, and `file://` paths. This is path-based only, not secret detection. Use a dedicated checkout without secrets.
-
-**Tool paths** are confined to `SLACK_AGENT_CWD`. Pi allows only the selected file and brokered tools and blocks sensitive paths. The target repository's `.pi/` directory cannot inject extensions, settings, or system prompts. User-level Pi extensions (`~/.pi/agent`) run as trusted code outside this policy.
-
-### Backend-specific sandboxing
-
-**Codex** uses two sandboxes:
-
-- Its native sandbox is read-only.
-- SlackDeskBot's macOS Seatbelt boundary exposes file contents only from the workspace, Codex install root, and dedicated session home. Writes are limited to that session home.
-- Path metadata remains readable because the CLIs canonicalize their executable, home, and workspace at startup.
-- Commands receive no service environment.
-- Credentials live in an owner-only `auth.json` under `SLACK_CODEX_HOME`. The Codex process can read it; model-issued commands cannot.
-
-**Claude** runs with:
-
-- Inherited project and user settings ignored.
-- No MCP servers, slash commands, or permission prompts.
-- An explicit file-tool list.
-- The same Seatbelt boundary as Codex, plus required writes to `/tmp/claude-<uid>` and `/tmp/cc-socks`.
-- Workspace writes only in read-write mode.
-
-| Capability                       | Codex   | Claude |
-| -------------------------------- | ------- | ------ |
-| Read-write mode                  | No      | Yes    |
-| Image attachments                | No      | No     |
-| Linux service deployment         | No      | No     |
-| Read-only configured MCP context | Pi only | No     |
-| Unrestricted command networking  | No      | No     |
-
-Claude also denies Bash, shell/code tools, WebFetch, and WebSearch.
-
-### Sessions
-
-Sessions are designed for one service owner; SlackDeskBot is their sole mutable owner.
-
-The socket has no TCP fallback and does not expose session paths, prompts, tokens, user names, or file contents in discovery or logs. It is created `0600` inside a `0700` owner-only directory.
-
-Neither Node nor Bun exposes Unix peer credentials, so any process running as the service user can connect and is treated as the operator. Do not share session files across instances without external locking.
-
-## Adding another backend
-
-Implement `AgentBackend` from [`src/agent.ts`](src/agent.ts) and select it in [`src/application.ts`](src/application.ts). Keep adapters narrow: translate a conversation ID and prompt into one text response.
+Codex and Claude also run under Seatbelt. They can read only the workspace, their install root, and their session home, and can write only to the session home (Claude also writes to `/tmp/claude-<uid>`, `/tmp/cc-socks`, and the workspace in read-write mode). Commands get no service environment. Codex's `auth.json` is readable by Codex but not by commands it runs.
 
 ## Development
 
-Toolchain is declared in [`mise.toml`](mise.toml). `task init` installs tools, dependencies, and hooks.
-
 ```sh
-task check    # types + formatting
-task test     # tests
-task fix      # auto-format
+task check    # types + format
+task test
+task fix      # format
 ```
 
-Hum exposes project processes to coding agents through [`.mcp.json`](.mcp.json).
+To add a backend, implement `AgentBackend` ([`src/agent.ts`](src/agent.ts)), select it in [`src/application.ts`](src/application.ts), and keep it narrow: conversation ID + prompt in, text out. Hum exposes processes to coding agents via [`.mcp.json`](.mcp.json).
